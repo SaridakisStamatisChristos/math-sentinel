@@ -1,0 +1,111 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import argparse
+from typing import Any, Dict
+
+import torch
+import yaml
+
+from curriculum.generators import GeneratedTask, sample_task
+from curriculum.phases import PhaseScheduler
+from proof.executor import ProofExecutor
+from proof.state import ProofState
+from proof.traces import render_human_trace
+from search.beam import beam_search
+from sentinel.checkpointing import load_checkpoint
+from sentinel.model import TinyTransformerLM
+from sentinel.tokenizer import build_default_tokenizer
+from sentinel.verifier import StateVerifier
+from tools.registry import ToolRegistry
+
+
+def load_yaml(path: str) -> Dict[str, Any]:
+    with open(path, "r", encoding="utf-8") as f:
+        return yaml.safe_load(f)
+
+
+def make_state(task: GeneratedTask) -> ProofState:
+    return ProofState(
+        task_id=task.task_id,
+        domain=task.domain,
+        problem_text=task.prompt,
+        goal=task.goal,
+        expected_answer=task.answer,
+        metadata=task.meta,
+    )
+
+
+def manual_task(domain: str, prompt: str, answer: str = "") -> GeneratedTask:
+    return GeneratedTask(task_id="manual_0001", domain=domain, prompt=prompt, answer=answer, goal="Solve the problem", meta={"family": domain})
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser(description="Sample Math Sentinel V7")
+    ap.add_argument("--config", default="config/default.yaml")
+    ap.add_argument("--curriculum-config", default="config/curriculum.yaml")
+    ap.add_argument("--checkpoint", default="")
+    ap.add_argument("--domain", default="")
+    ap.add_argument("--problem", default="")
+    ap.add_argument("--checker-plugin", default="")
+    args = ap.parse_args()
+
+    cfg = load_yaml(args.config)
+    curriculum_cfg = load_yaml(args.curriculum_config)
+    scheduler = PhaseScheduler.from_dict(curriculum_cfg)
+    device = "cuda" if torch.cuda.is_available() and cfg["device"] in {"auto", "cuda"} else "cpu"
+
+    tokenizer = build_default_tokenizer()
+    prover = TinyTransformerLM(
+        vocab_size=tokenizer.vocab_size,
+        seq_len=int(cfg["model"]["seq_len"]),
+        d_model=int(cfg["model"]["d_model"]),
+        n_heads=int(cfg["model"]["n_heads"]),
+        n_layers=int(cfg["model"]["n_layers"]),
+        dropout=float(cfg["model"]["dropout"]),
+    ).to(device)
+    verifier = StateVerifier(
+        vocab_size=tokenizer.vocab_size,
+        hidden_size=int(cfg["verifier"]["hidden_size"]),
+        dropout=float(cfg["verifier"]["dropout"]),
+    ).to(device)
+
+    if args.checkpoint:
+        load_checkpoint(args.checkpoint, prover, verifier, map_location=device)
+
+    registry = ToolRegistry()
+    if args.checker_plugin:
+        registry.load_plugin(args.checker_plugin)
+    executor = ProofExecutor(registry)
+
+    if args.problem and args.domain:
+        task = manual_task(args.domain, args.problem)
+    else:
+        phase = scheduler.phase_for_step(int(cfg["training"]["steps"]))
+        task = sample_task(phase.domains)
+
+    init = make_state(task)
+    final_state, explored = beam_search(
+        prover=prover,
+        verifier=verifier,
+        tokenizer=tokenizer,
+        executor=executor,
+        initial_state=init,
+        device=device,
+        beam_width=int(cfg["search"]["beam_width"]),
+        max_depth=int(cfg["search"]["max_depth"]),
+        proposal_count=int(cfg["search"]["proposal_count"]),
+    )
+
+    print("=== INPUT TASK ===")
+    print(task.prompt)
+    print("\n=== FINAL STATE ===")
+    print(final_state.serialize())
+    print("\n=== TRACE ===")
+    print(render_human_trace(final_state))
+    print("\n=== EXPLORED NODES ===")
+    print(len(explored))
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,48 @@
+seed: 1337
+device: auto
+compile: false
+
+model:
+  seq_len: 192
+  d_model: 64
+  n_heads: 4
+  n_layers: 1
+  dropout: 0.1
+
+verifier:
+  hidden_size: 96
+  dropout: 0.1
+
+training:
+  steps: 1000
+  batch_size: 8
+  micro_batch_size: 4
+  lr: 0.0003
+  weight_decay: 0.01
+  grad_clip: 1.0
+  eval_every: 100
+  save_every: 50
+  log_every: 10
+  memory_refresh_samples: 32
+  amp: true
+  max_new_tokens: 64
+
+search:
+  beam_width: 2
+  max_depth: 3
+  proposal_count: 2
+  temperature: 0.8
+  top_k: 20
+
+memory:
+  replay_capacity: 5000
+  hard_case_capacity: 2000
+  lemma_store_path: memory/lemma_store.json
+  hard_cases_path: memory/hard_cases.json
+  tactic_stats_path: memory/tactic_stats.json
+  replay_path: memory/replay.jsonl
+
+paths:
+  checkpoints_dir: checkpoints
+  logs_dir: logs
+  data_dir: data
