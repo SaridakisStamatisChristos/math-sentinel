@@ -198,3 +198,74 @@ The strongest next steps after this repo are:
 ## Practical note
 
 This codebase is intended to be a **working V7 skeleton with real logic**. It is not the final mathematical sentinel, but it is the first repo in the line that genuinely reasons over mathematical state rather than only text.
+
+## Quick Commands
+
+Use these commands to get the repo running and to reproduce common workflows.
+
+- Setup a Python virtualenv (Linux/macOS):
+
+```bash
+python -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+```
+
+- Setup a Python virtualenv (Windows PowerShell):
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+```
+
+- Run a short training smoke test (CPU):
+
+```bash
+python train_v7.py --steps 20 --batch-size 4 --micro-batch-size 4 --eval-every 10 --save-every 10
+```
+
+- Resume training from a checkpoint:
+
+```bash
+python train_v7.py --resume checkpoints/last.pt --steps 34000 --eval-every 200 --save-every 100
+```
+
+- Run evaluation:
+
+```bash
+python eval_v7.py --checkpoint checkpoints/last.pt --count 64
+```
+
+- Sample or solve a single problem:
+
+```bash
+python sample_v7.py --checkpoint checkpoints/last.pt
+python sample_v7.py --checkpoint checkpoints/last.pt --domain linear_equation --problem "Solve: 2x + 3 = 11"
+```
+
+- Run the unit tests (requires test deps):
+
+```bash
+pytest -q
+```
+
+- Git: initialize, add remote, and push (if needed):
+
+```bash
+git init
+git add .
+git commit -m "Initial commit"
+git branch -M main
+git remote add origin <your-remote-url>
+git push -u origin main
+```
+
+- Run on CUDA / GPU (example):
+
+```bash
+# ensure CUDA drivers + torch with CUDA are installed
+python train_v7.py --steps 2000 --batch-size 16 --micro-batch-size 8 --compile
+```
+
+If you'd like, I can add CI (GitHub Actions) to run tests and lint on PRs.
