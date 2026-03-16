@@ -23,6 +23,13 @@ verifier:
   focal_alpha: 0.75
   loss_weight: 0.55
   mined_pairs_per_step: 4
+  online_pairs_per_step: 2
+  online_mining_start_step: 1
+  online_beam_width: 6
+  online_max_depth: 5
+  online_proposal_count: 6
+  online_temperature: 1.0
+  online_top_k: 32
 
 training:
   steps: 1000

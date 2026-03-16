@@ -188,6 +188,60 @@ def sample_mined_verifier_pairs(replay: ReplayBuffer, limit: int) -> List[Dict[s
     return pairs[:limit]
 
 
+@torch.no_grad()
+def mine_online_verifier_pairs(
+    prover: TinyTransformerLM,
+    verifier: StateVerifier,
+    tokenizer: Any,
+    executor: ProofExecutor,
+    phase: Any,
+    replay: ReplayBuffer,
+    device: str,
+    count: int,
+    *,
+    beam_width: int,
+    max_depth: int,
+    proposal_count: int,
+    max_new_tokens: int,
+    temperature: float,
+    top_k: int,
+) -> List[Dict[str, Any]]:
+    mined: List[Dict[str, Any]] = []
+    if count <= 0:
+        return mined
+
+    prover_was_training = prover.training
+    verifier_was_training = verifier.training
+    prover.eval()
+    verifier.eval()
+    try:
+        for _ in range(count):
+            task = sample_task(phase.domains)
+            init = make_state(task)
+            final_state, explored = beam_search(
+                prover=prover,
+                verifier=verifier,
+                tokenizer=tokenizer,
+                executor=executor,
+                initial_state=init,
+                device=device,
+                beam_width=beam_width,
+                max_depth=max_depth,
+                proposal_count=proposal_count,
+                max_new_tokens=max_new_tokens,
+                temperature=temperature,
+                top_k=top_k,
+            )
+            pair = pick_best_mined_pair(task, explored, final_state)
+            if pair is not None:
+                replay.add(pair)
+                mined.append(pair)
+    finally:
+        prover.train(prover_was_training)
+        verifier.train(verifier_was_training)
+    return mined
+
+
 def batch_encode(texts: List[str], tokenizer: Any, seq_len: int, device: str) -> torch.Tensor:
     ids = [tokenizer.encode(t, seq_len) for t in texts]
     return torch.tensor(ids, dtype=torch.long, device=device)
@@ -373,6 +427,30 @@ def main() -> None:
             pos_targets.append(pos_t)
             neg_targets.append(neg_t)
 
+        online_pairs: List[Dict[str, Any]] = []
+        if step >= int(cfg["verifier"].get("online_mining_start_step", 1)):
+            online_pairs = mine_online_verifier_pairs(
+                prover=prover,
+                verifier=verifier,
+                tokenizer=tokenizer,
+                executor=executor,
+                phase=phase,
+                replay=replay,
+                device=device,
+                count=int(cfg["verifier"].get("online_pairs_per_step", 0)),
+                beam_width=int(cfg["verifier"].get("online_beam_width", cfg["search"]["beam_width"])),
+                max_depth=int(cfg["verifier"].get("online_max_depth", cfg["search"]["max_depth"])),
+                proposal_count=int(cfg["verifier"].get("online_proposal_count", cfg["search"]["proposal_count"])),
+                max_new_tokens=int(cfg["training"].get("max_new_tokens", 64)),
+                temperature=float(cfg["verifier"].get("online_temperature", cfg["search"]["temperature"])),
+                top_k=int(cfg["verifier"].get("online_top_k", cfg["search"]["top_k"])),
+            )
+            for pair in online_pairs:
+                pos_texts.append(str(pair["pos_text"]))
+                neg_texts.append(str(pair["neg_text"]))
+                pos_targets.append(torch.tensor(pair["pos_target"], dtype=torch.float32))
+                neg_targets.append(torch.tensor(pair["neg_target"], dtype=torch.float32))
+
         mined_pairs = sample_mined_verifier_pairs(replay, int(cfg["verifier"].get("mined_pairs_per_step", 0)))
         for pair in mined_pairs:
             pos_texts.append(str(pair["pos_text"]))
@@ -427,6 +505,7 @@ def main() -> None:
             "verifier_loss": float(v_loss.item()),
             "verifier_bce_loss": float(v_bce_loss.item()),
             "verifier_rank_loss": float(v_rank_loss.item()),
+            "verifier_online_pairs": float(len(online_pairs)),
             "total_loss": float(total_loss.item()),
         }
 
