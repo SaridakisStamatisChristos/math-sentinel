@@ -56,3 +56,25 @@ def test_pick_best_mined_pair_uses_wrong_answer_node_as_negative() -> None:
     assert pair is not None
     assert "x=4" in pair["pos_text"]
     assert "x=5" in pair["neg_text"]
+
+
+def test_pick_best_mined_pair_falls_back_to_root_state() -> None:
+    task = _task()
+
+    root = ProofState(task_id=task.task_id, domain=task.domain, problem_text=task.prompt, goal=task.goal, expected_answer=task.answer, metadata=task.meta)
+    solved = ProofState(task_id=task.task_id, domain=task.domain, problem_text=task.prompt, goal=task.goal, expected_answer=task.answer, metadata=task.meta)
+    solved.final_answer = "x=4"
+    solved.status = "solved"
+    solved.derived_facts.append("x=4")
+
+    pair = pick_best_mined_pair(
+        task,
+        [
+            SearchNode(state=root, cumulative_score=0.0, local_scores={}, depth=0),
+            SearchNode(state=solved, cumulative_score=2.0, local_scores={"valid_step": 1.0, "goal_progress": 1.0}, depth=1),
+        ],
+        solved,
+    )
+
+    assert pair is not None
+    assert "[FINAL_ANSWER] none" in pair["neg_text"]

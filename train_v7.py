@@ -136,6 +136,7 @@ def build_verifier_targets(
 def pick_best_mined_pair(task: GeneratedTask, explored: List[Any], final_state: ProofState) -> Optional[Dict[str, Any]]:
     positive_nodes = []
     negative_nodes = []
+    root_node = explored[0] if explored else None
 
     for node in explored:
         state = node.state
@@ -143,11 +144,12 @@ def pick_best_mined_pair(task: GeneratedTask, explored: List[Any], final_state: 
         correct = has_answer and evaluate_answer(task, state.final_answer)
         if correct:
             positive_nodes.append(node)
-        elif node.depth > 0:
+        else:
             hardness = (
                 float(node.local_scores.get("goal_progress", 0.0))
                 + 0.35 * float(has_answer)
                 + 0.15 * float(node.local_scores.get("valid_step", 0.0))
+                - 0.05 * float(node.depth == 0)
             )
             negative_nodes.append((hardness, node))
 
@@ -161,6 +163,8 @@ def pick_best_mined_pair(task: GeneratedTask, explored: List[Any], final_state: 
     else:
         return None
 
+    if not negative_nodes and root_node is not None:
+        negative_nodes.append((0.0, root_node))
     if not negative_nodes:
         return None
 
@@ -467,7 +471,7 @@ def main() -> None:
         prover_optim.zero_grad(set_to_none=True)
         verifier_optim.zero_grad(set_to_none=True)
 
-        with torch.cuda.amp.autocast(enabled=(device == "cuda" and bool(cfg["training"]["amp"]))):
+        with torch.amp.autocast(device_type=("cuda" if device == "cuda" else "cpu"), enabled=(device == "cuda" and bool(cfg["training"]["amp"]))):
             logits = training_prover(x)
             lm_loss = masked_ce(logits, y, tokenizer.pad_id)
 
