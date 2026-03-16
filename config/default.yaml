@@ -22,6 +22,7 @@ verifier:
   focal_gamma: 2.0
   focal_alpha: 0.75
   loss_weight: 0.55
+  mined_pairs_per_step: 4
 
 training:
   steps: 1000

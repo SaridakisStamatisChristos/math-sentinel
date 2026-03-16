@@ -4,7 +4,7 @@ from __future__ import annotations
 import argparse
 import random
 from pathlib import Path
-from typing import Any, Dict, List, cast
+from typing import Any, Dict, List, Optional, cast
 
 import numpy as np
 import torch
@@ -86,90 +86,106 @@ def build_verifier_examples(task: GeneratedTask) -> tuple[str, torch.Tensor, str
     pos.tool_history.append({"tool": "oracle", "result": {"ok": True, "answer": task.answer}})
 
     neg = make_state(task)
-    neg.final_answer = _wrong_answer_for_task(task)
-    neg.status = "solved"
-    neg.derived_facts.append(task.answer)
-    neg.derived_facts.append(f"candidate={neg.final_answer}")
-    neg.action_history.append({"type": "ANSWER", "content": neg.final_answer})
-    neg.tool_history.append({"tool": "diagnostic", "result": {"ok": True, "answer": neg.final_answer}})
+    neg.derived_facts.append("search_not_started")
 
-    # Domain-specific reward signals
-    domain_rewards = {
-        "arithmetic": [0.98, 0.92, 0.98, 0.05, 0.9],
-        "fractions": [0.98, 0.95, 0.98, 0.08, 0.92],
-        "divmod": [0.98, 0.94, 0.98, 0.08, 0.9],
-        "gcd_lcm": [0.98, 0.95, 0.98, 0.08, 0.92],
-        "modular": [0.98, 0.92, 0.98, 0.08, 0.9],
-        "primality": [0.98, 0.95, 0.98, 0.12, 0.92],
-        "factorization": [0.98, 0.95, 0.98, 0.12, 0.92],
-        "linear_equation": [0.98, 0.96, 0.98, 0.04, 0.94],
-        "polynomial_simplify": [0.98, 0.94, 0.98, 0.12, 0.9],
-        "derivative": [0.98, 0.95, 0.98, 0.12, 0.92],
-        "integral": [0.98, 0.95, 0.98, 0.12, 0.92],
-        "parity_proof": [0.98, 0.9, 0.98, 0.2, 0.88],
-        "logic": [0.98, 0.9, 0.98, 0.2, 0.88],
-    }
-
-    domain_neg_rewards = {
-        "arithmetic": [0.35, 0.3, 0.05, 0.85, 0.2],
-        "fractions": [0.35, 0.3, 0.05, 0.85, 0.2],
-        "divmod": [0.35, 0.3, 0.05, 0.85, 0.2],
-        "gcd_lcm": [0.35, 0.3, 0.05, 0.85, 0.2],
-        "modular": [0.35, 0.3, 0.05, 0.85, 0.2],
-        "primality": [0.35, 0.3, 0.05, 0.85, 0.2],
-        "factorization": [0.35, 0.3, 0.05, 0.85, 0.2],
-        "linear_equation": [0.42, 0.38, 0.05, 0.82, 0.22],
-        "polynomial_simplify": [0.42, 0.38, 0.05, 0.82, 0.22],
-        "derivative": [0.42, 0.38, 0.05, 0.82, 0.22],
-        "integral": [0.42, 0.38, 0.05, 0.82, 0.22],
-        "parity_proof": [0.45, 0.4, 0.05, 0.8, 0.25],
-        "logic": [0.45, 0.4, 0.05, 0.8, 0.25],
-    }
-
-    pos_t = torch.tensor(domain_rewards.get(task.domain, [1.0, 0.9, 1.0, 0.1, 0.8]), dtype=torch.float32)
-
-    # Domain-specific tactics for negative examples
-    if task.domain in domain_neg_rewards:
-        neg_t = torch.tensor(domain_neg_rewards[task.domain], dtype=torch.float32)
-    else:
-        neg.status = "open"
-        neg.derived_facts.append("bad_step")
-        neg_t = torch.tensor([0.1, 0.1, 0.02, 0.9, 0.1], dtype=torch.float32)
-
+    pos_t = build_verifier_targets(task, pos)
+    neg_t = build_verifier_targets(task, neg, local_scores={"valid_step": 0.35, "goal_progress": 0.0, "risk_score": 0.8})
     return pos.serialize(), pos_t, neg.serialize(), neg_t
 
 
-def _wrong_answer_for_task(task: GeneratedTask) -> str:
-    answer = task.answer.strip()
-    if task.domain == "divmod":
-        nums = [int(x) for x in answer.replace(",", "").replace("=", " ").split() if x.lstrip("-").isdigit()]
-        if len(nums) >= 2:
-            return f"q={nums[0] + 1}, r={nums[1]}"
-    if task.domain == "gcd_lcm":
-        nums = [int(x) for x in answer.replace(",", "").replace("=", " ").split() if x.lstrip("-").isdigit()]
-        if len(nums) >= 2:
-            return f"gcd={max(0, nums[0] - 1)}, lcm={nums[1] + 1}"
-    if task.domain == "linear_equation" and answer.startswith("x="):
-        try:
-            value = float(answer.split("=", 1)[1])
-            bumped = int(value + 1) if value.is_integer() else value + 1.0
-            return f"x={bumped}"
-        except Exception:
-            return "x=0"
-    if task.domain in {"arithmetic", "modular"}:
-        try:
-            return str(int(answer) + 1)
-        except Exception:
-            return "0"
-    if task.domain == "primality":
-        return "composite" if answer == "prime" else "prime"
-    if task.domain == "fractions" and "/" in answer:
-        num, den = answer.split("/", 1)
-        try:
-            return f"{int(num) + 1}/{den}"
-        except Exception:
-            return "1/1"
-    return "wrong"
+def build_verifier_targets(
+    task: GeneratedTask,
+    state: ProofState,
+    local_scores: Optional[Dict[str, float]] = None,
+) -> torch.Tensor:
+    local_scores = local_scores or {}
+    has_answer = bool(state.final_answer.strip())
+    correct = has_answer and evaluate_answer(task, state.final_answer)
+    solved = state.status == "solved"
+
+    valid_step = float(local_scores.get("valid_step", 1.0 if solved or has_answer else 0.6))
+    explicit_progress = float(local_scores.get("goal_progress", 0.0))
+    structural_progress = min(
+        1.0,
+        0.12 * len(state.derived_facts)
+        + 0.08 * len(state.tool_history)
+        + 0.06 * len(state.action_history)
+        + 0.08 * len(state.lemma_refs)
+        + 0.04 * len(state.subgoals),
+    )
+    goal_progress = max(explicit_progress, structural_progress)
+    if correct:
+        goal_progress = max(goal_progress, 0.95)
+    elif has_answer:
+        goal_progress = min(0.75, max(goal_progress, 0.3))
+
+    proof_completion = 1.0 if correct and solved else (0.25 if has_answer else min(0.2, goal_progress * 0.5))
+    risk = float(local_scores.get("risk_score", 0.05 if correct else (0.85 if has_answer else 0.45)))
+    branch_priority = max(0.05, min(0.98, 0.55 * goal_progress + 0.25 * valid_step + 0.20 * proof_completion))
+
+    values = [
+        max(0.02, min(0.99, valid_step)),
+        max(0.0, min(0.99, goal_progress)),
+        max(0.0, min(0.99, proof_completion)),
+        max(0.01, min(0.99, risk)),
+        branch_priority,
+    ]
+    return torch.tensor(values, dtype=torch.float32)
+
+
+def pick_best_mined_pair(task: GeneratedTask, explored: List[Any], final_state: ProofState) -> Optional[Dict[str, Any]]:
+    positive_nodes = []
+    negative_nodes = []
+
+    for node in explored:
+        state = node.state
+        has_answer = bool(state.final_answer.strip())
+        correct = has_answer and evaluate_answer(task, state.final_answer)
+        if correct:
+            positive_nodes.append(node)
+        elif node.depth > 0:
+            hardness = (
+                float(node.local_scores.get("goal_progress", 0.0))
+                + 0.35 * float(has_answer)
+                + 0.15 * float(node.local_scores.get("valid_step", 0.0))
+            )
+            negative_nodes.append((hardness, node))
+
+    pos_node = max(positive_nodes, key=lambda n: n.cumulative_score, default=None)
+    if pos_node is None and final_state.final_answer.strip() and evaluate_answer(task, final_state.final_answer):
+        pos_state = final_state.clone()
+        pos_target = build_verifier_targets(task, pos_state)
+    elif pos_node is not None:
+        pos_state = pos_node.state.clone()
+        pos_target = build_verifier_targets(task, pos_state, pos_node.local_scores)
+    else:
+        return None
+
+    if not negative_nodes:
+        return None
+
+    negative_nodes.sort(key=lambda item: item[0], reverse=True)
+    neg_node = negative_nodes[0][1]
+    neg_state = neg_node.state.clone()
+    neg_target = build_verifier_targets(task, neg_state, neg_node.local_scores)
+    return {
+        "kind": "verifier_pair",
+        "domain": task.domain,
+        "task": task.prompt,
+        "pos_text": pos_state.serialize(),
+        "pos_target": pos_target.tolist(),
+        "neg_text": neg_state.serialize(),
+        "neg_target": neg_target.tolist(),
+    }
+
+
+def sample_mined_verifier_pairs(replay: ReplayBuffer, limit: int) -> List[Dict[str, Any]]:
+    pairs = [item for item in replay.sample(max(limit * 4, limit)) if item.get("kind") == "verifier_pair"]
+    if len(pairs) < limit:
+        extra = [item for item in replay.items if item.get("kind") == "verifier_pair"]
+        if extra:
+            pairs.extend(random.sample(extra, min(limit - len(pairs), len(extra))))
+    return pairs[:limit]
 
 
 def batch_encode(texts: List[str], tokenizer: Any, seq_len: int, device: str) -> torch.Tensor:
@@ -357,6 +373,13 @@ def main() -> None:
             pos_targets.append(pos_t)
             neg_targets.append(neg_t)
 
+        mined_pairs = sample_mined_verifier_pairs(replay, int(cfg["verifier"].get("mined_pairs_per_step", 0)))
+        for pair in mined_pairs:
+            pos_texts.append(str(pair["pos_text"]))
+            neg_texts.append(str(pair["neg_text"]))
+            pos_targets.append(torch.tensor(pair["pos_target"], dtype=torch.float32))
+            neg_targets.append(torch.tensor(pair["neg_target"], dtype=torch.float32))
+
         batch = batch_encode(examples, tokenizer, int(cfg["model"]["seq_len"]), device)
         x = batch[:, :-1]
         y = batch[:, 1:]
@@ -448,6 +471,9 @@ def main() -> None:
                 )
                 ok = final_state.status == "solved" and evaluate_answer(task, final_state.final_answer)
                 replay.add({"task": task.prompt, "answer": final_state.final_answer or "<no_answer>", "ok": ok, "domain": task.domain})
+                mined_pair = pick_best_mined_pair(task, explored, final_state)
+                if mined_pair is not None:
+                    replay.add(mined_pair)
                 if not ok:
                     hard_cases.add(
                         {
