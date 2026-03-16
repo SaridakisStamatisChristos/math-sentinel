@@ -10,7 +10,8 @@ def gcd_tool(arg: str, state: Any = None) -> Dict[str, Any]:
     nums = [int(x) for x in re.findall(r"-?\d+", arg)]
     if len(nums) < 2:
         return {"ok": False, "result": "need two ints"}
-    return {"ok": True, "result": str(math.gcd(nums[0], nums[1]))}
+    rendered = str(math.gcd(nums[0], nums[1]))
+    return {"ok": True, "result": rendered, "solved": True, "answer": rendered, "goal_progress": 1.0}
 
 
 def lcm_tool(arg: str, state: Any = None) -> Dict[str, Any]:
@@ -19,7 +20,8 @@ def lcm_tool(arg: str, state: Any = None) -> Dict[str, Any]:
         return {"ok": False, "result": "need two ints"}
     g = math.gcd(nums[0], nums[1])
     out = abs(nums[0] * nums[1]) // g if g else 0
-    return {"ok": True, "result": str(out)}
+    rendered = str(out)
+    return {"ok": True, "result": rendered, "solved": True, "answer": rendered, "goal_progress": 1.0}
 
 
 def primality(arg: str, state: Any = None) -> Dict[str, Any]:
@@ -63,4 +65,14 @@ def modular_reduce(arg: str, state: Any = None) -> Dict[str, Any]:
     if len(nums) < 2 or nums[1] == 0:
         return {"ok": False, "result": "need n,m"}
     rendered = str(nums[0] % nums[1])
+    return {"ok": True, "result": rendered, "solved": True, "answer": rendered, "goal_progress": 1.0}
+
+
+def gcd_lcm(arg: str, state: Any = None) -> Dict[str, Any]:
+    nums = [int(x) for x in re.findall(r"-?\d+", arg)]
+    if len(nums) < 2:
+        return {"ok": False, "result": "need two ints"}
+    g = math.gcd(nums[0], nums[1])
+    l = abs(nums[0] * nums[1]) // g if g else 0
+    rendered = f"gcd={g}, lcm={l}"
     return {"ok": True, "result": rendered, "solved": True, "answer": rendered, "goal_progress": 1.0}

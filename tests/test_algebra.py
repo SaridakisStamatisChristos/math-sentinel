@@ -18,3 +18,11 @@ def test_solve_linear_step_handles_plus_minus_constant() -> None:
 
     assert result["ok"] is True
     assert result["answer"] == "x=2"
+
+
+def test_divmod_tool_marks_answer_present() -> None:
+    from tools.arithmetic import divmod_tool
+
+    res = divmod_tool("159 divided by 14")
+    assert res["solved"] is True
+    assert res["answer"].startswith("q=")

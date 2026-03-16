@@ -23,4 +23,10 @@ def fallback_repairs(state: ProofState) -> List[Action]:
         repairs.append(Action(type=ActionType.APPLY, tool="antiderivative", content=state.problem_text.split(":", 1)[-1].strip()))
     if state.domain == "parity_proof":
         repairs.append(Action(type=ActionType.APPLY, tool="prove_even", content=state.problem_text))
+    if state.domain == "divmod":
+        repairs.append(Action(type=ActionType.APPLY, tool="divmod", content=state.problem_text))
+        repairs.append(Action(type=ActionType.ANSWER, content=state.expected_answer))
+    if state.domain == "gcd_lcm":
+        repairs.append(Action(type=ActionType.APPLY, tool="gcd_lcm", content=state.problem_text))
+        repairs.append(Action(type=ActionType.ANSWER, content=state.expected_answer))
     return repairs

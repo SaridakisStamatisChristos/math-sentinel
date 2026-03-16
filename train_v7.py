@@ -381,9 +381,17 @@ def main() -> None:
                     proposal_count=int(cfg["search"]["proposal_count"]),
                 )
                 ok = final_state.status == "solved" and evaluate_answer(task, final_state.final_answer)
-                replay.add({"task": task.prompt, "answer": final_state.final_answer, "ok": ok, "domain": task.domain})
+                replay.add({"task": task.prompt, "answer": final_state.final_answer or "<no_answer>", "ok": ok, "domain": task.domain})
                 if not ok:
-                    hard_cases.add({"task": task.prompt, "domain": task.domain, "score": len(explored), "answer": final_state.final_answer})
+                    hard_cases.add(
+                        {
+                            "task": task.prompt,
+                            "domain": task.domain,
+                            "score": len(explored),
+                            "answer": final_state.final_answer or "<no_answer>",
+                            "expected": task.answer,
+                        }
+                    )
                 if ok:
                     if task.domain == "linear_equation":
                         lemma_store.add(derive_linear_lemma(task.prompt))

@@ -28,6 +28,7 @@ class ToolRegistry:
         self.register("common_denominator", fractions.common_denominator)
         self.register("gcd", number_theory.gcd_tool)
         self.register("lcm", number_theory.lcm_tool)
+        self.register("gcd_lcm", number_theory.gcd_lcm)
         self.register("primality", number_theory.primality)
         self.register("factorize", number_theory.factorize)
         self.register("modular_reduce", number_theory.modular_reduce)

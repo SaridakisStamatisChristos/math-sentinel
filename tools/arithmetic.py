@@ -37,4 +37,5 @@ def divmod_tool(arg: str, state: Any = None) -> Dict[str, Any]:
     if len(nums) < 2 or nums[1] == 0:
         return {"ok": False, "result": "bad args"}
     q, r = divmod(nums[0], nums[1])
-    return {"ok": True, "result": f"q={q}, r={r}"}
+    rendered = f"q={q}, r={r}"
+    return {"ok": True, "result": rendered, "solved": True, "answer": rendered, "goal_progress": 1.0}

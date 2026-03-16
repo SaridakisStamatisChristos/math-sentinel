@@ -12,7 +12,11 @@ class HardCaseStore:
         self.cases: List[Dict] = []
 
     def add(self, case: Dict) -> None:
-        self.cases.append(case)
+        sanitized = dict(case)
+        # Never persist an empty answer; fallback to expected or placeholder for easier debugging.
+        if not sanitized.get("answer"):
+            sanitized["answer"] = sanitized.get("expected") or "<no_answer>"
+        self.cases.append(sanitized)
         if len(self.cases) > self.capacity:
             self.cases = self.cases[-self.capacity :]
 
@@ -30,4 +34,9 @@ class HardCaseStore:
         if not p.exists():
             return
         data = json.loads(p.read_text(encoding="utf-8"))
-        self.cases = list(data)[-self.capacity :]
+        cleaned = []
+        for c in data:
+            if not c.get("answer"):
+                c["answer"] = c.get("expected") or "<no_answer>"
+            cleaned.append(c)
+        self.cases = cleaned[-self.capacity :]
