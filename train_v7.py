@@ -269,6 +269,29 @@ def set_optimizer_lr(optimizer: torch.optim.Optimizer, lr: float) -> None:
         group["lr"] = lr
 
 
+def verifier_init_kwargs(cfg: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "hidden_size": int(cfg["verifier"]["hidden_size"]),
+        "dropout": float(cfg["verifier"]["dropout"]),
+        "n_heads": int(cfg["verifier"].get("n_heads", 4)),
+        "n_layers": int(cfg["verifier"].get("n_layers", 2)),
+        "max_seq_len": int(cfg["verifier"].get("max_seq_len", cfg["model"]["seq_len"])),
+        "ff_mult": int(cfg["verifier"].get("ff_mult", 4)),
+    }
+
+
+def phase_online_mining_count(cfg: Dict[str, Any], phase_name: str) -> int:
+    phase_counts = cfg["verifier"].get("online_pairs_by_phase", {})
+    return int(phase_counts.get(phase_name, cfg["verifier"].get("online_pairs_per_step", 0)))
+
+
+def phase_search_value(cfg: Dict[str, Any], phase_name: str, key: str, fallback: Any) -> Any:
+    phase_values = cfg["verifier"].get(key, {})
+    if isinstance(phase_values, dict):
+        return phase_values.get(phase_name, fallback)
+    return fallback
+
+
 @torch.no_grad()
 def run_eval(
     prover: TinyTransformerLM,
@@ -370,12 +393,7 @@ def main() -> None:
     training_prover: torch.nn.Module = prover
     verifier = StateVerifier(
         vocab_size=tokenizer.vocab_size,
-        hidden_size=int(cfg["verifier"]["hidden_size"]),
-        dropout=float(cfg["verifier"]["dropout"]),
-        n_heads=int(cfg["verifier"].get("n_heads", 4)),
-        n_layers=int(cfg["verifier"].get("n_layers", 2)),
-        max_seq_len=int(cfg["verifier"].get("max_seq_len", cfg["model"]["seq_len"])),
-        ff_mult=int(cfg["verifier"].get("ff_mult", 4)),
+        **verifier_init_kwargs(cfg),
     ).to(device)
 
     if cfg.get("compile") and hasattr(torch, "compile"):
@@ -395,7 +413,7 @@ def main() -> None:
         lr=float(cfg["verifier"].get("lr", cfg["training"]["lr"])),
         weight_decay=float(cfg["training"]["weight_decay"]),
     )
-    scaler = torch.cuda.amp.GradScaler(enabled=(device == "cuda" and bool(cfg["training"]["amp"])))
+    scaler = torch.amp.GradScaler("cuda", enabled=(device == "cuda" and bool(cfg["training"]["amp"])))
 
     replay = ReplayBuffer(capacity=int(cfg["memory"]["replay_capacity"]))
     lemma_store = LemmaStore()
@@ -433,6 +451,7 @@ def main() -> None:
 
         online_pairs: List[Dict[str, Any]] = []
         if step >= int(cfg["verifier"].get("online_mining_start_step", 1)):
+            online_pair_count = phase_online_mining_count(cfg, phase.name)
             online_pairs = mine_online_verifier_pairs(
                 prover=prover,
                 verifier=verifier,
@@ -441,13 +460,13 @@ def main() -> None:
                 phase=phase,
                 replay=replay,
                 device=device,
-                count=int(cfg["verifier"].get("online_pairs_per_step", 0)),
-                beam_width=int(cfg["verifier"].get("online_beam_width", cfg["search"]["beam_width"])),
-                max_depth=int(cfg["verifier"].get("online_max_depth", cfg["search"]["max_depth"])),
-                proposal_count=int(cfg["verifier"].get("online_proposal_count", cfg["search"]["proposal_count"])),
+                count=online_pair_count,
+                beam_width=int(phase_search_value(cfg, phase.name, "online_beam_width_by_phase", cfg["verifier"].get("online_beam_width", cfg["search"]["beam_width"]))),
+                max_depth=int(phase_search_value(cfg, phase.name, "online_max_depth_by_phase", cfg["verifier"].get("online_max_depth", cfg["search"]["max_depth"]))),
+                proposal_count=int(phase_search_value(cfg, phase.name, "online_proposal_count_by_phase", cfg["verifier"].get("online_proposal_count", cfg["search"]["proposal_count"]))),
                 max_new_tokens=int(cfg["training"].get("max_new_tokens", 64)),
-                temperature=float(cfg["verifier"].get("online_temperature", cfg["search"]["temperature"])),
-                top_k=int(cfg["verifier"].get("online_top_k", cfg["search"]["top_k"])),
+                temperature=float(phase_search_value(cfg, phase.name, "online_temperature_by_phase", cfg["verifier"].get("online_temperature", cfg["search"]["temperature"]))),
+                top_k=int(phase_search_value(cfg, phase.name, "online_top_k_by_phase", cfg["verifier"].get("online_top_k", cfg["search"]["top_k"]))),
             )
             for pair in online_pairs:
                 pos_texts.append(str(pair["pos_text"]))

@@ -25,6 +25,17 @@ def load_yaml(path: str) -> Dict[str, Any]:
         return yaml.safe_load(f)
 
 
+def verifier_init_kwargs(cfg: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "hidden_size": int(cfg["verifier"]["hidden_size"]),
+        "dropout": float(cfg["verifier"]["dropout"]),
+        "n_heads": int(cfg["verifier"].get("n_heads", 4)),
+        "n_layers": int(cfg["verifier"].get("n_layers", 2)),
+        "max_seq_len": int(cfg["verifier"].get("max_seq_len", cfg["model"]["seq_len"])),
+        "ff_mult": int(cfg["verifier"].get("ff_mult", 4)),
+    }
+
+
 def make_state(task: Any) -> ProofState:
     return ProofState(
         task_id=task.task_id,
@@ -63,8 +74,7 @@ def main() -> None:
     ).to(device)
     verifier = StateVerifier(
         vocab_size=tokenizer.vocab_size,
-        hidden_size=int(cfg["verifier"]["hidden_size"]),
-        dropout=float(cfg["verifier"]["dropout"]),
+        **verifier_init_kwargs(cfg),
     ).to(device)
 
     registry = ToolRegistry()

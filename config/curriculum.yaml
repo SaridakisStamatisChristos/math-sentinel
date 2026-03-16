@@ -1,13 +1,13 @@
 phases:
   - name: basics
-    until_step: 400
+    until_step: 120
     domains: [arithmetic, fractions, divmod, gcd_lcm]
   - name: number_theory
-    until_step: 900
-    domains: [arithmetic, fractions, gcd_lcm, modular, primality, factorization]
+    until_step: 320
+    domains: [arithmetic, fractions, divmod, gcd_lcm, modular, primality, factorization]
   - name: algebra
-    until_step: 1500
-    domains: [arithmetic, fractions, modular, linear_equation, polynomial_simplify]
+    until_step: 700
+    domains: [fractions, modular, linear_equation, polynomial_simplify, factorization]
   - name: calculus
     until_step: 999999999
-    domains: [arithmetic, fractions, modular, linear_equation, derivative, integral, parity_proof]
+    domains: [modular, linear_equation, polynomial_simplify, derivative, integral, parity_proof]

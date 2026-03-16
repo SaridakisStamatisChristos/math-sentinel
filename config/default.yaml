@@ -24,12 +24,42 @@ verifier:
   loss_weight: 0.55
   mined_pairs_per_step: 4
   online_pairs_per_step: 2
+  online_pairs_by_phase:
+    basics: 2
+    number_theory: 3
+    algebra: 4
+    calculus: 4
   online_mining_start_step: 1
   online_beam_width: 6
+  online_beam_width_by_phase:
+    basics: 6
+    number_theory: 7
+    algebra: 8
+    calculus: 8
   online_max_depth: 5
+  online_max_depth_by_phase:
+    basics: 5
+    number_theory: 6
+    algebra: 7
+    calculus: 7
   online_proposal_count: 6
+  online_proposal_count_by_phase:
+    basics: 6
+    number_theory: 7
+    algebra: 8
+    calculus: 8
   online_temperature: 1.0
+  online_temperature_by_phase:
+    basics: 1.0
+    number_theory: 1.05
+    algebra: 1.1
+    calculus: 1.1
   online_top_k: 32
+  online_top_k_by_phase:
+    basics: 32
+    number_theory: 36
+    algebra: 40
+    calculus: 40
 
 training:
   steps: 1000
