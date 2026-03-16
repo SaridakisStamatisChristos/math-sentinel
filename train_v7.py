@@ -83,12 +83,15 @@ def build_verifier_examples(task: GeneratedTask) -> tuple[str, torch.Tensor, str
     pos.status = "solved"
     pos.derived_facts.append(task.answer)
     pos.action_history.append({"type": "ANSWER", "content": task.answer})
+    pos.tool_history.append({"tool": "oracle", "result": {"ok": True, "answer": task.answer}})
 
     neg = make_state(task)
     neg.final_answer = _wrong_answer_for_task(task)
-    neg.derived_facts.append("stalled_branch")
+    neg.status = "solved"
+    neg.derived_facts.append(task.answer)
+    neg.derived_facts.append(f"candidate={neg.final_answer}")
     neg.action_history.append({"type": "ANSWER", "content": neg.final_answer})
-    neg.tool_history.append({"tool": "diagnostic", "result": {"ok": False, "reason": "synthetic negative"}})
+    neg.tool_history.append({"tool": "diagnostic", "result": {"ok": True, "answer": neg.final_answer}})
 
     # Domain-specific reward signals
     domain_rewards = {
@@ -108,27 +111,25 @@ def build_verifier_examples(task: GeneratedTask) -> tuple[str, torch.Tensor, str
     }
 
     domain_neg_rewards = {
-        "arithmetic": [0.08, 0.12, 0.02, 0.92, 0.08],
-        "fractions": [0.08, 0.12, 0.02, 0.92, 0.08],
-        "divmod": [0.08, 0.12, 0.02, 0.92, 0.08],
-        "gcd_lcm": [0.08, 0.12, 0.02, 0.92, 0.08],
-        "modular": [0.08, 0.12, 0.02, 0.92, 0.08],
-        "primality": [0.08, 0.12, 0.02, 0.92, 0.08],
-        "factorization": [0.08, 0.12, 0.02, 0.92, 0.08],
-        "linear_equation": [0.12, 0.18, 0.02, 0.88, 0.12],
-        "polynomial_simplify": [0.12, 0.18, 0.02, 0.88, 0.12],
-        "derivative": [0.12, 0.18, 0.02, 0.88, 0.12],
-        "integral": [0.12, 0.18, 0.02, 0.88, 0.12],
-        "parity_proof": [0.15, 0.2, 0.02, 0.86, 0.15],
-        "logic": [0.15, 0.2, 0.02, 0.86, 0.15],
+        "arithmetic": [0.35, 0.3, 0.05, 0.85, 0.2],
+        "fractions": [0.35, 0.3, 0.05, 0.85, 0.2],
+        "divmod": [0.35, 0.3, 0.05, 0.85, 0.2],
+        "gcd_lcm": [0.35, 0.3, 0.05, 0.85, 0.2],
+        "modular": [0.35, 0.3, 0.05, 0.85, 0.2],
+        "primality": [0.35, 0.3, 0.05, 0.85, 0.2],
+        "factorization": [0.35, 0.3, 0.05, 0.85, 0.2],
+        "linear_equation": [0.42, 0.38, 0.05, 0.82, 0.22],
+        "polynomial_simplify": [0.42, 0.38, 0.05, 0.82, 0.22],
+        "derivative": [0.42, 0.38, 0.05, 0.82, 0.22],
+        "integral": [0.42, 0.38, 0.05, 0.82, 0.22],
+        "parity_proof": [0.45, 0.4, 0.05, 0.8, 0.25],
+        "logic": [0.45, 0.4, 0.05, 0.8, 0.25],
     }
 
     pos_t = torch.tensor(domain_rewards.get(task.domain, [1.0, 0.9, 1.0, 0.1, 0.8]), dtype=torch.float32)
 
     # Domain-specific tactics for negative examples
     if task.domain in domain_neg_rewards:
-        neg.status = "open"
-        neg.derived_facts.append(f"candidate={neg.final_answer}")
         neg_t = torch.tensor(domain_neg_rewards[task.domain], dtype=torch.float32)
     else:
         neg.status = "open"
@@ -382,6 +383,8 @@ def main() -> None:
                 neg_target_tensor,
                 margin=float(cfg["verifier"].get("margin", 0.2)),
                 rank_weight=float(cfg["verifier"].get("rank_weight", 0.35)),
+                focal_gamma=float(cfg["verifier"].get("focal_gamma", 2.0)),
+                focal_alpha=float(cfg["verifier"].get("focal_alpha", 0.75)),
             )
 
             total_loss = lm_loss + float(cfg["verifier"].get("loss_weight", 0.4)) * v_loss
