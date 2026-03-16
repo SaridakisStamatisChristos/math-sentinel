@@ -37,7 +37,7 @@ from proof.state import ProofState
 from search.beam import beam_search
 from sentinel.checkpointing import load_checkpoint, save_checkpoint
 from sentinel.logging_utils import compact_metrics, log_jsonl, now_ts
-from sentinel.losses import masked_ce, verifier_bce_loss
+from sentinel.losses import masked_ce, verifier_pairwise_loss
 from sentinel.model import TinyTransformerLM
 from sentinel.tokenizer import build_default_tokenizer
 from sentinel.verifier import StateVerifier
@@ -78,45 +78,49 @@ def build_training_example(task: GeneratedTask) -> str:
 
 
 def build_verifier_examples(task: GeneratedTask) -> tuple[str, torch.Tensor, str, torch.Tensor]:
-
     pos = make_state(task)
     pos.final_answer = task.answer
     pos.status = "solved"
     pos.derived_facts.append(task.answer)
+    pos.action_history.append({"type": "ANSWER", "content": task.answer})
 
     neg = make_state(task)
+    neg.final_answer = _wrong_answer_for_task(task)
+    neg.derived_facts.append("stalled_branch")
+    neg.action_history.append({"type": "ANSWER", "content": neg.final_answer})
+    neg.tool_history.append({"tool": "diagnostic", "result": {"ok": False, "reason": "synthetic negative"}})
 
     # Domain-specific reward signals
     domain_rewards = {
-        "arithmetic": [1.0, 0.9, 1.0, 0.1, 0.8],
-        "fractions": [1.0, 0.95, 1.0, 0.2, 0.9],
-        "divmod": [1.0, 0.9, 1.0, 0.2, 0.8],
-        "gcd_lcm": [1.0, 0.95, 1.0, 0.3, 0.9],
-        "modular": [1.0, 0.9, 1.0, 0.2, 0.8],
-        "primality": [1.0, 0.95, 1.0, 0.4, 0.9],
-        "factorization": [1.0, 0.95, 1.0, 0.4, 0.9],
-        "linear_equation": [1.0, 0.95, 1.0, 0.05, 0.9],
-        "polynomial_simplify": [1.0, 0.9, 1.0, 0.3, 0.8],
-        "derivative": [1.0, 0.95, 1.0, 0.3, 0.9],
-        "integral": [1.0, 0.95, 1.0, 0.3, 0.9],
-        "parity_proof": [1.0, 0.9, 1.0, 0.5, 0.8],
-        "logic": [1.0, 0.9, 1.0, 0.5, 0.8],
+        "arithmetic": [0.98, 0.92, 0.98, 0.05, 0.9],
+        "fractions": [0.98, 0.95, 0.98, 0.08, 0.92],
+        "divmod": [0.98, 0.94, 0.98, 0.08, 0.9],
+        "gcd_lcm": [0.98, 0.95, 0.98, 0.08, 0.92],
+        "modular": [0.98, 0.92, 0.98, 0.08, 0.9],
+        "primality": [0.98, 0.95, 0.98, 0.12, 0.92],
+        "factorization": [0.98, 0.95, 0.98, 0.12, 0.92],
+        "linear_equation": [0.98, 0.96, 0.98, 0.04, 0.94],
+        "polynomial_simplify": [0.98, 0.94, 0.98, 0.12, 0.9],
+        "derivative": [0.98, 0.95, 0.98, 0.12, 0.92],
+        "integral": [0.98, 0.95, 0.98, 0.12, 0.92],
+        "parity_proof": [0.98, 0.9, 0.98, 0.2, 0.88],
+        "logic": [0.98, 0.9, 0.98, 0.2, 0.88],
     }
 
     domain_neg_rewards = {
-        "arithmetic": [0.2, 0.2, 0.0, 0.8, 0.2],
-        "fractions": [0.2, 0.2, 0.0, 0.8, 0.2],
-        "divmod": [0.2, 0.2, 0.0, 0.8, 0.2],
-        "gcd_lcm": [0.2, 0.2, 0.0, 0.8, 0.2],
-        "modular": [0.2, 0.2, 0.0, 0.8, 0.2],
-        "primality": [0.2, 0.2, 0.0, 0.8, 0.2],
-        "factorization": [0.2, 0.2, 0.0, 0.8, 0.2],
-        "linear_equation": [0.85, 0.7, 0.0, 0.7, 0.35],
-        "polynomial_simplify": [0.85, 0.7, 0.0, 0.7, 0.35],
-        "derivative": [0.85, 0.7, 0.0, 0.7, 0.35],
-        "integral": [0.85, 0.7, 0.0, 0.7, 0.35],
-        "parity_proof": [0.85, 0.7, 0.0, 0.7, 0.35],
-        "logic": [0.85, 0.7, 0.0, 0.7, 0.35],
+        "arithmetic": [0.08, 0.12, 0.02, 0.92, 0.08],
+        "fractions": [0.08, 0.12, 0.02, 0.92, 0.08],
+        "divmod": [0.08, 0.12, 0.02, 0.92, 0.08],
+        "gcd_lcm": [0.08, 0.12, 0.02, 0.92, 0.08],
+        "modular": [0.08, 0.12, 0.02, 0.92, 0.08],
+        "primality": [0.08, 0.12, 0.02, 0.92, 0.08],
+        "factorization": [0.08, 0.12, 0.02, 0.92, 0.08],
+        "linear_equation": [0.12, 0.18, 0.02, 0.88, 0.12],
+        "polynomial_simplify": [0.12, 0.18, 0.02, 0.88, 0.12],
+        "derivative": [0.12, 0.18, 0.02, 0.88, 0.12],
+        "integral": [0.12, 0.18, 0.02, 0.88, 0.12],
+        "parity_proof": [0.15, 0.2, 0.02, 0.86, 0.15],
+        "logic": [0.15, 0.2, 0.02, 0.86, 0.15],
     }
 
     pos_t = torch.tensor(domain_rewards.get(task.domain, [1.0, 0.9, 1.0, 0.1, 0.8]), dtype=torch.float32)
@@ -124,15 +128,47 @@ def build_verifier_examples(task: GeneratedTask) -> tuple[str, torch.Tensor, str
     # Domain-specific tactics for negative examples
     if task.domain in domain_neg_rewards:
         neg.status = "open"
-        neg.derived_facts.append(task.answer)
+        neg.derived_facts.append(f"candidate={neg.final_answer}")
         neg_t = torch.tensor(domain_neg_rewards[task.domain], dtype=torch.float32)
     else:
-        neg.final_answer = "wrong"
         neg.status = "open"
         neg.derived_facts.append("bad_step")
-        neg_t = torch.tensor([0.1, 0.1, 0.0, 0.85, 0.1], dtype=torch.float32)
+        neg_t = torch.tensor([0.1, 0.1, 0.02, 0.9, 0.1], dtype=torch.float32)
 
     return pos.serialize(), pos_t, neg.serialize(), neg_t
+
+
+def _wrong_answer_for_task(task: GeneratedTask) -> str:
+    answer = task.answer.strip()
+    if task.domain == "divmod":
+        nums = [int(x) for x in answer.replace(",", "").replace("=", " ").split() if x.lstrip("-").isdigit()]
+        if len(nums) >= 2:
+            return f"q={nums[0] + 1}, r={nums[1]}"
+    if task.domain == "gcd_lcm":
+        nums = [int(x) for x in answer.replace(",", "").replace("=", " ").split() if x.lstrip("-").isdigit()]
+        if len(nums) >= 2:
+            return f"gcd={max(0, nums[0] - 1)}, lcm={nums[1] + 1}"
+    if task.domain == "linear_equation" and answer.startswith("x="):
+        try:
+            value = float(answer.split("=", 1)[1])
+            bumped = int(value + 1) if value.is_integer() else value + 1.0
+            return f"x={bumped}"
+        except Exception:
+            return "x=0"
+    if task.domain in {"arithmetic", "modular"}:
+        try:
+            return str(int(answer) + 1)
+        except Exception:
+            return "0"
+    if task.domain == "primality":
+        return "composite" if answer == "prime" else "prime"
+    if task.domain == "fractions" and "/" in answer:
+        num, den = answer.split("/", 1)
+        try:
+            return f"{int(num) + 1}/{den}"
+        except Exception:
+            return "1/1"
+    return "wrong"
 
 
 def batch_encode(texts: List[str], tokenizer: Any, seq_len: int, device: str) -> torch.Tensor:
@@ -151,6 +187,11 @@ def load_persistent_memory(
     lemma_store.load(cfg["memory"]["lemma_store_path"])
     hard_cases.load(cfg["memory"]["hard_cases_path"])
     tactic_stats.load(cfg["memory"]["tactic_stats_path"])
+
+
+def set_optimizer_lr(optimizer: torch.optim.Optimizer, lr: float) -> None:
+    for group in optimizer.param_groups:
+        group["lr"] = lr
 
 
 @torch.no_grad()
@@ -256,6 +297,10 @@ def main() -> None:
         vocab_size=tokenizer.vocab_size,
         hidden_size=int(cfg["verifier"]["hidden_size"]),
         dropout=float(cfg["verifier"]["dropout"]),
+        n_heads=int(cfg["verifier"].get("n_heads", 4)),
+        n_layers=int(cfg["verifier"].get("n_layers", 2)),
+        max_seq_len=int(cfg["verifier"].get("max_seq_len", cfg["model"]["seq_len"])),
+        ff_mult=int(cfg["verifier"].get("ff_mult", 4)),
     ).to(device)
 
     if cfg.get("compile") and hasattr(torch, "compile"):
@@ -270,7 +315,11 @@ def main() -> None:
     executor = ProofExecutor(registry)
 
     prover_optim = torch.optim.AdamW(prover.parameters(), lr=float(cfg["training"]["lr"]), weight_decay=float(cfg["training"]["weight_decay"]))
-    verifier_optim = torch.optim.AdamW(verifier.parameters(), lr=float(cfg["training"]["lr"]), weight_decay=float(cfg["training"]["weight_decay"]))
+    verifier_optim = torch.optim.AdamW(
+        verifier.parameters(),
+        lr=float(cfg["verifier"].get("lr", cfg["training"]["lr"])),
+        weight_decay=float(cfg["training"]["weight_decay"]),
+    )
     scaler = torch.cuda.amp.GradScaler(enabled=(device == "cuda" and bool(cfg["training"]["amp"])))
 
     replay = ReplayBuffer(capacity=int(cfg["memory"]["replay_capacity"]))
@@ -283,6 +332,8 @@ def main() -> None:
     if args.resume:
         payload = load_checkpoint(args.resume, prover, verifier, prover_optim, verifier_optim, scaler=scaler, map_location=device)
         start_step = int(payload.get("step", 0)) + 1
+        set_optimizer_lr(prover_optim, float(cfg["training"]["lr"]))
+        set_optimizer_lr(verifier_optim, float(cfg["verifier"].get("lr", cfg["training"]["lr"])))
 
     log_path = str(Path(cfg["paths"]["logs_dir"]) / "train_v7.jsonl")
     print(f"[{now_ts()}] device={device} start_step={start_step} steps={cfg['training']['steps']}")
@@ -318,12 +369,22 @@ def main() -> None:
             logits = training_prover(x)
             lm_loss = masked_ce(logits, y, tokenizer.pad_id)
 
-            v_inputs = batch_encode(pos_texts + neg_texts, tokenizer, int(cfg["model"]["seq_len"]), device)
-            v_targets = torch.stack(pos_targets + neg_targets, dim=0).to(device)
-            v_logits = verifier(v_inputs)
-            v_loss = verifier_bce_loss(v_logits, v_targets)
+            pos_inputs = batch_encode(pos_texts, tokenizer, int(cfg["model"]["seq_len"]), device)
+            neg_inputs = batch_encode(neg_texts, tokenizer, int(cfg["model"]["seq_len"]), device)
+            pos_target_tensor = torch.stack(pos_targets, dim=0).to(device)
+            neg_target_tensor = torch.stack(neg_targets, dim=0).to(device)
+            pos_logits = verifier(pos_inputs)
+            neg_logits = verifier(neg_inputs)
+            v_loss, v_bce_loss, v_rank_loss = verifier_pairwise_loss(
+                pos_logits,
+                neg_logits,
+                pos_target_tensor,
+                neg_target_tensor,
+                margin=float(cfg["verifier"].get("margin", 0.2)),
+                rank_weight=float(cfg["verifier"].get("rank_weight", 0.35)),
+            )
 
-            total_loss = lm_loss + 0.4 * v_loss
+            total_loss = lm_loss + float(cfg["verifier"].get("loss_weight", 0.4)) * v_loss
 
         scaler.scale(total_loss).backward()
         scaler.unscale_(prover_optim)
@@ -338,6 +399,8 @@ def main() -> None:
             "phase": phase.name,
             "lm_loss": float(lm_loss.item()),
             "verifier_loss": float(v_loss.item()),
+            "verifier_bce_loss": float(v_bce_loss.item()),
+            "verifier_rank_loss": float(v_rank_loss.item()),
             "total_loss": float(total_loss.item()),
         }
 

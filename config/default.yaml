@@ -12,6 +12,14 @@ model:
 verifier:
   hidden_size: 96
   dropout: 0.1
+  n_heads: 4
+  n_layers: 2
+  max_seq_len: 192
+  ff_mult: 4
+  lr: 0.0006
+  margin: 0.2
+  rank_weight: 0.35
+  loss_weight: 0.4
 
 training:
   steps: 1000
