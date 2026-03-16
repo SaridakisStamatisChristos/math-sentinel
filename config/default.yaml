@@ -28,9 +28,9 @@ training:
   max_new_tokens: 64
 
 search:
-  beam_width: 2
-  max_depth: 3
-  proposal_count: 2
+  beam_width: 8
+  max_depth: 6
+  proposal_count: 8
   temperature: 0.8
   top_k: 20
 

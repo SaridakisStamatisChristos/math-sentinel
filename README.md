@@ -268,4 +268,3 @@ git push -u origin main
 python train_v7.py --steps 2000 --batch-size 16 --micro-batch-size 8 --compile
 ```
 
-If you'd like, I can add CI (GitHub Actions) to run tests and lint on PRs.

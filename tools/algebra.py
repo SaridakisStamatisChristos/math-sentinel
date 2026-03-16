@@ -12,6 +12,9 @@ except Exception:
 
 def solve_linear_step(arg: str, state: Any = None) -> Dict[str, Any]:
     text = arg.strip().replace(" ", "")
+    # Normalize stray "+-" or "-+" sequences that come from prompts like "2x + -4 = 0"
+    # so the simple regex fallback can parse them.
+    text = text.replace("+-", "-").replace("-+", "-")
     if "=" not in text:
         return {"ok": False, "result": "missing ="}
     left, right = text.split("=", 1)
