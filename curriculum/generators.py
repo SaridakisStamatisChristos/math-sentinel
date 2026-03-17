@@ -1,7 +1,6 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import random
 from typing import Any, Dict, List, Tuple
 
@@ -9,16 +8,10 @@ try:
     import sympy as sp
 except Exception:
     sp = None
+from engine.task import ReasoningTask
 
 
-@dataclass
-class GeneratedTask:
-    task_id: str
-    domain: str
-    prompt: str
-    answer: str
-    goal: str
-    meta: Dict[str, Any]
+GeneratedTask = ReasoningTask
 
 
 def _rid(prefix: str) -> str:

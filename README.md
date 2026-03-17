@@ -17,6 +17,15 @@ V7 combines:
 
 This repo is meant to be a real runnable starting point, not a stub architecture dump.
 
+## Backends
+
+The repo now has two wired backends:
+
+- `math`: the original symbolic math backend
+- `string_ops`: a non-math backend for deterministic text and sequence operations
+
+The shared engine lives in `engine/`, while domain adapters live in `domains/`.
+
 ## What V7 can do now
 
 It can train on and search over synthetic tasks in these families:
@@ -33,6 +42,14 @@ It can train on and search over synthetic tasks in these families:
 - derivatives
 - antiderivatives
 - short proof-template parity tasks
+
+The `string_ops` backend currently supports:
+
+- reverse text
+- uppercase conversion
+- vowel counting
+- alphabetical word sorting
+- duplicate removal with order preservation
 
 It can also execute typed proof actions such as:
 
@@ -116,6 +133,12 @@ More serious CUDA run:
 python train_v7.py --steps 2000 --batch-size 16 --micro-batch-size 8 --compile
 ```
 
+Train the non-math backend:
+
+```bash
+python train_v7.py --backend string_ops --steps 200
+```
+
 You can also scale the model in `config/default.yaml` once CUDA is confirmed working.
 
 Resume:
@@ -130,6 +153,12 @@ python train_v7.py --resume checkpoints/last.pt
 python eval_v7.py --checkpoint checkpoints/last.pt --count 64
 ```
 
+Evaluate the non-math backend:
+
+```bash
+python eval_v7.py --backend string_ops --count 64
+```
+
 ## Sampling / solving
 
 Sample a generated task:
@@ -142,6 +171,12 @@ Manual problem:
 
 ```bash
 python sample_v7.py --checkpoint checkpoints/last.pt --domain linear_equation --problem "Solve: 2x + 3 = 11"
+```
+
+Non-math sample:
+
+```bash
+python sample_v7.py --backend string_ops --domain sort_words --problem "Sort words alphabetically: kiwi apple mango"
 ```
 
 ## Plugin usage
@@ -164,6 +199,11 @@ The repo currently exposes:
 - an experimental `mcts.py` placeholder that currently reuses beam search
 
 Runtime search parameters are loaded from `config/default.yaml` and then overridden by `config/search.yaml` when that file is present.
+
+Curriculum phases are backend-specific:
+
+- `math` uses `config/curriculum.yaml`
+- `string_ops` uses `config/string_ops_curriculum.yaml`
 
 ## Memory modes
 

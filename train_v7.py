@@ -12,7 +12,7 @@ import torch
 
 from curriculum.generators import GeneratedTask
 from curriculum.phases import PhaseScheduler
-from domains.math.backend import MathReasoningDomain
+from domains import create_reasoning_domain, default_curriculum_config
 from memory.hard_cases import HardCaseStore
 from memory.lemma_store import LemmaStore
 from memory.replay import ReplayBuffer
@@ -29,7 +29,7 @@ from sentinel.tokenizer import build_default_tokenizer
 from sentinel.verifier import StateVerifier
 
 
-DEFAULT_DOMAIN = MathReasoningDomain()
+DEFAULT_DOMAIN = create_reasoning_domain("math")
 
 
 def set_seed(seed: int) -> None:
@@ -68,7 +68,7 @@ def pick_best_mined_pair(
     task: GeneratedTask,
     explored: List[Any],
     final_state: ProofState,
-    reasoning_domain: MathReasoningDomain = DEFAULT_DOMAIN,
+    reasoning_domain: Any = DEFAULT_DOMAIN,
 ) -> Optional[Dict[str, Any]]:
     positive_nodes = []
     negative_nodes = []
@@ -146,7 +146,7 @@ def mine_online_verifier_pairs(
     temperature: float,
     top_k: int,
     score_config: Optional[Dict[str, Any]] = None,
-    reasoning_domain: MathReasoningDomain = DEFAULT_DOMAIN,
+    reasoning_domain: Any = DEFAULT_DOMAIN,
 ) -> List[Dict[str, Any]]:
     mined: List[Dict[str, Any]] = []
     if count <= 0:
@@ -251,7 +251,7 @@ def run_eval(
     temperature: float = 0.8,
     top_k: int = 24,
     score_config: Optional[Dict[str, Any]] = None,
-    reasoning_domain: MathReasoningDomain = DEFAULT_DOMAIN,
+    reasoning_domain: Any = DEFAULT_DOMAIN,
 ) -> Dict[str, float]:
     phase = scheduler.phase_for_step(step)
     solved = 0
@@ -291,8 +291,9 @@ def run_eval(
 
 def main() -> None:
     ap = argparse.ArgumentParser(description="Train Math Sentinel V7")
+    ap.add_argument("--backend", default="math")
     ap.add_argument("--config", default="config/default.yaml")
-    ap.add_argument("--curriculum-config", default="config/curriculum.yaml")
+    ap.add_argument("--curriculum-config", default="")
     ap.add_argument("--steps", type=int, default=None)
     ap.add_argument("--batch-size", type=int, default=None)
     ap.add_argument("--micro-batch-size", type=int, default=None)
@@ -307,7 +308,8 @@ def main() -> None:
     args = ap.parse_args()
 
     cfg = load_runtime_config(args.config)
-    curriculum_cfg = load_yaml(args.curriculum_config)
+    curriculum_path = args.curriculum_config or default_curriculum_config(args.backend)
+    curriculum_cfg = load_yaml(curriculum_path)
     scheduler = PhaseScheduler.from_dict(curriculum_cfg)
 
     if args.steps is not None:
@@ -355,7 +357,7 @@ def main() -> None:
         except Exception:
             pass
 
-    reasoning_domain = MathReasoningDomain(checker_plugin=args.checker_plugin)
+    reasoning_domain = create_reasoning_domain(args.backend, checker_plugin=args.checker_plugin)
     executor = reasoning_domain.create_executor()
 
     prover_optim = torch.optim.AdamW(prover.parameters(), lr=float(cfg["training"]["lr"]), weight_decay=float(cfg["training"]["weight_decay"]))

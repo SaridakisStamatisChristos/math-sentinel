@@ -7,7 +7,7 @@ from typing import Any, Dict
 import torch
 
 from curriculum.phases import PhaseScheduler
-from domains.math.backend import MathReasoningDomain
+from domains import create_reasoning_domain, default_curriculum_config
 from search.beam import beam_search
 from sentinel.checkpointing import load_checkpoint
 from sentinel.config import load_runtime_config, load_yaml
@@ -29,8 +29,9 @@ def verifier_init_kwargs(cfg: Dict[str, Any]) -> Dict[str, Any]:
 
 def main() -> None:
     ap = argparse.ArgumentParser(description="Evaluate Math Sentinel V7")
+    ap.add_argument("--backend", default="math")
     ap.add_argument("--config", default="config/default.yaml")
-    ap.add_argument("--curriculum-config", default="config/curriculum.yaml")
+    ap.add_argument("--curriculum-config", default="")
     ap.add_argument("--checkpoint", default="")
     ap.add_argument("--count", type=int, default=48)
     ap.add_argument("--step", type=int, default=2000)
@@ -38,10 +39,11 @@ def main() -> None:
     args = ap.parse_args()
 
     cfg = load_runtime_config(args.config)
-    curriculum_cfg = load_yaml(args.curriculum_config)
+    curriculum_path = args.curriculum_config or default_curriculum_config(args.backend)
+    curriculum_cfg = load_yaml(curriculum_path)
     scheduler = PhaseScheduler.from_dict(curriculum_cfg)
     phase = scheduler.phase_for_step(args.step)
-    reasoning_domain = MathReasoningDomain(checker_plugin=args.checker_plugin)
+    reasoning_domain = create_reasoning_domain(args.backend, checker_plugin=args.checker_plugin)
     device = "cuda" if torch.cuda.is_available() and cfg["device"] in {"auto", "cuda"} else "cpu"
 
     tokenizer = build_default_tokenizer()

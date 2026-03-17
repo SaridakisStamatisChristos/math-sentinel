@@ -33,6 +33,7 @@ from tools.registry import ToolRegistry
 
 class MathReasoningDomain:
     name = "math"
+    default_curriculum_config = "config/curriculum.yaml"
 
     def __init__(self, checker_plugin: str = "") -> None:
         self.checker_plugin = checker_plugin

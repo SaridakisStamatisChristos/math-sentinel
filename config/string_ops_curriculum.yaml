@@ -1,0 +1,10 @@
+phases:
+  - name: basics
+    until_step: 120
+    domains: [reverse_text, uppercase_text, vowel_count]
+  - name: transforms
+    until_step: 320
+    domains: [reverse_text, uppercase_text, vowel_count, sort_words]
+  - name: sequence_ops
+    until_step: 999999999
+    domains: [reverse_text, uppercase_text, vowel_count, sort_words, dedupe_words]
