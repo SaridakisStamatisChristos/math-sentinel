@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import math
 import random
 from pathlib import Path
 from typing import Any, Dict, List, Optional, cast
@@ -204,10 +205,12 @@ def mine_online_verifier_pairs(
     max_new_tokens: int,
     temperature: float,
     top_k: int,
+    score_config: Optional[Dict[str, Any]] = None,
 ) -> List[Dict[str, Any]]:
     mined: List[Dict[str, Any]] = []
     if count <= 0:
         return mined
+    score_config = score_config or {}
 
     prover_was_training = prover.training
     verifier_was_training = verifier.training
@@ -230,7 +233,7 @@ def mine_online_verifier_pairs(
                 max_new_tokens=max_new_tokens,
                 temperature=temperature,
                 top_k=top_k,
-                score_config=cfg["search"],
+                score_config=score_config,
             )
             pair = pick_best_mined_pair(task, explored, final_state)
             if pair is not None:
@@ -437,6 +440,9 @@ def main() -> None:
 
     for step in range(start_step, int(cfg["training"]["steps"]) + 1):
         phase = scheduler.phase_for_step(step)
+        batch_size = int(cfg["training"]["batch_size"])
+        micro_batch_size = max(1, int(cfg["training"].get("micro_batch_size", batch_size)))
+        accum_steps = max(1, math.ceil(batch_size / micro_batch_size))
 
         examples: List[str] = []
         pos_texts: List[str] = []
@@ -444,7 +450,7 @@ def main() -> None:
         pos_targets: List[torch.Tensor] = []
         neg_targets: List[torch.Tensor] = []
 
-        for _ in range(int(cfg["training"]["batch_size"])):
+        for _ in range(batch_size):
             task = sample_task(phase.domains)
             examples.append(build_training_example(task))
             pos_text, pos_t, neg_text, neg_t = build_verifier_examples(task)
@@ -471,6 +477,7 @@ def main() -> None:
                 max_new_tokens=int(cfg["training"].get("max_new_tokens", 64)),
                 temperature=float(phase_search_value(cfg, phase.name, "online_temperature_by_phase", cfg["verifier"].get("online_temperature", cfg["search"]["temperature"]))),
                 top_k=int(phase_search_value(cfg, phase.name, "online_top_k_by_phase", cfg["verifier"].get("online_top_k", cfg["search"]["top_k"]))),
+                score_config=cfg["search"],
             )
             for pair in online_pairs:
                 pos_texts.append(str(pair["pos_text"]))
@@ -485,40 +492,71 @@ def main() -> None:
             pos_targets.append(torch.tensor(pair["pos_target"], dtype=torch.float32))
             neg_targets.append(torch.tensor(pair["neg_target"], dtype=torch.float32))
 
-        batch = batch_encode(examples, tokenizer, int(cfg["model"]["seq_len"]), device)
-        x = batch[:, :-1]
-        y = batch[:, 1:]
-
         training_prover.train()
         verifier.train()
         prover_optim.zero_grad(set_to_none=True)
         verifier_optim.zero_grad(set_to_none=True)
 
-        with torch.amp.autocast(device_type=("cuda" if device == "cuda" else "cpu"), enabled=(device == "cuda" and bool(cfg["training"]["amp"]))):
-            logits = training_prover(x)
-            lm_loss = masked_ce(logits, y, tokenizer.pad_id)
+        verifier_micro_batch_size = max(1, math.ceil(len(pos_texts) / accum_steps))
+        lm_loss_value = 0.0
+        v_loss_value = 0.0
+        v_bce_loss_value = 0.0
+        v_rank_loss_value = 0.0
+        verifier_loss_weight = float(cfg["verifier"].get("loss_weight", 0.4))
+        amp_enabled = device == "cuda" and bool(cfg["training"]["amp"])
 
-            pos_inputs = batch_encode(pos_texts, tokenizer, int(cfg["model"]["seq_len"]), device)
-            neg_inputs = batch_encode(neg_texts, tokenizer, int(cfg["model"]["seq_len"]), device)
-            pos_target_tensor = torch.stack(pos_targets, dim=0).to(device)
-            neg_target_tensor = torch.stack(neg_targets, dim=0).to(device)
-            pos_logits = verifier(pos_inputs)
-            neg_logits = verifier(neg_inputs)
-            v_loss, v_bce_loss, v_rank_loss = verifier_pairwise_loss(
-                pos_logits,
-                neg_logits,
-                pos_target_tensor,
-                neg_target_tensor,
-                margin=float(cfg["verifier"].get("margin", 0.2)),
-                rank_weight=float(cfg["verifier"].get("rank_weight", 0.35)),
-                focal_gamma=float(cfg["verifier"].get("focal_gamma", 2.0)),
-                focal_alpha=float(cfg["verifier"].get("focal_alpha", 0.75)),
-            )
+        for accum_idx in range(accum_steps):
+            ex_start = accum_idx * micro_batch_size
+            ex_end = min(ex_start + micro_batch_size, len(examples))
+            pair_start = accum_idx * verifier_micro_batch_size
+            pair_end = min(pair_start + verifier_micro_batch_size, len(pos_texts))
+            if ex_start >= ex_end and pair_start >= pair_end:
+                continue
 
-            total_loss = lm_loss + float(cfg["verifier"].get("loss_weight", 0.4)) * v_loss
+            micro_total_loss: Optional[torch.Tensor] = None
+            with torch.amp.autocast(device_type=("cuda" if device == "cuda" else "cpu"), enabled=amp_enabled):
+                if ex_start < ex_end:
+                    micro_examples = examples[ex_start:ex_end]
+                    micro_batch = batch_encode(micro_examples, tokenizer, int(cfg["model"]["seq_len"]), device)
+                    micro_x = micro_batch[:, :-1]
+                    micro_y = micro_batch[:, 1:]
+                    lm_loss = masked_ce(training_prover(micro_x), micro_y, tokenizer.pad_id)
+                    lm_weight = len(micro_examples) / max(1, len(examples))
+                    lm_loss_value += float(lm_loss.item()) * lm_weight
+                    micro_total_loss = lm_loss * lm_weight
 
-        scaler.scale(total_loss).backward()
+                if pair_start < pair_end:
+                    micro_pos_texts = pos_texts[pair_start:pair_end]
+                    micro_neg_texts = neg_texts[pair_start:pair_end]
+                    pos_inputs = batch_encode(micro_pos_texts, tokenizer, int(cfg["model"]["seq_len"]), device)
+                    neg_inputs = batch_encode(micro_neg_texts, tokenizer, int(cfg["model"]["seq_len"]), device)
+                    pos_target_tensor = torch.stack(pos_targets[pair_start:pair_end], dim=0).to(device)
+                    neg_target_tensor = torch.stack(neg_targets[pair_start:pair_end], dim=0).to(device)
+                    pos_logits = verifier(pos_inputs)
+                    neg_logits = verifier(neg_inputs)
+                    v_loss, v_bce_loss, v_rank_loss = verifier_pairwise_loss(
+                        pos_logits,
+                        neg_logits,
+                        pos_target_tensor,
+                        neg_target_tensor,
+                        margin=float(cfg["verifier"].get("margin", 0.2)),
+                        rank_weight=float(cfg["verifier"].get("rank_weight", 0.35)),
+                        focal_gamma=float(cfg["verifier"].get("focal_gamma", 2.0)),
+                        focal_alpha=float(cfg["verifier"].get("focal_alpha", 0.75)),
+                    )
+                    v_weight = len(micro_pos_texts) / max(1, len(pos_texts))
+                    v_loss_value += float(v_loss.item()) * v_weight
+                    v_bce_loss_value += float(v_bce_loss.item()) * v_weight
+                    v_rank_loss_value += float(v_rank_loss.item()) * v_weight
+                    verifier_component = verifier_loss_weight * v_loss * v_weight
+                    micro_total_loss = verifier_component if micro_total_loss is None else (micro_total_loss + verifier_component)
+
+            if micro_total_loss is not None:
+                scaler.scale(micro_total_loss).backward()
+
+        total_loss_value = lm_loss_value + verifier_loss_weight * v_loss_value
         scaler.unscale_(prover_optim)
+        scaler.unscale_(verifier_optim)
         torch.nn.utils.clip_grad_norm_(prover.parameters(), float(cfg["training"]["grad_clip"]))
         torch.nn.utils.clip_grad_norm_(verifier.parameters(), float(cfg["training"]["grad_clip"]))
         scaler.step(prover_optim)
@@ -528,12 +566,12 @@ def main() -> None:
         metrics = {
             "step": step,
             "phase": phase.name,
-            "lm_loss": float(lm_loss.item()),
-            "verifier_loss": float(v_loss.item()),
-            "verifier_bce_loss": float(v_bce_loss.item()),
-            "verifier_rank_loss": float(v_rank_loss.item()),
+            "lm_loss": lm_loss_value,
+            "verifier_loss": v_loss_value,
+            "verifier_bce_loss": v_bce_loss_value,
+            "verifier_rank_loss": v_rank_loss_value,
             "verifier_online_pairs": float(len(online_pairs)),
-            "total_loss": float(total_loss.item()),
+            "total_loss": total_loss_value,
         }
 
         if step % int(cfg["training"]["log_every"]) == 0 or step == 1:

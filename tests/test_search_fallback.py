@@ -5,7 +5,7 @@ from unittest.mock import patch
 
 import torch
 
-from proof.actions import ActionType
+from proof.actions import Action, ActionType
 from proof.executor import ProofExecutor
 from proof.state import ProofState
 from search.beam import beam_search
@@ -30,7 +30,23 @@ class DummyVerifier:
 
 
 class BeamFallbackTests(unittest.TestCase):
-    def test_invalid_generation_uses_answer_repair_for_arithmetic(self) -> None:
+    def test_empty_answer_action_is_rejected(self) -> None:
+        state = ProofState(
+            task_id="arith_empty",
+            domain="arithmetic",
+            problem_text="Compute: 2 + 3",
+            goal="Compute the integer result",
+            expected_answer="5",
+            metadata={"family": "arithmetic"},
+        )
+        child, info = ProofExecutor(ToolRegistry()).apply(state, Action(type=ActionType.ANSWER, content=""))
+
+        self.assertEqual(child.status, "open")
+        self.assertEqual(child.final_answer, "")
+        self.assertEqual(info["valid_step"], 0.0)
+        self.assertEqual(info["note"], "empty answer")
+
+    def test_invalid_generation_uses_tool_repair_for_arithmetic(self) -> None:
         initial_state = ProofState(
             task_id="arith_1",
             domain="arithmetic",
@@ -57,7 +73,36 @@ class BeamFallbackTests(unittest.TestCase):
         self.assertEqual(final_state.final_answer, "5")
         self.assertEqual(len(explored), 2)
         self.assertIsNotNone(explored[1].action)
-        self.assertEqual(explored[1].action.type, ActionType.ANSWER)
+        self.assertEqual(explored[1].action.type, ActionType.APPLY)
+        self.assertEqual(explored[1].action.tool, "add")
+
+    def test_invalid_generation_uses_tool_repair_for_manual_arithmetic_without_expected_answer(self) -> None:
+        initial_state = ProofState(
+            task_id="arith_manual",
+            domain="arithmetic",
+            problem_text="Compute: 2 + 3",
+            goal="Solve the problem",
+            expected_answer="",
+            metadata={"family": "arithmetic"},
+        )
+
+        with patch("search.beam.propose_actions", return_value=["not an action"]):
+            final_state, explored = beam_search(
+                prover=object(),
+                verifier=DummyVerifier(),
+                tokenizer=DummyTokenizer(),
+                executor=ProofExecutor(ToolRegistry()),
+                initial_state=initial_state,
+                device="cpu",
+                beam_width=2,
+                max_depth=1,
+                proposal_count=1,
+            )
+
+        self.assertEqual(final_state.status, "solved")
+        self.assertEqual(final_state.final_answer, "5")
+        self.assertEqual(explored[1].action.type, ActionType.APPLY)
+        self.assertEqual(explored[1].action.tool, "add")
 
     def test_invalid_generation_uses_terminal_tool_repair_for_derivative(self) -> None:
         initial_state = ProofState(

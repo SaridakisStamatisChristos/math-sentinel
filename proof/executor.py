@@ -55,7 +55,13 @@ class ProofExecutor:
                     info["risk"] = 1.0
             elif action.type == ActionType.ANSWER:
                 child.final_answer = action.content.strip()
-                if equivalent(child.domain, child.final_answer, child.expected_answer, child.metadata):
+                if not child.final_answer:
+                    info["goal_progress"] = 0.0
+                    info["proof_completion"] = 0.0
+                    info["valid_step"] = 0.0
+                    info["risk"] = 1.0
+                    info["note"] = "empty answer"
+                elif equivalent(child.domain, child.final_answer, child.expected_answer, child.metadata):
                     child.status = "solved"
                     info["goal_progress"] = 1.0
                     info["proof_completion"] = 1.0

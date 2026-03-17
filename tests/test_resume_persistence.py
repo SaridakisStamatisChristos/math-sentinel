@@ -68,7 +68,7 @@ class ResumePersistenceTests(unittest.TestCase):
         verifier = torch.nn.Linear(2, 1)
         prover_optim = torch.optim.AdamW(prover.parameters(), lr=1e-3)
         verifier_optim = torch.optim.AdamW(verifier.parameters(), lr=1e-3)
-        scaler = torch.cuda.amp.GradScaler(enabled=False)
+        scaler = torch.amp.GradScaler("cuda", enabled=False)
 
         save_checkpoint(
             path,
@@ -86,7 +86,7 @@ class ResumePersistenceTests(unittest.TestCase):
         loaded_verifier = torch.nn.Linear(2, 1)
         loaded_prover_optim = torch.optim.AdamW(loaded_prover.parameters(), lr=1e-3)
         loaded_verifier_optim = torch.optim.AdamW(loaded_verifier.parameters(), lr=1e-3)
-        loaded_scaler = torch.cuda.amp.GradScaler(enabled=False)
+        loaded_scaler = torch.amp.GradScaler("cuda", enabled=False)
 
         payload = load_checkpoint(
             path,

@@ -1,9 +1,15 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+from unittest.mock import patch
+
+import torch
+
 from curriculum.generators import GeneratedTask
+from memory.replay import ReplayBuffer
 from proof.state import ProofState
 from search.nodes import SearchNode
-from train_v7 import build_verifier_targets, pick_best_mined_pair
+from train_v7 import build_verifier_targets, mine_online_verifier_pairs, pick_best_mined_pair
 
 
 def _task() -> GeneratedTask:
@@ -78,3 +84,45 @@ def test_pick_best_mined_pair_falls_back_to_root_state() -> None:
 
     assert pair is not None
     assert "[FINAL_ANSWER] none" in pair["neg_text"]
+
+
+def test_online_verifier_mining_uses_passed_search_config() -> None:
+    task = _task()
+    root = ProofState(task_id=task.task_id, domain=task.domain, problem_text=task.prompt, goal=task.goal, expected_answer=task.answer, metadata=task.meta)
+    solved = ProofState(task_id=task.task_id, domain=task.domain, problem_text=task.prompt, goal=task.goal, expected_answer=task.answer, metadata=task.meta)
+    solved.final_answer = "x=4"
+    solved.status = "solved"
+    solved.derived_facts.append("x=4")
+    explored = [
+        SearchNode(state=root, cumulative_score=0.0, local_scores={}, depth=0),
+        SearchNode(state=solved, cumulative_score=2.0, local_scores={"valid_step": 1.0, "goal_progress": 1.0}, depth=1),
+    ]
+
+    replay = ReplayBuffer(capacity=4)
+    prover = torch.nn.Linear(2, 2)
+    verifier = torch.nn.Linear(2, 2)
+    phase = SimpleNamespace(domains=["linear_equation"])
+
+    with patch("train_v7.sample_task", return_value=task):
+        with patch("train_v7.beam_search", return_value=(solved, explored)) as mock_beam_search:
+            mined = mine_online_verifier_pairs(
+                prover=prover,
+                verifier=verifier,
+                tokenizer=object(),
+                executor=object(),
+                phase=phase,
+                replay=replay,
+                device="cpu",
+                count=1,
+                beam_width=2,
+                max_depth=2,
+                proposal_count=2,
+                max_new_tokens=16,
+                temperature=0.8,
+                top_k=8,
+                score_config={"solved_bonus": 9.0},
+            )
+
+    assert len(mined) == 1
+    assert len(replay.items) == 1
+    assert mock_beam_search.call_args.kwargs["score_config"] == {"solved_bonus": 9.0}
