@@ -19,11 +19,12 @@ This repo is meant to be a real runnable starting point, not a stub architecture
 
 ## Backends
 
-The repo now has three wired backends:
+The repo now has four wired backends:
 
 - `math`: the original symbolic math backend
 - `string_ops`: a non-math backend for deterministic text and sequence operations
 - `code_ops`: a code-oriented backend for deterministic Python snippet analysis
+- `planning_ops`: a planning-oriented backend for dependency, budget, and time-constrained plan construction
 
 The shared engine lives in `engine/`, while domain adapters live in `domains/`.
 
@@ -57,8 +58,17 @@ The `code_ops` backend currently supports:
 - extracting a function name
 - counting function parameters
 - loop detection
+- conditional detection
+- assignment counting
 - first called-function extraction
+- distinct called-function counting
 - literal return-value extraction
+
+The `planning_ops` backend currently supports:
+
+- dependency-respecting project plans
+- budget-constrained shopping plans
+- time-limited day plans with dependency handling
 
 It can also execute typed proof actions such as:
 
@@ -83,9 +93,9 @@ It can also execute typed proof actions such as:
 4. The domain parser extracts typed actions.
 5. The executor applies actions to child states using exact tools.
 6. The verifier scores those child states.
-7. Beam search keeps the strongest branches.
+7. Beam search keeps the strongest branches, prunes duplicate states, and can bias toward historically useful tactics.
 8. Replay, hard-case tracking, and lemma memory retain what mattered.
-9. In this repo, math is the first fully wired backend.
+9. In this repo, math is the first fully wired backend, but the engine now has multiple non-math adapters too.
 
 ## Repo layout
 
@@ -142,11 +152,12 @@ More serious CUDA run:
 python train_v7.py --steps 2000 --batch-size 16 --micro-batch-size 8 --compile
 ```
 
-Train the non-math backend:
+Train the non-math backends:
 
 ```bash
 python train_v7.py --backend string_ops --steps 200
 python train_v7.py --backend code_ops --steps 200
+python train_v7.py --backend planning_ops --steps 200
 ```
 
 You can also scale the model in `config/default.yaml` once CUDA is confirmed working.
@@ -163,11 +174,12 @@ python train_v7.py --resume checkpoints/last.pt
 python eval_v7.py --checkpoint checkpoints/last.pt --count 64
 ```
 
-Evaluate the non-math backend:
+Evaluate the non-math backends:
 
 ```bash
 python eval_v7.py --backend string_ops --count 64
 python eval_v7.py --backend code_ops --count 64
+python eval_v7.py --backend planning_ops --count 64
 ```
 
 ## Sampling / solving
@@ -189,6 +201,7 @@ Non-math sample:
 ```bash
 python sample_v7.py --backend string_ops --domain sort_words --problem "Sort words alphabetically: kiwi apple mango"
 python sample_v7.py --backend code_ops --domain function_name --problem "Read the Python function and return the function name:\ndef helper(x):\n    return x + 1"
+python sample_v7.py --backend planning_ops --domain project_plan --problem "Create a valid project plan.\nTasks:\n- design (duration=1, priority=3, deps=none)\n- build (duration=2, priority=4, deps=design)\n- test (duration=1, priority=2, deps=build)\nReturn the ordered task plan."
 ```
 
 ## Plugin usage
@@ -217,6 +230,7 @@ Curriculum phases are backend-specific:
 - `math` uses `config/curriculum.yaml`
 - `string_ops` uses `config/string_ops_curriculum.yaml`
 - `code_ops` uses `config/code_ops_curriculum.yaml`
+- `planning_ops` uses `config/planning_ops_curriculum.yaml`
 
 ## Benchmarks
 
@@ -248,7 +262,7 @@ It still has important limits:
 - proof states are explicit but still lightweight
 - verifier supervision is synthetic
 - theorem discovery is not the target yet
-- grammar-aware decoding is not implemented yet
+- decoding now uses a structured tokenizer and canonical action format, but it is not yet a fully constrained decoder
 - MCTS is only scaffolded
 
 ## Best next upgrades
@@ -256,7 +270,7 @@ It still has important limits:
 The strongest next steps after this repo are:
 
 - richer proof-state transitions
-- typed argument decoding rather than free-form action content
+- fully constrained typed argument decoding rather than partially structured action content
 - stronger verifier ranking losses
 - proper proof-state beam pruning
 - SymPy-extended algebra/calculus checks

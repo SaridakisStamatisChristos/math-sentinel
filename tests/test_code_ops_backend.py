@@ -32,6 +32,28 @@ class CodeOpsBackendTests(unittest.TestCase):
         self.assertTrue(backend.evaluate_answer(task, "YES"))
         self.assertFalse(backend.evaluate_answer(task, "no"))
 
+    def test_assignment_count_and_distinct_calls_solve_via_fallback_tools(self) -> None:
+        backend = CodeOpsReasoningDomain()
+        executor = backend.create_executor()
+
+        assignment_task = backend.manual_task(
+            "assignment_count",
+            "Count assignment statements in this Python function:\ndef build():\n    x = 1\n    y = 2\n    return x + y",
+        )
+        assign_state = backend.make_state(assignment_task)
+        assign_child, _ = executor.apply(assign_state, backend.fallback_repairs(assign_state)[0])
+        self.assertEqual(assign_child.final_answer, "2")
+        self.assertEqual(assign_child.status, "solved")
+
+        calls_task = backend.manual_task(
+            "called_function_count",
+            "Count distinct called functions in this Python function:\ndef dispatch(x):\n    helper(x)\n    format_item(x)\n    helper(x)\n    return x",
+        )
+        calls_state = backend.make_state(calls_task)
+        calls_child, _ = executor.apply(calls_state, backend.fallback_repairs(calls_state)[0])
+        self.assertEqual(calls_child.final_answer, "2")
+        self.assertEqual(calls_child.status, "solved")
+
 
 if __name__ == "__main__":
     unittest.main()

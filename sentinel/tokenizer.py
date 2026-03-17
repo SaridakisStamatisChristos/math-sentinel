@@ -1,6 +1,6 @@
-
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import Dict, Iterable, List
 
@@ -10,18 +10,78 @@ STATE_MARKERS = [
     "[DOMAIN]", "[PROBLEM]", "[GOAL]", "[ASSUMPTIONS]", "[DERIVED]",
     "[SUBGOALS]", "[LEMMAS]", "[TOOL_HISTORY]", "[ACTION_HISTORY]",
     "[STATUS]", "[FINAL_ANSWER]", "[METADATA]", "[END_STATE]",
+    "[RETRIEVED_LEMMAS]", "[SIMILAR_HARD_CASES]", "[TACTIC_HINTS]",
 ]
 
-ACTION_MARKERS = [
+LEGACY_ACTION_MARKERS = [
     '<action type="', '"></action>', '</action>', ' tool="', ' name="',
     '<result>', '</result>', '<note>', '</note>', '<answer>', '</answer>',
 ]
 
-ASCII_CHARS = [chr(i) for i in range(32, 127)] + ["\n", "\t"]
+CANONICAL_ACTION_TOKENS = [
+    "ACTION ", '"type"', '"content"', '"tool"', '"name"', '"payload"',
+    '{"type":"', '","content":"', '","tool":"', '","name":"', '"}',
+]
+
+ACTION_TYPES = [
+    "THINK", "APPLY", "CHECK", "ANSWER", "REWRITE", "LEMMA", "SUBGOAL",
+    "RESOLVE_SUBGOAL", "ASSUME", "BACKTRACK", "CALL_PLUGIN", "SIMPLIFY",
+]
+
+DOMAIN_TOKENS = [
+    "math", "string_ops", "code_ops", "planning_ops",
+    "arithmetic", "fractions", "divmod", "gcd_lcm", "modular", "primality", "factorization",
+    "linear_equation", "polynomial_simplify", "derivative", "integral", "parity_proof",
+    "reverse_text", "uppercase_text", "vowel_count", "sort_words", "dedupe_words",
+    "function_name", "parameter_count", "has_loop", "first_called_function", "return_literal",
+    "has_conditional", "assignment_count", "called_function_count",
+    "project_plan", "shopping_plan", "day_plan",
+]
+
+CODE_TOKENS = [
+    "def", "return", "for", "while", "if", "else", "in", "range", "print",
+    "True", "False", "None", "yes", "no",
+]
+
+PLANNING_TOKENS = [
+    "shopping_plan", "project_plan", "day_plan",
+    "step_1", "step_2", "step_3", "duration", "budget", "priority",
+    "deps", "time_limit",
+]
+
+WHITESPACE_TOKENS = ["\n\n", "\n", "    ", "  ", "\t"]
+
+ASCII_CHARS = [chr(i) for i in range(32, 127)]
+
+
+def _build_vocab() -> List[str]:
+    vocab = (
+        SPECIAL_TOKENS
+        + STATE_MARKERS
+        + LEGACY_ACTION_MARKERS
+        + CANONICAL_ACTION_TOKENS
+        + ACTION_TYPES
+        + DOMAIN_TOKENS
+        + CODE_TOKENS
+        + PLANNING_TOKENS
+        + WHITESPACE_TOKENS
+        + ASCII_CHARS
+    )
+    deduped: List[str] = []
+    seen = set()
+    for token in vocab:
+        if token not in seen:
+            deduped.append(token)
+            seen.add(token)
+    return deduped
+
+
+WORD_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+NUMBER_RE = re.compile(r"-?\d+")
 
 
 @dataclass
-class CharTokenizer:
+class StructuredTokenizer:
     vocab: List[str]
 
     def __post_init__(self) -> None:
@@ -30,15 +90,58 @@ class CharTokenizer:
         self.pad_id = self.stoi["<pad>"]
         self.bos_id = self.stoi["<bos>"]
         self.eos_id = self.stoi["<eos>"]
+        self.structured_tokens = sorted(
+            [tok for tok in self.vocab if len(tok) > 1 and tok not in SPECIAL_TOKENS],
+            key=len,
+            reverse=True,
+        )
 
     @property
     def vocab_size(self) -> int:
         return len(self.vocab)
 
+    def tokenize(self, text: str) -> List[str]:
+        tokens: List[str] = []
+        i = 0
+        while i < len(text):
+            matched = False
+            for token in self.structured_tokens:
+                if text.startswith(token, i):
+                    tokens.append(token)
+                    i += len(token)
+                    matched = True
+                    break
+            if matched:
+                continue
+
+            word_match = WORD_RE.match(text, i)
+            if word_match:
+                word = word_match.group(0)
+                if word in self.stoi:
+                    tokens.append(word)
+                else:
+                    tokens.extend(list(word))
+                i = word_match.end()
+                continue
+
+            number_match = NUMBER_RE.match(text, i)
+            if number_match:
+                number = number_match.group(0)
+                if number in self.stoi:
+                    tokens.append(number)
+                else:
+                    tokens.extend(list(number))
+                i = number_match.end()
+                continue
+
+            tokens.append(text[i])
+            i += 1
+        return tokens
+
     def encode(self, text: str, seq_len: int) -> List[int]:
         ids = [self.bos_id]
-        for ch in text:
-            ids.append(self.stoi.get(ch, self.stoi.get("?", self.pad_id)))
+        for token in self.tokenize(text):
+            ids.append(self.stoi.get(token, self.stoi.get("?", self.pad_id)))
         ids.append(self.eos_id)
         if len(ids) > seq_len:
             ids = ids[:seq_len]
@@ -58,6 +161,8 @@ class CharTokenizer:
         return "".join(out)
 
 
-def build_default_tokenizer() -> CharTokenizer:
-    vocab = SPECIAL_TOKENS + ASCII_CHARS
-    return CharTokenizer(vocab=vocab)
+CharTokenizer = StructuredTokenizer
+
+
+def build_default_tokenizer() -> StructuredTokenizer:
+    return StructuredTokenizer(vocab=_build_vocab())

@@ -4,6 +4,7 @@ from typing import Any
 
 from domains.code_ops.backend import CodeOpsReasoningDomain
 from domains.math.backend import MathReasoningDomain
+from domains.planning_ops.backend import PlanningOpsReasoningDomain
 from domains.string_ops.backend import StringOpsReasoningDomain
 
 
@@ -12,7 +13,7 @@ def _normalize_name(name: str) -> str:
 
 
 def available_backends() -> list[str]:
-    return ["math", "string_ops", "code_ops"]
+    return ["math", "string_ops", "code_ops", "planning_ops"]
 
 
 def create_reasoning_domain(name: str, checker_plugin: str = "") -> Any:
@@ -23,6 +24,8 @@ def create_reasoning_domain(name: str, checker_plugin: str = "") -> Any:
         return StringOpsReasoningDomain()
     if normalized in {"code_ops", "code"}:
         return CodeOpsReasoningDomain()
+    if normalized in {"planning_ops", "planning", "planner"}:
+        return PlanningOpsReasoningDomain()
     raise ValueError(f"unknown backend: {name}")
 
 
@@ -34,4 +37,6 @@ def default_curriculum_config(name: str) -> str:
         return StringOpsReasoningDomain.default_curriculum_config
     if normalized in {"code_ops", "code"}:
         return CodeOpsReasoningDomain.default_curriculum_config
+    if normalized in {"planning_ops", "planning", "planner"}:
+        return PlanningOpsReasoningDomain.default_curriculum_config
     raise ValueError(f"unknown backend: {name}")

@@ -6,12 +6,12 @@ from typing import List
 import torch
 
 from .model import TinyTransformerLM
-from .tokenizer import CharTokenizer
+from .tokenizer import StructuredTokenizer
 
 
 def generate_text(
     model: TinyTransformerLM,
-    tokenizer: CharTokenizer,
+    tokenizer: StructuredTokenizer,
     prompt: str,
     device: str,
     max_new_tokens: int = 64,
@@ -29,7 +29,7 @@ def generate_text(
 
 def propose_actions(
     model: TinyTransformerLM,
-    tokenizer: CharTokenizer,
+    tokenizer: StructuredTokenizer,
     prompt: str,
     device: str,
     proposal_count: int = 4,

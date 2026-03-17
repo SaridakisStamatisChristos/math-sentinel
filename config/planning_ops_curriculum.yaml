@@ -1,0 +1,10 @@
+phases:
+  - name: basics
+    until_step: 120
+    domains: [project_plan, shopping_plan]
+  - name: resource_planning
+    until_step: 320
+    domains: [project_plan, shopping_plan, day_plan]
+  - name: full_planning
+    until_step: 999999999
+    domains: [project_plan, shopping_plan, day_plan]

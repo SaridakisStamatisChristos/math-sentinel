@@ -105,12 +105,68 @@ def gen_return_literal() -> ReasoningTask:
     )
 
 
+def gen_has_conditional() -> ReasoningTask:
+    name = random.choice(FUNC_NAMES)
+    param = random.choice(VAR_NAMES)
+    use_if = random.choice([True, False])
+    body = ["if value > 0:", "    return True", "return False"] if use_if else ["return True"]
+    code = _function_code(name, [param], body)
+    return ReasoningTask(
+        task_id=_rid("code_cond"),
+        domain="has_conditional",
+        prompt=f"Does this Python function contain a conditional? Return yes or no.\n{code}",
+        answer="yes" if use_if else "no",
+        goal="Return yes if the function contains an if statement, otherwise no",
+        meta={"family": "has_conditional", "code": code},
+    )
+
+
+def gen_assignment_count() -> ReasoningTask:
+    name = random.choice(FUNC_NAMES)
+    assignments = random.randint(1, 3)
+    body = [f"v{i} = {i}" for i in range(assignments)] + ["return 1"]
+    code = _function_code(name, [], body)
+    return ReasoningTask(
+        task_id=_rid("code_assign"),
+        domain="assignment_count",
+        prompt=f"Count assignment statements in this Python function:\n{code}",
+        answer=str(assignments),
+        goal="Return the number of assignment statements",
+        meta={"family": "assignment_count", "code": code},
+    )
+
+
+def gen_called_function_count() -> ReasoningTask:
+    name = random.choice(FUNC_NAMES)
+    first = random.choice(CALLEE_NAMES)
+    second = random.choice([callee for callee in CALLEE_NAMES if callee != first])
+    distinct = random.choice([1, 2])
+    body = [f"{first}(x)"]
+    if distinct == 2:
+        body.append(f"{second}(x)")
+    else:
+        body.append(f"{first}(x)")
+    body.append("return x")
+    code = _function_code(name, ["x"], body)
+    return ReasoningTask(
+        task_id=_rid("code_calls"),
+        domain="called_function_count",
+        prompt=f"Count distinct called functions in this Python function:\n{code}",
+        answer=str(distinct),
+        goal="Return the number of distinct called functions",
+        meta={"family": "called_function_count", "code": code},
+    )
+
+
 GENERATORS = {
     "function_name": gen_function_name,
     "parameter_count": gen_parameter_count,
     "has_loop": gen_has_loop,
     "first_called_function": gen_first_called_function,
     "return_literal": gen_return_literal,
+    "has_conditional": gen_has_conditional,
+    "assignment_count": gen_assignment_count,
+    "called_function_count": gen_called_function_count,
 }
 
 
@@ -175,6 +231,34 @@ def return_literal(arg: str, state: Any = None) -> Dict[str, Any]:
     return {"ok": False, "result": "no literal return"}
 
 
+def has_conditional(arg: str, state: Any = None) -> Dict[str, Any]:
+    fn = _first_function(_extract_code(arg))
+    found = any(isinstance(node, ast.If) for node in ast.walk(fn))
+    rendered = "yes" if found else "no"
+    return {"ok": True, "result": rendered, "solved": True, "answer": rendered, "goal_progress": 1.0}
+
+
+def assignment_count(arg: str, state: Any = None) -> Dict[str, Any]:
+    fn = _first_function(_extract_code(arg))
+    count = sum(isinstance(node, ast.Assign) for node in ast.walk(fn))
+    rendered = str(count)
+    return {"ok": True, "result": rendered, "solved": True, "answer": rendered, "goal_progress": 1.0}
+
+
+def called_function_count(arg: str, state: Any = None) -> Dict[str, Any]:
+    fn = _first_function(_extract_code(arg))
+    names: set[str] = set()
+    for node in ast.walk(fn):
+        if isinstance(node, ast.Call):
+            target = node.func
+            if isinstance(target, ast.Name):
+                names.add(target.id)
+            elif isinstance(target, ast.Attribute):
+                names.add(target.attr)
+    rendered = str(len(names))
+    return {"ok": True, "result": rendered, "solved": True, "answer": rendered, "goal_progress": 1.0}
+
+
 class CodeToolRegistry:
     def __init__(self) -> None:
         self.tools = {
@@ -183,6 +267,9 @@ class CodeToolRegistry:
             "has_loop": has_loop,
             "first_called_function": first_called_function,
             "return_literal": return_literal,
+            "has_conditional": has_conditional,
+            "assignment_count": assignment_count,
+            "called_function_count": called_function_count,
         }
 
     def call(self, name: str, arg: str, state: Any = None) -> Dict[str, Any]:
@@ -234,6 +321,9 @@ class CodeOpsReasoningDomain:
                 "has_loop": "Inspect the body for for/while constructs.",
                 "first_called_function": "Inspect call sites and return the first called function name.",
                 "return_literal": "Inspect the return statement and extract the literal value.",
+                "has_conditional": "Inspect the body for if statements.",
+                "assignment_count": "Count assignment statements in the function body.",
+                "called_function_count": "Count distinct called functions in the body.",
             }[task.domain]),
             Action(type=ActionType.APPLY, tool=task.domain, content=task.prompt),
             Action(type=ActionType.ANSWER, content=task.answer),
@@ -296,7 +386,7 @@ class CodeOpsReasoningDomain:
 
     def evaluate_answer(self, task: ReasoningTask, candidate: str) -> bool:
         family = task.meta.get("family", task.domain)
-        if family == "has_loop":
+        if family in {"has_loop", "has_conditional"}:
             return candidate.strip().lower() == task.answer.strip().lower()
         return candidate.strip() == task.answer.strip()
 
@@ -383,5 +473,20 @@ class CodeOpsReasoningDomain:
                 "return_literal",
                 "Return the literal returned by this Python function:\ndef answer():\n    return 7",
                 "7",
+            ),
+            self.manual_task(
+                "has_conditional",
+                "Does this Python function contain a conditional? Return yes or no.\ndef choose(x):\n    if x > 0:\n        return True\n    return False",
+                "yes",
+            ),
+            self.manual_task(
+                "assignment_count",
+                "Count assignment statements in this Python function:\ndef build():\n    x = 1\n    y = 2\n    return x + y",
+                "2",
+            ),
+            self.manual_task(
+                "called_function_count",
+                "Count distinct called functions in this Python function:\ndef dispatch(x):\n    helper(x)\n    format_item(x)\n    helper(x)\n    return x",
+                "2",
             ),
         ]

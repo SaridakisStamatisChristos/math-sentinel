@@ -9,7 +9,7 @@ from proof.parser import parse_actions
 from proof.state import ProofState
 from proof.executor import ProofExecutor
 from sentinel.generation import propose_actions
-from sentinel.tokenizer import CharTokenizer
+from sentinel.tokenizer import StructuredTokenizer
 from sentinel.model import TinyTransformerLM
 from sentinel.verifier import StateVerifier
 
@@ -31,7 +31,7 @@ def _build_prompt(state: ProofState) -> str:
     return state.serialize() + instruction
 
 
-def _score_state(verifier: StateVerifier, tokenizer: CharTokenizer, device: str, state: ProofState) -> Dict[str, float]:
+def _score_state(verifier: StateVerifier, tokenizer: StructuredTokenizer, device: str, state: ProofState) -> Dict[str, float]:
     ids = tokenizer.encode(state.serialize(), seq_len=384)
     x = torch.tensor([ids], dtype=torch.long, device=device)
     with torch.no_grad():
@@ -42,7 +42,7 @@ def _score_state(verifier: StateVerifier, tokenizer: CharTokenizer, device: str,
 def beam_search(
     prover: TinyTransformerLM,
     verifier: StateVerifier,
-    tokenizer: CharTokenizer,
+    tokenizer: StructuredTokenizer,
     executor: ProofExecutor,
     initial_state: ProofState,
     device: str,
