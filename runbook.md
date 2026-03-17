@@ -7,6 +7,7 @@ This runbook documents the training workflow that is actually supported by `trai
 - Working directory: repository root.
 - Default training config: `config/default.yaml`.
 - Default curriculum config: `config/curriculum.yaml`.
+- Default search override config: `config/search.yaml`.
 - Default checkpoint output: `checkpoints/last.pt`.
 - Default log output: `logs/train_v7.jsonl`.
 - Default persistent memory files:
@@ -98,6 +99,8 @@ python train_v7.py --resume checkpoints/last.pt --steps 2000 --device cuda
 ## Memory Behavior
 
 Memory is always loaded from the file paths configured under the `memory` section of `config/default.yaml` or the config file passed with `--config`.
+
+Search behavior is loaded from the `search` section in `config/default.yaml`, then overridden by values in `config/search.yaml` when that file exists. This includes beam parameters and scoring weights used by beam ranking.
 
 `--memory-refresh-samples` controls how many sampled evaluation cases are written back into the memory stores during each evaluation interval.
 

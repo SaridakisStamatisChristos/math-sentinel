@@ -5,7 +5,6 @@ import argparse
 from typing import Any, Dict
 
 import torch
-import yaml
 
 from curriculum.generators import sample_task
 from curriculum.oracle import evaluate_answer
@@ -14,15 +13,11 @@ from proof.executor import ProofExecutor
 from proof.state import ProofState
 from search.beam import beam_search
 from sentinel.checkpointing import load_checkpoint
+from sentinel.config import load_runtime_config, load_yaml
 from sentinel.model import TinyTransformerLM
 from sentinel.tokenizer import build_default_tokenizer
 from sentinel.verifier import StateVerifier
 from tools.registry import ToolRegistry
-
-
-def load_yaml(path: str) -> Dict[str, Any]:
-    with open(path, "r", encoding="utf-8") as f:
-        return yaml.safe_load(f)
 
 
 def verifier_init_kwargs(cfg: Dict[str, Any]) -> Dict[str, Any]:
@@ -57,7 +52,7 @@ def main() -> None:
     ap.add_argument("--checker-plugin", default="")
     args = ap.parse_args()
 
-    cfg = load_yaml(args.config)
+    cfg = load_runtime_config(args.config)
     curriculum_cfg = load_yaml(args.curriculum_config)
     scheduler = PhaseScheduler.from_dict(curriculum_cfg)
     phase = scheduler.phase_for_step(args.step)
@@ -104,6 +99,10 @@ def main() -> None:
             beam_width=int(cfg["search"]["beam_width"]),
             max_depth=int(cfg["search"]["max_depth"]),
             proposal_count=int(cfg["search"]["proposal_count"]),
+            max_new_tokens=int(cfg["training"]["max_new_tokens"]),
+            temperature=float(cfg["search"]["temperature"]),
+            top_k=int(cfg["search"]["top_k"]),
+            score_config=cfg["search"],
         )
         ok = final_state.status == "solved"
         eq_ok = evaluate_answer(task, final_state.final_answer) if final_state.final_answer else False

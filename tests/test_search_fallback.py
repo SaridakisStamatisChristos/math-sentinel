@@ -86,6 +86,46 @@ class BeamFallbackTests(unittest.TestCase):
         self.assertEqual(final_state.final_answer.replace(" ", ""), "2*x+3")
         self.assertEqual(explored[1].action.type, ActionType.APPLY)
 
+    def test_beam_search_uses_score_overrides_from_search_config(self) -> None:
+        initial_state = ProofState(
+            task_id="arith_2",
+            domain="arithmetic",
+            problem_text="Compute: 2 + 3",
+            goal="Compute the integer result",
+            expected_answer="5",
+            metadata={"family": "arithmetic"},
+        )
+
+        with patch("search.beam.propose_actions", return_value=["not an action"]):
+            with patch("search.beam.combine_scores", return_value=3.0) as mock_combine:
+                beam_search(
+                    prover=object(),
+                    verifier=DummyVerifier(),
+                    tokenizer=DummyTokenizer(),
+                    executor=ProofExecutor(ToolRegistry()),
+                    initial_state=initial_state,
+                    device="cpu",
+                    beam_width=2,
+                    max_depth=1,
+                    proposal_count=1,
+                    score_config={
+                        "simplicity_penalty": 0.5,
+                        "invalid_penalty": 2.0,
+                        "goal_bonus": 0.7,
+                        "solved_bonus": 4.0,
+                        "completion_bonus": 0.3,
+                        "incomplete_penalty": 0.9,
+                    },
+                )
+
+        kwargs = mock_combine.call_args.kwargs
+        self.assertEqual(kwargs["simplicity_penalty"], 0.5)
+        self.assertEqual(kwargs["invalid_penalty"], 2.0)
+        self.assertEqual(kwargs["goal_bonus"], 0.7)
+        self.assertEqual(kwargs["solved_bonus"], 4.0)
+        self.assertEqual(kwargs["completion_bonus"], 0.3)
+        self.assertEqual(kwargs["incomplete_penalty"], 0.9)
+
 
 if __name__ == "__main__":
     unittest.main()

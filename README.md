@@ -97,6 +97,8 @@ python -m venv .venv
 pip install -r requirements.txt
 ```
 
+If `python` is not available in your shell after activation, use the interpreter path documented in [runbook.md](/C:/Users/scsar/Desktop/math_sentinel_v7/runbook.md).
+
 ## Training quickstart
 
 Light CPU/GPU smoke run:
@@ -109,9 +111,9 @@ More serious CUDA run:
 
 ```bash
 python train_v7.py --steps 2000 --batch-size 16 --micro-batch-size 8 --compile
+```
 
 You can also scale the model in `config/default.yaml` once CUDA is confirmed working.
-```
 
 Resume:
 
@@ -157,6 +159,8 @@ The repo currently exposes:
 - verifier-guided beam search
 - fallback repair actions when parsing fails
 - an experimental `mcts.py` placeholder that currently reuses beam search
+
+Runtime search parameters are loaded from `config/default.yaml` and then overridden by `config/search.yaml` when that file is present.
 
 ## Memory modes
 
@@ -247,7 +251,7 @@ python sample_v7.py --checkpoint checkpoints/last.pt --domain linear_equation --
 - Run the unit tests (requires test deps):
 
 ```bash
-pytest -q
+python -m unittest discover -s tests -q
 ```
 
 - Git: initialize, add remote, and push (if needed):
@@ -267,4 +271,3 @@ git push -u origin main
 # ensure CUDA drivers + torch with CUDA are installed
 python train_v7.py --steps 2000 --batch-size 16 --micro-batch-size 8 --compile
 ```
-

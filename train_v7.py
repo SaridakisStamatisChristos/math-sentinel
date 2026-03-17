@@ -8,7 +8,6 @@ from typing import Any, Dict, List, Optional, cast
 
 import numpy as np
 import torch
-import yaml
 
 from curriculum.generators import GeneratedTask, sample_task
 from curriculum.oracle import evaluate_answer
@@ -36,6 +35,7 @@ from proof.executor import ProofExecutor
 from proof.state import ProofState
 from search.beam import beam_search
 from sentinel.checkpointing import load_checkpoint, save_checkpoint
+from sentinel.config import load_runtime_config, load_yaml
 from sentinel.logging_utils import compact_metrics, log_jsonl, now_ts
 from sentinel.losses import masked_ce, verifier_pairwise_loss
 from sentinel.model import TinyTransformerLM
@@ -48,11 +48,6 @@ def set_seed(seed: int) -> None:
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
-
-
-def load_yaml(path: str) -> Dict[str, Any]:
-    with open(path, "r", encoding="utf-8") as f:
-        return yaml.safe_load(f)
 
 
 def device_from_cfg(name: str) -> str:
@@ -235,6 +230,7 @@ def mine_online_verifier_pairs(
                 max_new_tokens=max_new_tokens,
                 temperature=temperature,
                 top_k=top_k,
+                score_config=cfg["search"],
             )
             pair = pick_best_mined_pair(task, explored, final_state)
             if pair is not None:
@@ -305,6 +301,10 @@ def run_eval(
     beam_width: int = 4,
     max_depth: int = 4,
     proposal_count: int = 4,
+    max_new_tokens: int = 72,
+    temperature: float = 0.8,
+    top_k: int = 24,
+    score_config: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, float]:
     phase = scheduler.phase_for_step(step)
     solved = 0
@@ -323,6 +323,10 @@ def run_eval(
             beam_width=beam_width,
             max_depth=max_depth,
             proposal_count=proposal_count,
+            max_new_tokens=max_new_tokens,
+            temperature=temperature,
+            top_k=top_k,
+            score_config=score_config,
         )
         ok = final_state.status == "solved" and evaluate_answer(task, final_state.final_answer)
         solved += int(ok)
@@ -353,7 +357,7 @@ def main() -> None:
     ap.add_argument("--memory-refresh-samples", type=int, default=None)
     args = ap.parse_args()
 
-    cfg = load_yaml(args.config)
+    cfg = load_runtime_config(args.config)
     curriculum_cfg = load_yaml(args.curriculum_config)
     scheduler = PhaseScheduler.from_dict(curriculum_cfg)
 
@@ -551,6 +555,10 @@ def main() -> None:
                 beam_width=int(cfg["search"]["beam_width"]),
                 max_depth=int(cfg["search"]["max_depth"]),
                 proposal_count=int(cfg["search"]["proposal_count"]),
+                max_new_tokens=int(cfg["training"]["max_new_tokens"]),
+                temperature=float(cfg["search"]["temperature"]),
+                top_k=int(cfg["search"]["top_k"]),
+                score_config=cfg["search"],
             )
             metrics.update(eval_metrics)
             print(f"[{now_ts()}] eval | {compact_metrics(eval_metrics)}")
@@ -570,6 +578,10 @@ def main() -> None:
                     beam_width=int(cfg["search"]["beam_width"]),
                     max_depth=int(cfg["search"]["max_depth"]),
                     proposal_count=int(cfg["search"]["proposal_count"]),
+                    max_new_tokens=int(cfg["training"]["max_new_tokens"]),
+                    temperature=float(cfg["search"]["temperature"]),
+                    top_k=int(cfg["search"]["top_k"]),
+                    score_config=cfg["search"],
                 )
                 ok = final_state.status == "solved" and evaluate_answer(task, final_state.final_answer)
                 replay.add({"task": task.prompt, "answer": final_state.final_answer or "<no_answer>", "ok": ok, "domain": task.domain})

@@ -1,7 +1,7 @@
 
 from __future__ import annotations
 
-from typing import Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import torch
 
@@ -51,6 +51,7 @@ def beam_search(
     max_new_tokens: int = 72,
     temperature: float = 0.8,
     top_k: int = 24,
+    score_config: Optional[Dict[str, Any]] = None,
 ) -> Tuple[ProofState, List[SearchNode]]:
     root = SearchNode(state=initial_state.clone(), cumulative_score=0.0, depth=0)
     beam: List[SearchNode] = [root]
@@ -98,6 +99,12 @@ def beam_search(
                 score = node.cumulative_score + combine_scores(
                     verifier_scores,
                     exec_info,
+                    simplicity_penalty=float(score_config.get("simplicity_penalty", 0.02)) if score_config else 0.02,
+                    invalid_penalty=float(score_config.get("invalid_penalty", 1.0)) if score_config else 1.0,
+                    goal_bonus=float(score_config.get("goal_bonus", 0.4)) if score_config else 0.4,
+                    solved_bonus=float(score_config.get("solved_bonus", 1.0)) if score_config else 1.0,
+                    completion_bonus=float(score_config.get("completion_bonus", 0.15)) if score_config else 0.15,
+                    incomplete_penalty=float(score_config.get("incomplete_penalty", 0.35)) if score_config else 0.35,
                     depth=depth,
                     solved=(child_state.status == "solved"),
                 )
@@ -120,6 +127,12 @@ def beam_search(
                     score = node.cumulative_score + combine_scores(
                         verifier_scores,
                         exec_info,
+                        simplicity_penalty=float(score_config.get("simplicity_penalty", 0.02)) if score_config else 0.02,
+                        invalid_penalty=float(score_config.get("invalid_penalty", 1.0)) if score_config else 1.0,
+                        goal_bonus=float(score_config.get("goal_bonus", 0.4)) if score_config else 0.4,
+                        solved_bonus=float(score_config.get("solved_bonus", 1.0)) if score_config else 1.0,
+                        completion_bonus=float(score_config.get("completion_bonus", 0.15)) if score_config else 0.15,
+                        incomplete_penalty=float(score_config.get("incomplete_penalty", 0.35)) if score_config else 0.35,
                         depth=depth,
                         solved=(child_state.status == "solved"),
                     )
