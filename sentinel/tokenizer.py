@@ -138,11 +138,21 @@ class StructuredTokenizer:
             i += 1
         return tokens
 
-    def encode(self, text: str, seq_len: int) -> List[int]:
-        ids = [self.bos_id]
+    def token_to_id(self, token: str) -> int:
+        return self.stoi.get(token, self.stoi.get("?", self.pad_id))
+
+    def encode_unpadded(self, text: str, add_bos: bool = True, add_eos: bool = False) -> List[int]:
+        ids: List[int] = []
+        if add_bos:
+            ids.append(self.bos_id)
         for token in self.tokenize(text):
-            ids.append(self.stoi.get(token, self.stoi.get("?", self.pad_id)))
-        ids.append(self.eos_id)
+            ids.append(self.token_to_id(token))
+        if add_eos:
+            ids.append(self.eos_id)
+        return ids
+
+    def encode(self, text: str, seq_len: int) -> List[int]:
+        ids = self.encode_unpadded(text, add_bos=True, add_eos=True)
         if len(ids) > seq_len:
             ids = ids[:seq_len]
             ids[-1] = self.eos_id

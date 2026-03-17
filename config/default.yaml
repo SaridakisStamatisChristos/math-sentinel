@@ -76,12 +76,17 @@ training:
   max_new_tokens: 64
 
 search:
+  mode: auto
   beam_width: 8
   max_depth: 6
   proposal_count: 8
   temperature: 0.8
   top_k: 20
   tactic_bonus: 0.12
+  decoder_mode: hybrid
+  mcts_simulations: 24
+  mcts_branching: 8
+  mcts_exploration: 1.25
 
 memory:
   replay_capacity: 5000

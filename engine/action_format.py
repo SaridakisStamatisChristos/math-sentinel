@@ -17,7 +17,7 @@ def render_canonical_action(action: Action) -> str:
         payload["name"] = action.name
     if action.payload:
         payload["payload"] = action.payload
-    return "ACTION " + json.dumps(payload, ensure_ascii=True)
+    return "ACTION " + json.dumps(payload, ensure_ascii=True, separators=(",", ":"))
 
 
 def render_canonical_actions(actions: Iterable[Action]) -> str:

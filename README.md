@@ -12,6 +12,7 @@ V7 combines:
 - a typed action system
 - deterministic math tools
 - verifier-guided beam search
+- MCTS-style planning search for planning-heavy domains
 - replay, hard-case tracking, and lemma memory
 - procedural math curriculum generation
 
@@ -93,7 +94,7 @@ It can also execute typed proof actions such as:
 4. The domain parser extracts typed actions.
 5. The executor applies actions to child states using exact tools.
 6. The verifier scores those child states.
-7. Beam search keeps the strongest branches, prunes duplicate states, and can bias toward historically useful tactics.
+7. Search can route between beam search and MCTS-style tree search, while pruning duplicate states and biasing toward historically useful tactics.
 8. Replay, hard-case tracking, and lemma memory retain what mattered.
 9. In this repo, math is the first fully wired backend, but the engine now has multiple non-math adapters too.
 
@@ -220,8 +221,9 @@ The plugin can register new tools with the registry.
 The repo currently exposes:
 
 - verifier-guided beam search
+- MCTS-style planning search
 - fallback repair actions when parsing fails
-- an experimental `mcts.py` placeholder that currently reuses beam search
+- structured proposal scoring over canonical `ACTION {...}` candidates
 
 Runtime search parameters are loaded from `config/default.yaml` and then overridden by `config/search.yaml` when that file is present.
 
@@ -262,8 +264,8 @@ It still has important limits:
 - proof states are explicit but still lightweight
 - verifier supervision is synthetic
 - theorem discovery is not the target yet
-- decoding now uses a structured tokenizer and canonical action format, but it is not yet a fully constrained decoder
-- MCTS is only scaffolded
+- decoding now uses a structured tokenizer plus scored canonical action candidates, but it is not yet a full parser-level constrained decoder
+- MCTS is real now, but still lightweight and value-guided rather than AlphaZero-scale
 
 ## Best next upgrades
 

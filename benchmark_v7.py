@@ -7,7 +7,7 @@ from typing import Any, Dict, List
 import torch
 
 from domains import available_backends, create_reasoning_domain
-from search.beam import beam_search
+from search.router import run_search
 from sentinel.checkpointing import load_checkpoint
 from sentinel.config import load_runtime_config
 from sentinel.model import TinyTransformerLM
@@ -60,7 +60,7 @@ def run_backend_benchmark(
     tasks = reasoning_domain.benchmark_tasks()
     for task in tasks:
         init = reasoning_domain.make_state(task)
-        final_state, explored = beam_search(
+        final_state, explored = run_search(
             prover=prover,
             verifier=verifier,
             tokenizer=tokenizer,

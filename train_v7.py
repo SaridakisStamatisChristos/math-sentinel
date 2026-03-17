@@ -19,7 +19,7 @@ from memory.replay import ReplayBuffer
 from memory.tactic_stats import TacticStats
 from proof.executor import ProofExecutor
 from proof.state import ProofState
-from search.beam import beam_search
+from search.router import run_search
 from sentinel.checkpointing import load_checkpoint, save_checkpoint
 from sentinel.config import load_runtime_config, load_yaml
 from sentinel.logging_utils import compact_metrics, log_jsonl, now_ts
@@ -165,7 +165,7 @@ def mine_online_verifier_pairs(
         for _ in range(count):
             task = reasoning_domain.sample_task(phase.domains)
             init = reasoning_domain.make_state(task)
-            final_state, explored = beam_search(
+            final_state, explored = run_search(
                 prover=prover,
                 verifier=verifier,
                 tokenizer=tokenizer,
@@ -270,7 +270,7 @@ def run_eval(
     for _ in range(eval_count):
         task = reasoning_domain.sample_task(phase.domains)
         init = reasoning_domain.make_state(task)
-        final_state, explored = beam_search(
+        final_state, explored = run_search(
             prover=prover,
             verifier=verifier,
             tokenizer=tokenizer,
@@ -580,7 +580,7 @@ def main() -> None:
             for _ in range(int(cfg["training"].get("memory_refresh_samples", 4))):
                 task = reasoning_domain.sample_task(phase.domains)
                 init = reasoning_domain.make_state(task)
-                final_state, explored = beam_search(
+                final_state, explored = run_search(
                     prover=prover,
                     verifier=verifier,
                     tokenizer=tokenizer,

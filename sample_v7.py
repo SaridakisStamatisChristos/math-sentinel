@@ -8,7 +8,7 @@ import torch
 
 from curriculum.phases import PhaseScheduler
 from domains import create_reasoning_domain, default_curriculum_config
-from search.beam import beam_search
+from search.router import run_search
 from sentinel.checkpointing import load_checkpoint
 from sentinel.config import load_runtime_config, load_yaml
 from sentinel.model import TinyTransformerLM
@@ -80,7 +80,7 @@ def main() -> None:
         task = reasoning_domain.sample_task(phase.domains)
 
     init = reasoning_domain.make_state(task)
-    final_state, explored = beam_search(
+    final_state, explored = run_search(
         prover=prover,
         verifier=verifier,
         tokenizer=tokenizer,
