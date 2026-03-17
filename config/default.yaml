@@ -81,6 +81,7 @@ search:
   proposal_count: 8
   temperature: 0.8
   top_k: 20
+  tactic_bonus: 0.12
 
 memory:
   replay_capacity: 5000

@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 from collections import defaultdict
 from pathlib import Path
-from typing import DefaultDict, Dict
+from typing import DefaultDict, Dict, List, Tuple
 
 
 class TacticStats:
@@ -20,6 +20,16 @@ class TacticStats:
         fail = self.counts[domain].get(f"{tactic}::fail", 0)
         total = ok + fail
         return 0.5 if total == 0 else ok / total
+
+    def top_tactics(self, domain: str, limit: int = 3) -> List[Tuple[str, float]]:
+        tactics = {
+            key.split("::", 1)[0]
+            for key in self.counts[domain]
+            if "::" in key
+        }
+        ranked = [(tactic, self.bias(domain, tactic)) for tactic in tactics]
+        ranked.sort(key=lambda item: item[1], reverse=True)
+        return ranked[:limit]
 
     def save(self, path: str) -> None:
         Path(path).parent.mkdir(parents=True, exist_ok=True)

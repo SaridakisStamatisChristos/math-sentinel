@@ -7,7 +7,10 @@ import torch
 from curriculum.generators import GeneratedTask, sample_task
 from curriculum.oracle import evaluate_answer
 from curriculum.trajectory_builder import build_gold_trace
+from engine.action_format import render_canonical_actions
+from engine.prompting import build_search_prompt
 from engine.state import ReasoningState
+from memory.retrieval import retrieve_context
 from proof.executor import ProofExecutor
 from proof.lemmas import (
     Lemma,
@@ -63,7 +66,10 @@ class MathReasoningDomain:
 
     def build_training_example(self, task: GeneratedTask) -> str:
         state = self.make_state(task)
-        return state.serialize() + "\n" + build_gold_trace(task)
+        legacy_trace = build_gold_trace(task)
+        actions, _ = parse_actions(legacy_trace)
+        trace = render_canonical_actions(actions) if actions else legacy_trace
+        return state.serialize() + "\n" + trace
 
     def build_verifier_examples(self, task: GeneratedTask) -> tuple[str, torch.Tensor, str, torch.Tensor]:
         pos = self.make_state(task)
@@ -129,6 +135,41 @@ class MathReasoningDomain:
     def fallback_repairs(self, state: ProofState) -> List[Any]:
         return fallback_repairs(state)
 
+    def action_format_instructions(self) -> str:
+        return (
+            "Emit one JSON action per line in canonical form:\n"
+            'ACTION {"type":"THINK","content":"plan"}\n'
+            'ACTION {"type":"APPLY","tool":"tool_name","content":"arguments"}\n'
+            'ACTION {"type":"ANSWER","content":"final answer"}'
+        )
+
+    def build_search_prompt(
+        self,
+        state: ProofState,
+        *,
+        lemma_store: Any | None = None,
+        hard_case_store: Any | None = None,
+        tactic_stats: Any | None = None,
+    ) -> str:
+        retrieval_context = None
+        if lemma_store is not None and hard_case_store is not None:
+            retrieval_context = retrieve_context(lemma_store, hard_case_store, state.domain, state.problem_text)
+        tactic_hints = None
+        if tactic_stats is not None:
+            ranked = tactic_stats.top_tactics(state.domain, limit=3)
+            tactic_hints = [f"{name} bias={bias:.2f}" for name, bias in ranked if bias != 0.5]
+        return build_search_prompt(
+            state,
+            self.action_format_instructions(),
+            retrieval_context=retrieval_context,
+            tactic_hints=tactic_hints,
+        )
+
+    def state_signature(self, state: ProofState) -> str:
+        derived = " | ".join(state.derived_facts[-3:])
+        subgoals = " | ".join(state.subgoals)
+        return " || ".join([state.domain, state.problem_text, derived, subgoals, state.final_answer.strip()])
+
     def render_human_trace(self, state: ProofState) -> str:
         return render_human_trace(state)
 
@@ -167,3 +208,11 @@ class MathReasoningDomain:
         if task.domain == "parity_proof":
             return derive_parity_proof_lemma(task.prompt)
         return None
+
+    def benchmark_tasks(self) -> List[GeneratedTask]:
+        return [
+            self.manual_task("arithmetic", "Compute: 7 * 8", "56"),
+            self.manual_task("linear_equation", "Solve: 3x + 2 = 11", "x=3"),
+            self.manual_task("fractions", "Reduce the fraction: 18/24", "3/4"),
+            self.manual_task("derivative", "Differentiate with respect to x: x**3 + 2*x", "3*x**2 + 2"),
+        ]

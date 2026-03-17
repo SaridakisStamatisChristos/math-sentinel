@@ -1,0 +1,10 @@
+phases:
+  - name: basics
+    until_step: 120
+    domains: [function_name, parameter_count]
+  - name: structure
+    until_step: 320
+    domains: [function_name, parameter_count, has_loop, return_literal]
+  - name: analysis
+    until_step: 999999999
+    domains: [function_name, parameter_count, has_loop, first_called_function, return_literal]

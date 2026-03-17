@@ -13,6 +13,7 @@ def combine_scores(
     solved_bonus: float = 1.0,
     completion_bonus: float = 0.15,
     incomplete_penalty: float = 0.35,
+    tactic_bonus: float = 0.12,
     depth: int = 1,
     solved: bool = False,
 ) -> float:
@@ -24,6 +25,7 @@ def combine_scores(
     exact_progress = float(exec_info.get("goal_progress", 0.0))
     local_valid = float(exec_info.get("valid_step", 1.0))
     answer_present = float(exec_info.get("answer_present", 0.0))
+    tactic_bias = float(exec_info.get("tactic_bias", 0.5))
 
     score = 0.0
     score += 0.45 * valid
@@ -32,6 +34,7 @@ def combine_scores(
     score += 0.15 * priority
     score += 0.30 * exact_progress
     score += completion_bonus * answer_present
+    score += tactic_bonus * (tactic_bias - 0.5)
     score -= 0.25 * risk
     score -= simplicity_penalty * depth
     if local_valid < 0.5:

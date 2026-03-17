@@ -7,6 +7,20 @@ from proof.parser import parse_actions
 
 
 class ParseActionsTests(unittest.TestCase):
+    def test_parses_canonical_json_action_lines(self) -> None:
+        text = (
+            'ACTION {"type":"THINK","content":"Plan the step."}\n'
+            'ACTION {"type":"APPLY","tool":"add","content":"2,3"}\n'
+            'ACTION {"type":"ANSWER","content":"5"}'
+        )
+
+        actions, confidence = parse_actions(text)
+
+        self.assertEqual([action.type for action in actions], [ActionType.THINK, ActionType.APPLY, ActionType.ANSWER])
+        self.assertEqual(actions[1].tool, "add")
+        self.assertEqual(actions[2].content, "5")
+        self.assertEqual(confidence, 1.0)
+
     def test_parses_multiple_valid_actions(self) -> None:
         text = (
             '<action type="THINK">Plan the step.</action>'

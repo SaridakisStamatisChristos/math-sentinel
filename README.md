@@ -19,10 +19,11 @@ This repo is meant to be a real runnable starting point, not a stub architecture
 
 ## Backends
 
-The repo now has two wired backends:
+The repo now has three wired backends:
 
 - `math`: the original symbolic math backend
 - `string_ops`: a non-math backend for deterministic text and sequence operations
+- `code_ops`: a code-oriented backend for deterministic Python snippet analysis
 
 The shared engine lives in `engine/`, while domain adapters live in `domains/`.
 
@@ -50,6 +51,14 @@ The `string_ops` backend currently supports:
 - vowel counting
 - alphabetical word sorting
 - duplicate removal with order preservation
+
+The `code_ops` backend currently supports:
+
+- extracting a function name
+- counting function parameters
+- loop detection
+- first called-function extraction
+- literal return-value extraction
 
 It can also execute typed proof actions such as:
 
@@ -137,6 +146,7 @@ Train the non-math backend:
 
 ```bash
 python train_v7.py --backend string_ops --steps 200
+python train_v7.py --backend code_ops --steps 200
 ```
 
 You can also scale the model in `config/default.yaml` once CUDA is confirmed working.
@@ -157,6 +167,7 @@ Evaluate the non-math backend:
 
 ```bash
 python eval_v7.py --backend string_ops --count 64
+python eval_v7.py --backend code_ops --count 64
 ```
 
 ## Sampling / solving
@@ -177,6 +188,7 @@ Non-math sample:
 
 ```bash
 python sample_v7.py --backend string_ops --domain sort_words --problem "Sort words alphabetically: kiwi apple mango"
+python sample_v7.py --backend code_ops --domain function_name --problem "Read the Python function and return the function name:\ndef helper(x):\n    return x + 1"
 ```
 
 ## Plugin usage
@@ -204,6 +216,15 @@ Curriculum phases are backend-specific:
 
 - `math` uses `config/curriculum.yaml`
 - `string_ops` uses `config/string_ops_curriculum.yaml`
+- `code_ops` uses `config/code_ops_curriculum.yaml`
+
+## Benchmarks
+
+Run the fixed benchmark suites across all registered backends:
+
+```bash
+python benchmark_v7.py --backends all
+```
 
 ## Memory modes
 

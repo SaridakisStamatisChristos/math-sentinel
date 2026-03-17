@@ -104,6 +104,33 @@ class BeamFallbackTests(unittest.TestCase):
         self.assertEqual(explored[1].action.type, ActionType.APPLY)
         self.assertEqual(explored[1].action.tool, "add")
 
+    def test_duplicate_candidates_are_pruned_by_state_signature(self) -> None:
+        initial_state = ProofState(
+            task_id="arith_dupe",
+            domain="arithmetic",
+            problem_text="Compute: 2 + 3",
+            goal="Compute the integer result",
+            expected_answer="5",
+            metadata={"family": "arithmetic"},
+        )
+        duplicate = 'ACTION {"type":"APPLY","tool":"add","content":"2,3"}'
+
+        with patch("search.beam.propose_actions", return_value=[duplicate, duplicate]):
+            final_state, explored = beam_search(
+                prover=object(),
+                verifier=DummyVerifier(),
+                tokenizer=DummyTokenizer(),
+                executor=ProofExecutor(ToolRegistry()),
+                initial_state=initial_state,
+                device="cpu",
+                beam_width=3,
+                max_depth=1,
+                proposal_count=2,
+            )
+
+        self.assertEqual(final_state.final_answer, "5")
+        self.assertEqual(len(explored), 2)
+
     def test_invalid_generation_uses_terminal_tool_repair_for_derivative(self) -> None:
         initial_state = ProofState(
             task_id="der_1",
@@ -160,6 +187,7 @@ class BeamFallbackTests(unittest.TestCase):
                         "solved_bonus": 4.0,
                         "completion_bonus": 0.3,
                         "incomplete_penalty": 0.9,
+                        "tactic_bonus": 0.25,
                     },
                 )
 
@@ -170,6 +198,7 @@ class BeamFallbackTests(unittest.TestCase):
         self.assertEqual(kwargs["solved_bonus"], 4.0)
         self.assertEqual(kwargs["completion_bonus"], 0.3)
         self.assertEqual(kwargs["incomplete_penalty"], 0.9)
+        self.assertEqual(kwargs["tactic_bonus"], 0.25)
 
 
 if __name__ == "__main__":

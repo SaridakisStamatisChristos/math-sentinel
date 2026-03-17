@@ -25,6 +25,7 @@ from sentinel.config import load_runtime_config, load_yaml
 from sentinel.logging_utils import compact_metrics, log_jsonl, now_ts
 from sentinel.losses import masked_ce, verifier_pairwise_loss
 from sentinel.model import TinyTransformerLM
+from sentinel.search_runtime import build_action_bias_fn, build_prompt_builder
 from sentinel.tokenizer import build_default_tokenizer
 from sentinel.verifier import StateVerifier
 
@@ -147,6 +148,9 @@ def mine_online_verifier_pairs(
     top_k: int,
     score_config: Optional[Dict[str, Any]] = None,
     reasoning_domain: Any = DEFAULT_DOMAIN,
+    prompt_builder: Optional[Any] = None,
+    state_signature_fn: Optional[Any] = None,
+    action_bias_fn: Optional[Any] = None,
 ) -> List[Dict[str, Any]]:
     mined: List[Dict[str, Any]] = []
     if count <= 0:
@@ -177,6 +181,9 @@ def mine_online_verifier_pairs(
                 score_config=score_config,
                 parse_actions_fn=reasoning_domain.parse_actions,
                 fallback_repairs_fn=reasoning_domain.fallback_repairs,
+                prompt_builder=prompt_builder or reasoning_domain.build_search_prompt,
+                state_signature_fn=state_signature_fn or reasoning_domain.state_signature,
+                action_bias_fn=action_bias_fn,
             )
             pair = pick_best_mined_pair(task, explored, final_state, reasoning_domain=reasoning_domain)
             if pair is not None:
@@ -252,6 +259,9 @@ def run_eval(
     top_k: int = 24,
     score_config: Optional[Dict[str, Any]] = None,
     reasoning_domain: Any = DEFAULT_DOMAIN,
+    prompt_builder: Optional[Any] = None,
+    state_signature_fn: Optional[Any] = None,
+    action_bias_fn: Optional[Any] = None,
 ) -> Dict[str, float]:
     phase = scheduler.phase_for_step(step)
     solved = 0
@@ -276,6 +286,9 @@ def run_eval(
             score_config=score_config,
             parse_actions_fn=reasoning_domain.parse_actions,
             fallback_repairs_fn=reasoning_domain.fallback_repairs,
+            prompt_builder=prompt_builder or reasoning_domain.build_search_prompt,
+            state_signature_fn=state_signature_fn or reasoning_domain.state_signature,
+            action_bias_fn=action_bias_fn,
         )
         ok = final_state.status == "solved" and reasoning_domain.evaluate_answer(task, final_state.final_answer)
         solved += int(ok)
@@ -373,6 +386,13 @@ def main() -> None:
     hard_cases = HardCaseStore(capacity=int(cfg["memory"]["hard_case_capacity"]))
     tactic_stats = TacticStats()
     load_persistent_memory(cfg, replay, lemma_store, hard_cases, tactic_stats)
+    prompt_builder = build_prompt_builder(
+        reasoning_domain,
+        lemma_store=lemma_store,
+        hard_case_store=hard_cases,
+        tactic_stats=tactic_stats,
+    )
+    action_bias_fn = build_action_bias_fn(tactic_stats)
 
     start_step = 1
     if args.resume:
@@ -425,6 +445,9 @@ def main() -> None:
                 top_k=int(phase_search_value(cfg, phase.name, "online_top_k_by_phase", cfg["verifier"].get("online_top_k", cfg["search"]["top_k"]))),
                 score_config=cfg["search"],
                 reasoning_domain=reasoning_domain,
+                prompt_builder=prompt_builder,
+                state_signature_fn=reasoning_domain.state_signature,
+                action_bias_fn=action_bias_fn,
             )
             for pair in online_pairs:
                 pos_texts.append(str(pair["pos_text"]))
@@ -545,6 +568,9 @@ def main() -> None:
                 top_k=int(cfg["search"]["top_k"]),
                 score_config=cfg["search"],
                 reasoning_domain=reasoning_domain,
+                prompt_builder=prompt_builder,
+                state_signature_fn=reasoning_domain.state_signature,
+                action_bias_fn=action_bias_fn,
             )
             metrics.update(eval_metrics)
             print(f"[{now_ts()}] eval | {compact_metrics(eval_metrics)}")
@@ -570,6 +596,9 @@ def main() -> None:
                     score_config=cfg["search"],
                     parse_actions_fn=reasoning_domain.parse_actions,
                     fallback_repairs_fn=reasoning_domain.fallback_repairs,
+                    prompt_builder=prompt_builder,
+                    state_signature_fn=reasoning_domain.state_signature,
+                    action_bias_fn=action_bias_fn,
                 )
                 ok = final_state.status == "solved" and reasoning_domain.evaluate_answer(task, final_state.final_answer)
                 replay.add({"task": task.prompt, "answer": final_state.final_answer or "<no_answer>", "ok": ok, "domain": task.domain})

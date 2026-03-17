@@ -6,11 +6,14 @@ from typing import Any, Dict, List, Optional
 
 import torch
 
+from engine.action_format import render_canonical_actions
 from engine.actions import Action, ActionType
 from engine.executor import StateExecutor
+from engine.prompting import build_search_prompt
 from engine.state import ReasoningState
 from engine.task import ReasoningTask
 from engine.traces import render_human_trace
+from memory.retrieval import retrieve_context
 from proof.parser import parse_actions
 
 
@@ -217,21 +220,18 @@ class StringOpsReasoningDomain:
         return state.serialize() + "\n" + self.build_gold_trace(task)
 
     def build_gold_trace(self, task: ReasoningTask) -> str:
-        tool = task.domain
-        thought = {
-            "reverse_text": "Reverse the characters in order.",
-            "uppercase_text": "Convert every letter to uppercase.",
-            "vowel_count": "Count a, e, i, o, and u.",
-            "sort_words": "Sort the words lexicographically.",
-            "dedupe_words": "Keep the first occurrence of each word.",
-        }[task.domain]
-        payload = task.prompt.split(":", 1)[-1].strip()
-        return (
-            f'<action type="THINK">{thought}</action>\n'
-            f'<action type="APPLY" tool="{tool}">{payload}</action>\n'
-            f'<action type="ANSWER">{task.answer}</action>\n'
-            f'<answer>{task.answer}</answer>'
-        )
+        actions = [
+            Action(type=ActionType.THINK, content={
+                "reverse_text": "Reverse the characters in order.",
+                "uppercase_text": "Convert every letter to uppercase.",
+                "vowel_count": "Count a, e, i, o, and u.",
+                "sort_words": "Sort the words lexicographically.",
+                "dedupe_words": "Keep the first occurrence of each word.",
+            }[task.domain]),
+            Action(type=ActionType.APPLY, tool=task.domain, content=task.prompt.split(":", 1)[-1].strip()),
+            Action(type=ActionType.ANSWER, content=task.answer),
+        ]
+        return render_canonical_actions(actions)
 
     def build_verifier_examples(self, task: ReasoningTask) -> tuple[str, torch.Tensor, str, torch.Tensor]:
         pos = self.make_state(task)
@@ -301,6 +301,40 @@ class StringOpsReasoningDomain:
             return []
         return [Action(type=ActionType.APPLY, tool=state.domain, content=state.problem_text)]
 
+    def action_format_instructions(self) -> str:
+        return (
+            "Emit one JSON action per line in canonical form:\n"
+            'ACTION {"type":"THINK","content":"plan"}\n'
+            'ACTION {"type":"APPLY","tool":"tool_name","content":"arguments"}\n'
+            'ACTION {"type":"ANSWER","content":"final answer"}'
+        )
+
+    def build_search_prompt(
+        self,
+        state: ReasoningState,
+        *,
+        lemma_store: Any | None = None,
+        hard_case_store: Any | None = None,
+        tactic_stats: Any | None = None,
+    ) -> str:
+        retrieval_context = None
+        if lemma_store is not None and hard_case_store is not None:
+            retrieval_context = retrieve_context(lemma_store, hard_case_store, state.domain, state.problem_text)
+        tactic_hints = None
+        if tactic_stats is not None:
+            ranked = tactic_stats.top_tactics(state.domain, limit=3)
+            tactic_hints = [f"{name} bias={bias:.2f}" for name, bias in ranked if bias != 0.5]
+        return build_search_prompt(
+            state,
+            self.action_format_instructions(),
+            retrieval_context=retrieval_context,
+            tactic_hints=tactic_hints,
+        )
+
+    def state_signature(self, state: ReasoningState) -> str:
+        derived = " | ".join(state.derived_facts[-3:])
+        return " || ".join([state.domain, state.problem_text, derived, state.final_answer.strip()])
+
     def render_human_trace(self, state: ReasoningState) -> str:
         return render_human_trace(state)
 
@@ -320,3 +354,11 @@ class StringOpsReasoningDomain:
 
     def maybe_derive_lemma(self, task: ReasoningTask) -> None:
         return None
+
+    def benchmark_tasks(self) -> List[ReasoningTask]:
+        return [
+            self.manual_task("reverse_text", "Reverse the text: amber", "rebma"),
+            self.manual_task("uppercase_text", "Convert to uppercase: signal", "SIGNAL"),
+            self.manual_task("vowel_count", "Count vowels in: quartz", "2"),
+            self.manual_task("sort_words", "Sort words alphabetically: kiwi apple mango", "apple kiwi mango"),
+        ]

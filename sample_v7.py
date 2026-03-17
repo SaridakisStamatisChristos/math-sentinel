@@ -12,6 +12,7 @@ from search.beam import beam_search
 from sentinel.checkpointing import load_checkpoint
 from sentinel.config import load_runtime_config, load_yaml
 from sentinel.model import TinyTransformerLM
+from sentinel.search_runtime import build_action_bias_fn, build_prompt_builder, load_search_memory
 from sentinel.tokenizer import build_default_tokenizer
 from sentinel.verifier import StateVerifier
 
@@ -43,6 +44,14 @@ def main() -> None:
     curriculum_cfg = load_yaml(curriculum_path)
     scheduler = PhaseScheduler.from_dict(curriculum_cfg)
     reasoning_domain = create_reasoning_domain(args.backend, checker_plugin=args.checker_plugin)
+    lemma_store, hard_cases, tactic_stats = load_search_memory(cfg)
+    prompt_builder = build_prompt_builder(
+        reasoning_domain,
+        lemma_store=lemma_store,
+        hard_case_store=hard_cases,
+        tactic_stats=tactic_stats,
+    )
+    action_bias_fn = build_action_bias_fn(tactic_stats)
     device = "cuda" if torch.cuda.is_available() and cfg["device"] in {"auto", "cuda"} else "cpu"
 
     tokenizer = build_default_tokenizer()
@@ -87,6 +96,9 @@ def main() -> None:
         score_config=cfg["search"],
         parse_actions_fn=reasoning_domain.parse_actions,
         fallback_repairs_fn=reasoning_domain.fallback_repairs,
+        prompt_builder=prompt_builder,
+        state_signature_fn=reasoning_domain.state_signature,
+        action_bias_fn=action_bias_fn,
     )
 
     print("=== INPUT TASK ===")

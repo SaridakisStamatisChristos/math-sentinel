@@ -20,10 +20,11 @@ from .scoring import combine_scores
 
 def _build_prompt(state: ProofState) -> str:
     instruction = (
-        "\nEmit one or more actions using the form "
-        '<action type="THINK">...</action> '
-        '<action type="APPLY" tool="...">...</action> '
-        '<action type="ANSWER">...</action>\n'
+        "\nPrefer the canonical action format with one JSON action per line, for example:\n"
+        'ACTION {"type":"THINK","content":"plan"}\n'
+        'ACTION {"type":"APPLY","tool":"tool_name","content":"arguments"}\n'
+        'ACTION {"type":"ANSWER","content":"final answer"}\n'
+        "Legacy XML-style <action ...>...</action> output is still accepted.\n"
         "Always finish with an ANSWER action once you have enough information. "
         "Do not stop after THINK or APPLY if a final answer or proof sketch is available.\n"
     )
@@ -54,11 +55,15 @@ def beam_search(
     score_config: Optional[Dict[str, Any]] = None,
     parse_actions_fn: Callable[[str], Tuple[List[Any], float]] = parse_actions,
     fallback_repairs_fn: Callable[[ProofState], List[Any]] = fallback_repairs,
+    prompt_builder: Callable[[ProofState], str] = _build_prompt,
+    state_signature_fn: Callable[[ProofState], str] = lambda state: state.serialize(),
+    action_bias_fn: Optional[Callable[[ProofState, Any], float]] = None,
 ) -> Tuple[ProofState, List[SearchNode]]:
     root = SearchNode(state=initial_state.clone(), cumulative_score=0.0, depth=0)
     beam: List[SearchNode] = [root]
     explored: List[SearchNode] = [root]
     best = root
+    best_signature_scores = {state_signature_fn(root.state): root.cumulative_score}
 
     for depth in range(1, max_depth + 1):
         candidates: List[SearchNode] = []
@@ -67,7 +72,7 @@ def beam_search(
                 candidates.append(node)
                 continue
 
-            prompt = _build_prompt(node.state)
+            prompt = prompt_builder(node.state)
             texts = propose_actions(
                 model=prover,
                 tokenizer=tokenizer,
@@ -97,6 +102,7 @@ def beam_search(
                     if child_state.status == "solved":
                         break
                 exec_info["answer_present"] = 1.0 if child_state.final_answer.strip() else 0.0
+                exec_info["tactic_bias"] = action_bias_fn(node.state, last_action) if action_bias_fn and last_action is not None else 0.5
                 verifier_scores = _score_state(verifier, tokenizer, device, child_state)
                 score = node.cumulative_score + combine_scores(
                     verifier_scores,
@@ -107,9 +113,14 @@ def beam_search(
                     solved_bonus=float(score_config.get("solved_bonus", 1.0)) if score_config else 1.0,
                     completion_bonus=float(score_config.get("completion_bonus", 0.15)) if score_config else 0.15,
                     incomplete_penalty=float(score_config.get("incomplete_penalty", 0.35)) if score_config else 0.35,
+                    tactic_bonus=float(score_config.get("tactic_bonus", 0.12)) if score_config else 0.12,
                     depth=depth,
                     solved=(child_state.status == "solved"),
                 )
+                signature = state_signature_fn(child_state)
+                if best_signature_scores.get(signature, float("-inf")) >= score:
+                    continue
+                best_signature_scores[signature] = score
                 child = SearchNode(
                     state=child_state,
                     cumulative_score=score,
@@ -125,6 +136,7 @@ def beam_search(
                 for repair in fallback_repairs_fn(node.state):
                     child_state, exec_info = executor.apply(node.state, repair)
                     exec_info["answer_present"] = 1.0 if child_state.final_answer.strip() else 0.0
+                    exec_info["tactic_bias"] = action_bias_fn(node.state, repair) if action_bias_fn else 0.5
                     verifier_scores = _score_state(verifier, tokenizer, device, child_state)
                     score = node.cumulative_score + combine_scores(
                         verifier_scores,
@@ -135,9 +147,14 @@ def beam_search(
                         solved_bonus=float(score_config.get("solved_bonus", 1.0)) if score_config else 1.0,
                         completion_bonus=float(score_config.get("completion_bonus", 0.15)) if score_config else 0.15,
                         incomplete_penalty=float(score_config.get("incomplete_penalty", 0.35)) if score_config else 0.35,
+                        tactic_bonus=float(score_config.get("tactic_bonus", 0.12)) if score_config else 0.12,
                         depth=depth,
                         solved=(child_state.status == "solved"),
                     )
+                    signature = state_signature_fn(child_state)
+                    if best_signature_scores.get(signature, float("-inf")) >= score:
+                        continue
+                    best_signature_scores[signature] = score
                     child = SearchNode(
                         state=child_state,
                         cumulative_score=score,

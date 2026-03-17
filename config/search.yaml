@@ -7,3 +7,4 @@ simplicity_penalty: 0.02
 invalid_penalty: 1.0
 goal_bonus: 0.4
 solved_bonus: 1.0
+tactic_bonus: 0.12
