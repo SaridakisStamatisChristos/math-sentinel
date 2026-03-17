@@ -10,28 +10,13 @@ from typing import Any, Dict, List, Optional, cast
 import numpy as np
 import torch
 
-from curriculum.generators import GeneratedTask, sample_task
-from curriculum.oracle import evaluate_answer
+from curriculum.generators import GeneratedTask
 from curriculum.phases import PhaseScheduler
-from curriculum.trajectory_builder import build_gold_trace
+from domains.math.backend import MathReasoningDomain
 from memory.hard_cases import HardCaseStore
 from memory.lemma_store import LemmaStore
 from memory.replay import ReplayBuffer
 from memory.tactic_stats import TacticStats
-from proof.lemmas import (
-    derive_linear_lemma,
-    derive_polynomial_lemma,
-    derive_calculus_lemma,
-    derive_logic_lemma,
-    derive_arithmetic_lemma,
-    derive_fractions_lemma,
-    derive_divmod_lemma,
-    derive_gcd_lcm_lemma,
-    derive_modular_lemma,
-    derive_primality_lemma,
-    derive_factorization_lemma,
-    derive_parity_proof_lemma,
-)
 from proof.executor import ProofExecutor
 from proof.state import ProofState
 from search.beam import beam_search
@@ -42,7 +27,9 @@ from sentinel.losses import masked_ce, verifier_pairwise_loss
 from sentinel.model import TinyTransformerLM
 from sentinel.tokenizer import build_default_tokenizer
 from sentinel.verifier import StateVerifier
-from tools.registry import ToolRegistry
+
+
+DEFAULT_DOMAIN = MathReasoningDomain()
 
 
 def set_seed(seed: int) -> None:
@@ -58,35 +45,15 @@ def device_from_cfg(name: str) -> str:
 
 
 def make_state(task: GeneratedTask) -> ProofState:
-    return ProofState(
-        task_id=task.task_id,
-        domain=task.domain,
-        problem_text=task.prompt,
-        goal=task.goal,
-        expected_answer=task.answer,
-        metadata=task.meta,
-    )
+    return DEFAULT_DOMAIN.make_state(task)
 
 
 def build_training_example(task: GeneratedTask) -> str:
-    state = make_state(task)
-    return state.serialize() + "\n" + build_gold_trace(task)
+    return DEFAULT_DOMAIN.build_training_example(task)
 
 
 def build_verifier_examples(task: GeneratedTask) -> tuple[str, torch.Tensor, str, torch.Tensor]:
-    pos = make_state(task)
-    pos.final_answer = task.answer
-    pos.status = "solved"
-    pos.derived_facts.append(task.answer)
-    pos.action_history.append({"type": "ANSWER", "content": task.answer})
-    pos.tool_history.append({"tool": "oracle", "result": {"ok": True, "answer": task.answer}})
-
-    neg = make_state(task)
-    neg.derived_facts.append("search_not_started")
-
-    pos_t = build_verifier_targets(task, pos)
-    neg_t = build_verifier_targets(task, neg, local_scores={"valid_step": 0.35, "goal_progress": 0.0, "risk_score": 0.8})
-    return pos.serialize(), pos_t, neg.serialize(), neg_t
+    return DEFAULT_DOMAIN.build_verifier_examples(task)
 
 
 def build_verifier_targets(
@@ -94,42 +61,15 @@ def build_verifier_targets(
     state: ProofState,
     local_scores: Optional[Dict[str, float]] = None,
 ) -> torch.Tensor:
-    local_scores = local_scores or {}
-    has_answer = bool(state.final_answer.strip())
-    correct = has_answer and evaluate_answer(task, state.final_answer)
-    solved = state.status == "solved"
-
-    valid_step = float(local_scores.get("valid_step", 1.0 if solved or has_answer else 0.6))
-    explicit_progress = float(local_scores.get("goal_progress", 0.0))
-    structural_progress = min(
-        1.0,
-        0.12 * len(state.derived_facts)
-        + 0.08 * len(state.tool_history)
-        + 0.06 * len(state.action_history)
-        + 0.08 * len(state.lemma_refs)
-        + 0.04 * len(state.subgoals),
-    )
-    goal_progress = max(explicit_progress, structural_progress)
-    if correct:
-        goal_progress = max(goal_progress, 0.95)
-    elif has_answer:
-        goal_progress = min(0.75, max(goal_progress, 0.3))
-
-    proof_completion = 1.0 if correct and solved else (0.25 if has_answer else min(0.2, goal_progress * 0.5))
-    risk = float(local_scores.get("risk_score", 0.05 if correct else (0.85 if has_answer else 0.45)))
-    branch_priority = max(0.05, min(0.98, 0.55 * goal_progress + 0.25 * valid_step + 0.20 * proof_completion))
-
-    values = [
-        max(0.02, min(0.99, valid_step)),
-        max(0.0, min(0.99, goal_progress)),
-        max(0.0, min(0.99, proof_completion)),
-        max(0.01, min(0.99, risk)),
-        branch_priority,
-    ]
-    return torch.tensor(values, dtype=torch.float32)
+    return DEFAULT_DOMAIN.build_verifier_targets(task, state, local_scores)
 
 
-def pick_best_mined_pair(task: GeneratedTask, explored: List[Any], final_state: ProofState) -> Optional[Dict[str, Any]]:
+def pick_best_mined_pair(
+    task: GeneratedTask,
+    explored: List[Any],
+    final_state: ProofState,
+    reasoning_domain: MathReasoningDomain = DEFAULT_DOMAIN,
+) -> Optional[Dict[str, Any]]:
     positive_nodes = []
     negative_nodes = []
     root_node = explored[0] if explored else None
@@ -137,7 +77,7 @@ def pick_best_mined_pair(task: GeneratedTask, explored: List[Any], final_state: 
     for node in explored:
         state = node.state
         has_answer = bool(state.final_answer.strip())
-        correct = has_answer and evaluate_answer(task, state.final_answer)
+        correct = has_answer and reasoning_domain.evaluate_answer(task, state.final_answer)
         if correct:
             positive_nodes.append(node)
         else:
@@ -150,12 +90,12 @@ def pick_best_mined_pair(task: GeneratedTask, explored: List[Any], final_state: 
             negative_nodes.append((hardness, node))
 
     pos_node = max(positive_nodes, key=lambda n: n.cumulative_score, default=None)
-    if pos_node is None and final_state.final_answer.strip() and evaluate_answer(task, final_state.final_answer):
+    if pos_node is None and final_state.final_answer.strip() and reasoning_domain.evaluate_answer(task, final_state.final_answer):
         pos_state = final_state.clone()
-        pos_target = build_verifier_targets(task, pos_state)
+        pos_target = reasoning_domain.build_verifier_targets(task, pos_state)
     elif pos_node is not None:
         pos_state = pos_node.state.clone()
-        pos_target = build_verifier_targets(task, pos_state, pos_node.local_scores)
+        pos_target = reasoning_domain.build_verifier_targets(task, pos_state, pos_node.local_scores)
     else:
         return None
 
@@ -167,7 +107,7 @@ def pick_best_mined_pair(task: GeneratedTask, explored: List[Any], final_state: 
     negative_nodes.sort(key=lambda item: item[0], reverse=True)
     neg_node = negative_nodes[0][1]
     neg_state = neg_node.state.clone()
-    neg_target = build_verifier_targets(task, neg_state, neg_node.local_scores)
+    neg_target = reasoning_domain.build_verifier_targets(task, neg_state, neg_node.local_scores)
     return {
         "kind": "verifier_pair",
         "domain": task.domain,
@@ -206,6 +146,7 @@ def mine_online_verifier_pairs(
     temperature: float,
     top_k: int,
     score_config: Optional[Dict[str, Any]] = None,
+    reasoning_domain: MathReasoningDomain = DEFAULT_DOMAIN,
 ) -> List[Dict[str, Any]]:
     mined: List[Dict[str, Any]] = []
     if count <= 0:
@@ -218,8 +159,8 @@ def mine_online_verifier_pairs(
     verifier.eval()
     try:
         for _ in range(count):
-            task = sample_task(phase.domains)
-            init = make_state(task)
+            task = reasoning_domain.sample_task(phase.domains)
+            init = reasoning_domain.make_state(task)
             final_state, explored = beam_search(
                 prover=prover,
                 verifier=verifier,
@@ -234,8 +175,10 @@ def mine_online_verifier_pairs(
                 temperature=temperature,
                 top_k=top_k,
                 score_config=score_config,
+                parse_actions_fn=reasoning_domain.parse_actions,
+                fallback_repairs_fn=reasoning_domain.fallback_repairs,
             )
-            pair = pick_best_mined_pair(task, explored, final_state)
+            pair = pick_best_mined_pair(task, explored, final_state, reasoning_domain=reasoning_domain)
             if pair is not None:
                 replay.add(pair)
                 mined.append(pair)
@@ -308,14 +251,15 @@ def run_eval(
     temperature: float = 0.8,
     top_k: int = 24,
     score_config: Optional[Dict[str, Any]] = None,
+    reasoning_domain: MathReasoningDomain = DEFAULT_DOMAIN,
 ) -> Dict[str, float]:
     phase = scheduler.phase_for_step(step)
     solved = 0
     step_valid_total = 0.0
     branches_total = 0.0
     for _ in range(eval_count):
-        task = sample_task(phase.domains)
-        init = make_state(task)
+        task = reasoning_domain.sample_task(phase.domains)
+        init = reasoning_domain.make_state(task)
         final_state, explored = beam_search(
             prover=prover,
             verifier=verifier,
@@ -330,8 +274,10 @@ def run_eval(
             temperature=temperature,
             top_k=top_k,
             score_config=score_config,
+            parse_actions_fn=reasoning_domain.parse_actions,
+            fallback_repairs_fn=reasoning_domain.fallback_repairs,
         )
-        ok = final_state.status == "solved" and evaluate_answer(task, final_state.final_answer)
+        ok = final_state.status == "solved" and reasoning_domain.evaluate_answer(task, final_state.final_answer)
         solved += int(ok)
         branches_total += len(explored)
         if explored:
@@ -409,10 +355,8 @@ def main() -> None:
         except Exception:
             pass
 
-    registry = ToolRegistry()
-    if args.checker_plugin:
-        registry.load_plugin(args.checker_plugin)
-    executor = ProofExecutor(registry)
+    reasoning_domain = MathReasoningDomain(checker_plugin=args.checker_plugin)
+    executor = reasoning_domain.create_executor()
 
     prover_optim = torch.optim.AdamW(prover.parameters(), lr=float(cfg["training"]["lr"]), weight_decay=float(cfg["training"]["weight_decay"]))
     verifier_optim = torch.optim.AdamW(
@@ -451,9 +395,9 @@ def main() -> None:
         neg_targets: List[torch.Tensor] = []
 
         for _ in range(batch_size):
-            task = sample_task(phase.domains)
-            examples.append(build_training_example(task))
-            pos_text, pos_t, neg_text, neg_t = build_verifier_examples(task)
+            task = reasoning_domain.sample_task(phase.domains)
+            examples.append(reasoning_domain.build_training_example(task))
+            pos_text, pos_t, neg_text, neg_t = reasoning_domain.build_verifier_examples(task)
             pos_texts.append(pos_text)
             neg_texts.append(neg_text)
             pos_targets.append(pos_t)
@@ -478,6 +422,7 @@ def main() -> None:
                 temperature=float(phase_search_value(cfg, phase.name, "online_temperature_by_phase", cfg["verifier"].get("online_temperature", cfg["search"]["temperature"]))),
                 top_k=int(phase_search_value(cfg, phase.name, "online_top_k_by_phase", cfg["verifier"].get("online_top_k", cfg["search"]["top_k"]))),
                 score_config=cfg["search"],
+                reasoning_domain=reasoning_domain,
             )
             for pair in online_pairs:
                 pos_texts.append(str(pair["pos_text"]))
@@ -597,6 +542,7 @@ def main() -> None:
                 temperature=float(cfg["search"]["temperature"]),
                 top_k=int(cfg["search"]["top_k"]),
                 score_config=cfg["search"],
+                reasoning_domain=reasoning_domain,
             )
             metrics.update(eval_metrics)
             print(f"[{now_ts()}] eval | {compact_metrics(eval_metrics)}")
@@ -604,8 +550,8 @@ def main() -> None:
 
             # Refresh memory with a few sampled cases.
             for _ in range(int(cfg["training"].get("memory_refresh_samples", 4))):
-                task = sample_task(phase.domains)
-                init = make_state(task)
+                task = reasoning_domain.sample_task(phase.domains)
+                init = reasoning_domain.make_state(task)
                 final_state, explored = beam_search(
                     prover=prover,
                     verifier=verifier,
@@ -620,10 +566,12 @@ def main() -> None:
                     temperature=float(cfg["search"]["temperature"]),
                     top_k=int(cfg["search"]["top_k"]),
                     score_config=cfg["search"],
+                    parse_actions_fn=reasoning_domain.parse_actions,
+                    fallback_repairs_fn=reasoning_domain.fallback_repairs,
                 )
-                ok = final_state.status == "solved" and evaluate_answer(task, final_state.final_answer)
+                ok = final_state.status == "solved" and reasoning_domain.evaluate_answer(task, final_state.final_answer)
                 replay.add({"task": task.prompt, "answer": final_state.final_answer or "<no_answer>", "ok": ok, "domain": task.domain})
-                mined_pair = pick_best_mined_pair(task, explored, final_state)
+                mined_pair = pick_best_mined_pair(task, explored, final_state, reasoning_domain=reasoning_domain)
                 if mined_pair is not None:
                     replay.add(mined_pair)
                 if not ok:
@@ -637,30 +585,9 @@ def main() -> None:
                         }
                     )
                 if ok:
-                    if task.domain == "linear_equation":
-                        lemma_store.add(derive_linear_lemma(task.prompt))
-                    elif task.domain == "polynomial_simplify":
-                        lemma_store.add(derive_polynomial_lemma(task.prompt))
-                    elif task.domain in ["derivative", "integral"]:
-                        lemma_store.add(derive_calculus_lemma(task.prompt))
-                    elif task.domain == "logic":
-                        lemma_store.add(derive_logic_lemma(task.prompt))
-                    elif task.domain == "arithmetic":
-                        lemma_store.add(derive_arithmetic_lemma(task.prompt))
-                    elif task.domain == "fractions":
-                        lemma_store.add(derive_fractions_lemma(task.prompt))
-                    elif task.domain == "divmod":
-                        lemma_store.add(derive_divmod_lemma(task.prompt))
-                    elif task.domain == "gcd_lcm":
-                        lemma_store.add(derive_gcd_lcm_lemma(task.prompt))
-                    elif task.domain == "modular":
-                        lemma_store.add(derive_modular_lemma(task.prompt))
-                    elif task.domain == "primality":
-                        lemma_store.add(derive_primality_lemma(task.prompt))
-                    elif task.domain == "factorization":
-                        lemma_store.add(derive_factorization_lemma(task.prompt))
-                    elif task.domain == "parity_proof":
-                        lemma_store.add(derive_parity_proof_lemma(task.prompt))
+                    lemma = reasoning_domain.maybe_derive_lemma(task)
+                    if lemma is not None:
+                        lemma_store.add(lemma)
                 for node in explored:
                     if node.action is not None:
                         tactic_stats.record(task.domain, node.action.type.value, node.state.status == "solved")

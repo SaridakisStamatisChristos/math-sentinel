@@ -6,18 +6,14 @@ from typing import Any, Dict
 
 import torch
 
-from curriculum.generators import GeneratedTask, sample_task
 from curriculum.phases import PhaseScheduler
-from proof.executor import ProofExecutor
-from proof.state import ProofState
-from proof.traces import render_human_trace
+from domains.math.backend import MathReasoningDomain
 from search.beam import beam_search
 from sentinel.checkpointing import load_checkpoint
 from sentinel.config import load_runtime_config, load_yaml
 from sentinel.model import TinyTransformerLM
 from sentinel.tokenizer import build_default_tokenizer
 from sentinel.verifier import StateVerifier
-from tools.registry import ToolRegistry
 
 
 def verifier_init_kwargs(cfg: Dict[str, Any]) -> Dict[str, Any]:
@@ -29,21 +25,6 @@ def verifier_init_kwargs(cfg: Dict[str, Any]) -> Dict[str, Any]:
         "max_seq_len": int(cfg["verifier"].get("max_seq_len", cfg["model"]["seq_len"])),
         "ff_mult": int(cfg["verifier"].get("ff_mult", 4)),
     }
-
-
-def make_state(task: GeneratedTask) -> ProofState:
-    return ProofState(
-        task_id=task.task_id,
-        domain=task.domain,
-        problem_text=task.prompt,
-        goal=task.goal,
-        expected_answer=task.answer,
-        metadata=task.meta,
-    )
-
-
-def manual_task(domain: str, prompt: str, answer: str = "") -> GeneratedTask:
-    return GeneratedTask(task_id="manual_0001", domain=domain, prompt=prompt, answer=answer, goal="Solve the problem", meta={"family": domain})
 
 
 def main() -> None:
@@ -59,6 +40,7 @@ def main() -> None:
     cfg = load_runtime_config(args.config)
     curriculum_cfg = load_yaml(args.curriculum_config)
     scheduler = PhaseScheduler.from_dict(curriculum_cfg)
+    reasoning_domain = MathReasoningDomain(checker_plugin=args.checker_plugin)
     device = "cuda" if torch.cuda.is_available() and cfg["device"] in {"auto", "cuda"} else "cpu"
 
     tokenizer = build_default_tokenizer()
@@ -78,18 +60,15 @@ def main() -> None:
     if args.checkpoint:
         load_checkpoint(args.checkpoint, prover, verifier, map_location=device)
 
-    registry = ToolRegistry()
-    if args.checker_plugin:
-        registry.load_plugin(args.checker_plugin)
-    executor = ProofExecutor(registry)
+    executor = reasoning_domain.create_executor()
 
     if args.problem and args.domain:
-        task = manual_task(args.domain, args.problem)
+        task = reasoning_domain.manual_task(args.domain, args.problem)
     else:
         phase = scheduler.phase_for_step(int(cfg["training"]["steps"]))
-        task = sample_task(phase.domains)
+        task = reasoning_domain.sample_task(phase.domains)
 
-    init = make_state(task)
+    init = reasoning_domain.make_state(task)
     final_state, explored = beam_search(
         prover=prover,
         verifier=verifier,
@@ -104,6 +83,8 @@ def main() -> None:
         temperature=float(cfg["search"]["temperature"]),
         top_k=int(cfg["search"]["top_k"]),
         score_config=cfg["search"],
+        parse_actions_fn=reasoning_domain.parse_actions,
+        fallback_repairs_fn=reasoning_domain.fallback_repairs,
     )
 
     print("=== INPUT TASK ===")
@@ -111,7 +92,7 @@ def main() -> None:
     print("\n=== FINAL STATE ===")
     print(final_state.serialize())
     print("\n=== TRACE ===")
-    print(render_human_trace(final_state))
+    print(reasoning_domain.render_human_trace(final_state))
     print("\n=== EXPLORED NODES ===")
     print(len(explored))
 

@@ -1,6 +1,6 @@
 # Math Sentinel V7
 
-Math Sentinel V7 is a **stateful symbolic proof-agent scaffold** for mathematics. It is designed as the first version in the series where the authoritative object is a **proof state**, not just raw generated text.
+Math Sentinel V7 is a **stateful symbolic proof-agent scaffold** for mathematics built on top of a small domain-neutral reasoning engine. It is designed as the first version in the series where the authoritative object is a **reasoning state**, not just raw generated text, with math as the first backend.
 
 ## What V7 is
 
@@ -8,7 +8,7 @@ V7 combines:
 
 - a small causal **prover** transformer
 - a small recurrent **verifier**
-- an explicit `ProofState`
+- an explicit state object
 - a typed action system
 - deterministic math tools
 - verifier-guided beam search
@@ -51,14 +51,15 @@ It can also execute typed proof actions such as:
 
 ## Architecture in words
 
-1. A curriculum generator emits an infinite synthetic math task.
-2. The task is wrapped into a structured `ProofState`.
-3. The prover is conditioned on the serialized proof state and proposes action traces.
-4. The parser extracts typed actions.
-5. The executor applies actions to child proof states using exact tools.
+1. A domain backend emits or loads a task.
+2. The task is wrapped into a structured reasoning state.
+3. The prover is conditioned on the serialized state and proposes action traces.
+4. The domain parser extracts typed actions.
+5. The executor applies actions to child states using exact tools.
 6. The verifier scores those child states.
 7. Beam search keeps the strongest branches.
 8. Replay, hard-case tracking, and lemma memory retain what mattered.
+9. In this repo, math is the first fully wired backend.
 
 ## Repo layout
 
@@ -69,6 +70,8 @@ math_sentinel_v7/
 ├── train_v7.py
 ├── eval_v7.py
 ├── sample_v7.py
+├── engine/
+├── domains/
 ├── config/
 ├── sentinel/
 ├── proof/
@@ -201,7 +204,7 @@ The strongest next steps after this repo are:
 
 ## Practical note
 
-This codebase is intended to be a **working V7 skeleton with real logic**. It is not the final mathematical sentinel, but it is the first repo in the line that genuinely reasons over mathematical state rather than only text.
+This codebase is intended to be a **working V7 skeleton with real logic**. It is not the final mathematical sentinel, but it is the first repo in the line that genuinely reasons over mathematical state rather than only text, while also beginning to separate a reusable reasoning engine from the math-specific backend.
 
 ## Quick Commands
 

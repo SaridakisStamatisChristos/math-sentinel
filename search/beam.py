@@ -1,7 +1,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import torch
 
@@ -52,6 +52,8 @@ def beam_search(
     temperature: float = 0.8,
     top_k: int = 24,
     score_config: Optional[Dict[str, Any]] = None,
+    parse_actions_fn: Callable[[str], Tuple[List[Any], float]] = parse_actions,
+    fallback_repairs_fn: Callable[[ProofState], List[Any]] = fallback_repairs,
 ) -> Tuple[ProofState, List[SearchNode]]:
     root = SearchNode(state=initial_state.clone(), cumulative_score=0.0, depth=0)
     beam: List[SearchNode] = [root]
@@ -79,7 +81,7 @@ def beam_search(
 
             any_valid = False
             for txt in texts:
-                actions, confidence = parse_actions(txt)
+                actions, confidence = parse_actions_fn(txt)
                 if not actions:
                     continue
                 any_valid = True
@@ -120,7 +122,7 @@ def beam_search(
                 explored.append(child)
 
             if not any_valid:
-                for repair in fallback_repairs(node.state):
+                for repair in fallback_repairs_fn(node.state):
                     child_state, exec_info = executor.apply(node.state, repair)
                     exec_info["answer_present"] = 1.0 if child_state.final_answer.strip() else 0.0
                     verifier_scores = _score_state(verifier, tokenizer, device, child_state)

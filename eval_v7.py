@@ -6,18 +6,14 @@ from typing import Any, Dict
 
 import torch
 
-from curriculum.generators import sample_task
-from curriculum.oracle import evaluate_answer
 from curriculum.phases import PhaseScheduler
-from proof.executor import ProofExecutor
-from proof.state import ProofState
+from domains.math.backend import MathReasoningDomain
 from search.beam import beam_search
 from sentinel.checkpointing import load_checkpoint
 from sentinel.config import load_runtime_config, load_yaml
 from sentinel.model import TinyTransformerLM
 from sentinel.tokenizer import build_default_tokenizer
 from sentinel.verifier import StateVerifier
-from tools.registry import ToolRegistry
 
 
 def verifier_init_kwargs(cfg: Dict[str, Any]) -> Dict[str, Any]:
@@ -29,17 +25,6 @@ def verifier_init_kwargs(cfg: Dict[str, Any]) -> Dict[str, Any]:
         "max_seq_len": int(cfg["verifier"].get("max_seq_len", cfg["model"]["seq_len"])),
         "ff_mult": int(cfg["verifier"].get("ff_mult", 4)),
     }
-
-
-def make_state(task: Any) -> ProofState:
-    return ProofState(
-        task_id=task.task_id,
-        domain=task.domain,
-        problem_text=task.prompt,
-        goal=task.goal,
-        expected_answer=task.answer,
-        metadata=task.meta,
-    )
 
 
 def main() -> None:
@@ -56,6 +41,7 @@ def main() -> None:
     curriculum_cfg = load_yaml(args.curriculum_config)
     scheduler = PhaseScheduler.from_dict(curriculum_cfg)
     phase = scheduler.phase_for_step(args.step)
+    reasoning_domain = MathReasoningDomain(checker_plugin=args.checker_plugin)
     device = "cuda" if torch.cuda.is_available() and cfg["device"] in {"auto", "cuda"} else "cpu"
 
     tokenizer = build_default_tokenizer()
@@ -72,10 +58,7 @@ def main() -> None:
         **verifier_init_kwargs(cfg),
     ).to(device)
 
-    registry = ToolRegistry()
-    if args.checker_plugin:
-        registry.load_plugin(args.checker_plugin)
-    executor = ProofExecutor(registry)
+    executor = reasoning_domain.create_executor()
 
     if args.checkpoint:
         load_checkpoint(args.checkpoint, prover, verifier, map_location=device)
@@ -87,8 +70,8 @@ def main() -> None:
     equivalence_solved = 0
     branches = 0
     for _ in range(args.count):
-        task = sample_task(phase.domains)
-        init = make_state(task)
+        task = reasoning_domain.sample_task(phase.domains)
+        init = reasoning_domain.make_state(task)
         final_state, explored = beam_search(
             prover=prover,
             verifier=verifier,
@@ -103,9 +86,11 @@ def main() -> None:
             temperature=float(cfg["search"]["temperature"]),
             top_k=int(cfg["search"]["top_k"]),
             score_config=cfg["search"],
+            parse_actions_fn=reasoning_domain.parse_actions,
+            fallback_repairs_fn=reasoning_domain.fallback_repairs,
         )
         ok = final_state.status == "solved"
-        eq_ok = evaluate_answer(task, final_state.final_answer) if final_state.final_answer else False
+        eq_ok = reasoning_domain.evaluate_answer(task, final_state.final_answer) if final_state.final_answer else False
         solved += int(ok)
         equivalence_solved += int(eq_ok)
         branches += len(explored)
