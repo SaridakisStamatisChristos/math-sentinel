@@ -222,6 +222,22 @@ python train_v7.py --config config/product_openweights.yaml --model-provider hf_
 
 Once a backbone is cached locally, add `--local-files-only` to force fully local model loads.
 
+Recommended local config for an RTX 4060 laptop GPU:
+
+```bash
+python train_v7.py --config config/product_rtx4060_laptop.yaml --search-config "" --backend math
+python sample_v7.py --config config/product_rtx4060_laptop.yaml --search-config "" --backend math --domain arithmetic --problem "Compute: 12 + 30"
+python eval_v7.py --config config/product_rtx4060_laptop.yaml --search-config "" --backend math --count 32
+```
+
+The empty `--search-config ""` keeps the generic `config/search.yaml` override from shrinking the dedicated 4060 search settings.
+
+For code-agent tasks on the same GPU, prefer the coder-tuned 1.5B benchmark profile:
+
+```bash
+python benchmark_v7.py --profile rtx4060_coder_local --suite swebench_verified_smoke --deterministic --safe-runtime
+```
+
 You can also scale the model in `config/default.yaml` once CUDA is confirmed working.
 
 Resume:
@@ -389,6 +405,8 @@ Important benchmark profiles now include:
 - `public_unassisted_strict`: the default claim profile
 - `public_search_assisted`: a development baseline with guided rollout enabled
 - `smoke_tiny`: a fast regression profile
+- `rtx4060_general_local`: RTX 4060 laptop tuned general local profile
+- `rtx4060_coder_local`: RTX 4060 laptop tuned code-agent local profile
 
 There are also focused runner entrypoints:
 

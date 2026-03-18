@@ -74,6 +74,20 @@ Longer GPU run:
 python train_v7.py --steps 2000 --batch-size 16 --micro-batch-size 8 --device cuda --compile
 ```
 
+RTX 4060 laptop recommended open-weight run:
+
+```powershell
+python train_v7.py --config config/product_rtx4060_laptop.yaml --search-config "" --backend math
+```
+
+RTX 4060 laptop code-agent benchmark smoke:
+
+```powershell
+python benchmark_v7.py --profile rtx4060_coder_local --suite swebench_verified_smoke --deterministic --safe-runtime
+```
+
+When using a dedicated product config like `config/product_rtx4060_laptop.yaml`, pass `--search-config ""` if you want the config's own search block to stay intact instead of being overridden by `config/search.yaml`.
+
 Custom learning rate:
 
 ```powershell

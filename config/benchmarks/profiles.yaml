@@ -47,6 +47,22 @@ profiles:
     metadata:
       scale: 1.5b
       purpose: coder_dev
+  rtx4060_general_local:
+    description: RTX 4060 laptop tuned local general-reasoning profile for Qwen 1.5B.
+    config: profile_rtx4060_general_1p5b.yaml
+    suites: [gaia_smoke, math_public_smoke]
+    tags: [hf, qwen, local, rtx4060, general]
+    metadata:
+      scale: 1.5b
+      purpose: local_4060_general
+  rtx4060_coder_local:
+    description: RTX 4060 laptop tuned local code-agent profile for Qwen Coder 1.5B.
+    config: profile_rtx4060_coder_1p5b.yaml
+    suites: [swebench_verified_smoke]
+    tags: [hf, qwen, local, rtx4060, coder]
+    metadata:
+      scale: 1.5b
+      purpose: local_4060_coder
   qwen_coder_benchmark_7b:
     description: Mid-scale benchmark profile for public code-agent runs when local iteration still matters.
     config: profile_qwen_coder_7b.yaml

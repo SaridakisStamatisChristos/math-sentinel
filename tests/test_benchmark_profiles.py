@@ -14,6 +14,8 @@ class BenchmarkProfileTests(unittest.TestCase):
         self.assertIn("smoke_tiny", profiles)
         self.assertIn("public_unassisted_strict", profiles)
         self.assertIn("qwen_coder_flagship_32b", profiles)
+        self.assertIn("rtx4060_general_local", profiles)
+        self.assertIn("rtx4060_coder_local", profiles)
 
     def test_profile_config_extends_public_smoke_snapshot(self) -> None:
         cfg = load_runtime_config("config/benchmarks/profile_qwen_coder_32b.yaml", search_config_path="")
@@ -23,6 +25,26 @@ class BenchmarkProfileTests(unittest.TestCase):
         self.assertEqual(cfg["search"]["beam_width"], 10)
         self.assertTrue(cfg["runtime"]["safe_mode"])
         self.assertEqual(cfg["benchmark"]["assistance_mode"], "unassisted")
+
+    def test_rtx4060_profile_is_tuned_for_single_gpu_1p5b_runtime(self) -> None:
+        cfg = load_runtime_config("config/benchmarks/profile_rtx4060_general_1p5b.yaml", search_config_path="")
+
+        self.assertEqual(cfg["model"]["provider"], "hf_causal_lm")
+        self.assertEqual(cfg["model"]["backbone"], "Qwen/Qwen2.5-1.5B-Instruct")
+        self.assertEqual(cfg["model"]["device_map"], "single")
+        self.assertEqual(cfg["model"]["dtype"], "float16")
+        self.assertEqual(cfg["search"]["beam_width"], 5)
+        self.assertEqual(cfg["training"]["micro_batch_size"], 1)
+
+    def test_rtx4060_product_config_preserves_local_search_when_override_is_disabled(self) -> None:
+        cfg = load_runtime_config("config/product_rtx4060_laptop.yaml", search_config_path="")
+
+        self.assertEqual(cfg["model"]["provider"], "hf_causal_lm")
+        self.assertEqual(cfg["model"]["dtype"], "float16")
+        self.assertEqual(cfg["model"]["device_map"], "single")
+        self.assertFalse(cfg["runtime"]["deterministic"])
+        self.assertEqual(cfg["search"]["beam_width"], 5)
+        self.assertEqual(cfg["training"]["micro_batch_size"], 1)
 
     def test_apply_benchmark_profile_uses_catalog_config_snapshot(self) -> None:
         base_cfg = load_runtime_config("config/default.yaml", search_config_path="")

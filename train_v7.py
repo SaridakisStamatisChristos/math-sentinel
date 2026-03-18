@@ -444,6 +444,7 @@ def main() -> None:
     ap = argparse.ArgumentParser(description="Train Math Sentinel V7")
     ap.add_argument("--backend", default="math")
     ap.add_argument("--config", default="config/default.yaml")
+    ap.add_argument("--search-config", default="config/search.yaml")
     ap.add_argument("--curriculum-config", default="")
     ap.add_argument("--steps", type=int, default=None)
     ap.add_argument("--batch-size", type=int, default=None)
@@ -464,7 +465,7 @@ def main() -> None:
     ap.add_argument("--memory-refresh-samples", type=int, default=None)
     args = ap.parse_args()
 
-    cfg = load_runtime_config(args.config)
+    cfg = load_runtime_config(args.config, search_config_path=args.search_config)
     curriculum_path = args.curriculum_config or default_curriculum_config(args.backend)
     curriculum_cfg = load_yaml(curriculum_path)
     scheduler = PhaseScheduler.from_dict(curriculum_cfg)

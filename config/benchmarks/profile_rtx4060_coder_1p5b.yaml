@@ -1,0 +1,28 @@
+extends: public_smoke.yaml
+
+runtime:
+  deterministic: true
+  safe_mode: true
+
+model:
+  provider: hf_causal_lm
+  backbone: Qwen/Qwen2.5-Coder-1.5B-Instruct
+  adapter_mode: none
+  quantization: none
+  dtype: float16
+  device_map: single
+  local_files_only: false
+
+training:
+  batch_size: 2
+  micro_batch_size: 1
+  max_new_tokens: 48
+
+search:
+  beam_width: 6
+  proposal_count: 6
+  max_depth: 6
+  mcts_simulations: 16
+  mcts_branching: 6
+  guided_rollout_depth: 6
+  transposition_capacity: 4096

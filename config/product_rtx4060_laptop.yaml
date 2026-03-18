@@ -1,0 +1,87 @@
+seed: 1337
+device: auto
+compile: false
+
+runtime:
+  deterministic: false
+  safe_mode: true
+  structured_logs: true
+  event_log_path: logs/runtime_events.jsonl
+  fail_on_checkpoint_mismatch: false
+
+model:
+  provider: hf_causal_lm
+  backbone: Qwen/Qwen2.5-1.5B-Instruct
+  adapter_mode: lora
+  quantization: none
+  dtype: float16
+  device_map: single
+  trust_remote_code: false
+  local_files_only: false
+  special_tokens_version: 2
+  seq_len: 192
+  d_model: 64
+  n_heads: 4
+  n_layers: 1
+  dropout: 0.1
+
+verifier:
+  hidden_size: 96
+  dropout: 0.1
+  n_heads: 4
+  n_layers: 2
+  max_seq_len: 192
+  ff_mult: 4
+  lr: 0.0006
+  margin: 0.6
+  rank_weight: 0.5
+  focal_gamma: 2.0
+  focal_alpha: 0.75
+  loss_weight: 0.55
+  mined_pairs_per_step: 4
+  online_pairs_per_step: 2
+
+training:
+  steps: 1000
+  batch_size: 2
+  micro_batch_size: 1
+  lr: 0.00015
+  weight_decay: 0.01
+  grad_clip: 1.0
+  eval_every: 100
+  save_every: 50
+  log_every: 10
+  memory_refresh_samples: 8
+  amp: true
+  max_new_tokens: 48
+
+search:
+  mode: auto
+  beam_width: 5
+  max_depth: 5
+  proposal_count: 5
+  temperature: 0.0
+  top_k: 1
+  tactic_bonus: 0.12
+  decoder_mode: strict
+  mcts_simulations: 16
+  mcts_branching: 6
+  mcts_exploration: 1.25
+  transposition_capacity: 4096
+  value_weight: 0.35
+  novelty_weight: 0.08
+
+memory:
+  replay_capacity: 5000
+  hard_case_capacity: 2000
+  retrieval_mode: hybrid
+  embedding_model: hashing
+  lemma_store_path: memory/lemma_store.json
+  hard_cases_path: memory/hard_cases.json
+  tactic_stats_path: memory/tactic_stats.json
+  replay_path: memory/replay.jsonl
+
+paths:
+  checkpoints_dir: checkpoints
+  logs_dir: logs
+  data_dir: data

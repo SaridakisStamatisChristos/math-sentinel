@@ -33,6 +33,7 @@ def main() -> None:
     ap = argparse.ArgumentParser(description="Evaluate Math Sentinel V7")
     ap.add_argument("--backend", default="math")
     ap.add_argument("--config", default="config/default.yaml")
+    ap.add_argument("--search-config", default="config/search.yaml")
     ap.add_argument("--curriculum-config", default="")
     ap.add_argument("--checkpoint", default="")
     ap.add_argument("--model-provider", default=None)
@@ -45,7 +46,7 @@ def main() -> None:
     ap.add_argument("--checker-plugin", default="")
     args = ap.parse_args()
 
-    cfg = load_runtime_config(args.config)
+    cfg = load_runtime_config(args.config, search_config_path=args.search_config)
     if args.model_provider is not None:
         cfg["model"]["provider"] = args.model_provider
     if args.backbone is not None:
