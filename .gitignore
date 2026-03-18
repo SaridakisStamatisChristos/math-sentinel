@@ -52,6 +52,7 @@ logs/
 checkpoints/
 *.pt
 *.pth
+models/
 
 # Data and generated files
 data/

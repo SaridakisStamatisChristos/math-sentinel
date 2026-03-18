@@ -7,6 +7,7 @@ import subprocess
 from typing import Any, Dict, Iterable, List, Tuple
 
 from sentinel.model_backends import build_model_runtime_info
+from sentinel.config import deep_merge_dicts
 from sentinel.runtime import configure_runtime
 from sentinel.runtime_events import build_runtime_event_logger
 
@@ -214,6 +215,7 @@ def render_campaign_report(summary: BenchmarkCampaignSummary) -> str:
 def run_benchmark_campaign(
     *,
     base_cfg: Dict[str, Any],
+    cfg_overrides: Dict[str, Any] | None,
     suite_spec: str,
     backends_spec: str,
     profiles: List[BenchmarkProfile],
@@ -238,6 +240,8 @@ def run_benchmark_campaign(
 
     for profile in profiles:
         profiled_cfg = apply_benchmark_profile(base_cfg, profile)
+        if cfg_overrides:
+            profiled_cfg = deep_merge_dicts(profiled_cfg, cfg_overrides)
         for ablation in ablations:
             ablated_cfg = apply_benchmark_ablation(deepcopy(profiled_cfg), ablation)
             for repeat_index in range(1, repeat + 1):

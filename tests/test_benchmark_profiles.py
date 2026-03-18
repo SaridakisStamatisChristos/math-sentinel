@@ -30,9 +30,10 @@ class BenchmarkProfileTests(unittest.TestCase):
         cfg = load_runtime_config("config/benchmarks/profile_rtx4060_general_1p5b.yaml", search_config_path="")
 
         self.assertEqual(cfg["model"]["provider"], "hf_causal_lm")
-        self.assertEqual(cfg["model"]["backbone"], "Qwen/Qwen2.5-1.5B-Instruct")
+        self.assertEqual(cfg["model"]["backbone"], "models/Qwen2.5-1.5B-Instruct")
         self.assertEqual(cfg["model"]["device_map"], "single")
         self.assertEqual(cfg["model"]["dtype"], "float16")
+        self.assertTrue(cfg["model"]["local_files_only"])
         self.assertEqual(cfg["search"]["beam_width"], 5)
         self.assertEqual(cfg["training"]["micro_batch_size"], 1)
 
@@ -40,8 +41,10 @@ class BenchmarkProfileTests(unittest.TestCase):
         cfg = load_runtime_config("config/product_rtx4060_laptop.yaml", search_config_path="")
 
         self.assertEqual(cfg["model"]["provider"], "hf_causal_lm")
+        self.assertEqual(cfg["model"]["backbone"], "models/Qwen2.5-1.5B-Instruct")
         self.assertEqual(cfg["model"]["dtype"], "float16")
         self.assertEqual(cfg["model"]["device_map"], "single")
+        self.assertTrue(cfg["model"]["local_files_only"])
         self.assertFalse(cfg["runtime"]["deterministic"])
         self.assertEqual(cfg["search"]["beam_width"], 5)
         self.assertEqual(cfg["training"]["micro_batch_size"], 1)

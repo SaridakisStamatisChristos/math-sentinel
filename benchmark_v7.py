@@ -23,6 +23,17 @@ def default_campaign_profile_for_suite(suite_spec: str) -> str:
     return "smoke_tiny"
 
 
+def cli_cfg_overrides(args: argparse.Namespace) -> Dict[str, Any]:
+    overrides: Dict[str, Any] = {}
+    if args.model_provider is not None:
+        overrides.setdefault("model", {})["provider"] = args.model_provider
+    if args.backbone is not None:
+        overrides.setdefault("model", {})["backbone"] = args.backbone
+    if args.local_files_only:
+        overrides.setdefault("model", {})["local_files_only"] = True
+    return overrides
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description="Benchmark Math Sentinel V7 backends")
     ap.add_argument("--config", default="config/default.yaml")
@@ -58,12 +69,11 @@ def main() -> None:
         return
 
     cfg = load_runtime_config(args.config, search_config_path=args.search_config)
-    if args.model_provider is not None:
-        cfg["model"]["provider"] = args.model_provider
-    if args.backbone is not None:
-        cfg["model"]["backbone"] = args.backbone
-    if args.local_files_only:
-        cfg["model"]["local_files_only"] = True
+    overrides = cli_cfg_overrides(args)
+    if overrides:
+        cfg = load_runtime_config(args.config, search_config_path=args.search_config)
+        for section, values in overrides.items():
+            cfg.setdefault(section, {}).update(values)
 
     campaign_mode = bool(args.profile or args.ablations or args.repeat > 1 or args.campaign_name)
     if campaign_mode:
@@ -71,6 +81,7 @@ def main() -> None:
         ablations = resolve_benchmark_ablations(args.ablations or "baseline", args.ablation_config)
         summary = run_benchmark_campaign(
             base_cfg=cfg,
+            cfg_overrides=overrides,
             suite_spec=args.suite,
             backends_spec=args.backends,
             profiles=profiles,

@@ -11,13 +11,13 @@ runtime:
 
 model:
   provider: hf_causal_lm
-  backbone: Qwen/Qwen2.5-1.5B-Instruct
+  backbone: models/Qwen2.5-1.5B-Instruct
   adapter_mode: lora
   quantization: none
   dtype: float16
   device_map: single
   trust_remote_code: false
-  local_files_only: false
+  local_files_only: true
   special_tokens_version: 2
   seq_len: 192
   d_model: 64

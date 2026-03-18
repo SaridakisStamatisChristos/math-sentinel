@@ -50,6 +50,7 @@ class BenchmarkCampaignTests(unittest.TestCase):
 
         summary = run_benchmark_campaign(
             base_cfg=base_cfg,
+            cfg_overrides=None,
             suite_spec="public_smoke",
             backends_spec="all",
             profiles=resolve_benchmark_profiles("smoke_tiny"),
@@ -72,3 +73,43 @@ class BenchmarkCampaignTests(unittest.TestCase):
         self.assertTrue((campaign_root / "campaign_report.md").exists())
         self.assertEqual(len([line for line in ledger_path.read_text(encoding="utf-8").splitlines() if line.strip()]), 4)
         self.assertTrue(all(variant["stable"] for variant in summary.variants))
+
+    @patch("benchmarks.campaign.run_suite_target")
+    @patch("benchmarks.campaign.load_benchmark_runtime")
+    def test_campaign_applies_cfg_overrides_after_profile(self, mock_load_runtime: object, mock_run_suite_target: object) -> None:
+        mock_load_runtime.return_value = (object(), object(), object())
+
+        def fake_run_suite_target(target_kind: str, target_name: str, cfg: dict, *args: object, **kwargs: object) -> BenchmarkSuiteResult:  # noqa: ARG001
+            self.assertEqual(cfg["model"]["backbone"], "models/Qwen2.5-Coder-1.5B-Instruct")
+            self.assertTrue(cfg["model"]["local_files_only"])
+            return BenchmarkSuiteResult(
+                suite=target_name if target_kind == "public" else f"internal_{target_name}",
+                backend="swebench_ops",
+                tier="smoke",
+                description="fake benchmark result",
+                solved_rate=1.0,
+                equivalence_rate=1.0,
+                avg_branches=1.0,
+                cases=[],
+                metadata={},
+            )
+
+        mock_run_suite_target.side_effect = fake_run_suite_target
+        results_dir = self._fresh_dir("benchmark-campaign-overrides")
+        base_cfg = load_runtime_config("config/benchmarks/public_smoke.yaml", search_config_path="")
+
+        run_benchmark_campaign(
+            base_cfg=base_cfg,
+            cfg_overrides={"model": {"backbone": "models/Qwen2.5-Coder-1.5B-Instruct", "local_files_only": True}},
+            suite_spec="swebench_verified_smoke",
+            backends_spec="all",
+            profiles=resolve_benchmark_profiles("rtx4060_coder_local"),
+            ablations=resolve_benchmark_ablations("baseline"),
+            checkpoint="",
+            results_dir=str(results_dir),
+            checker_plugin="",
+            deterministic_override=True,
+            safe_override=True,
+            repeat=1,
+            campaign_name="unit_campaign_overrides",
+        )

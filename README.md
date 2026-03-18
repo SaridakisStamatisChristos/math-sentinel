@@ -232,6 +232,8 @@ python eval_v7.py --config config/product_rtx4060_laptop.yaml --search-config ""
 
 The empty `--search-config ""` keeps the generic `config/search.yaml` override from shrinking the dedicated 4060 search settings.
 
+On this branch, the 4060 config assumes the public 1.5B Qwen weights have already been downloaded into local project folders under `models/`, so the run stays fully local.
+
 For code-agent tasks on the same GPU, prefer the coder-tuned 1.5B benchmark profile:
 
 ```bash
