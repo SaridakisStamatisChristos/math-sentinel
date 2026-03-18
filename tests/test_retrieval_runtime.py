@@ -19,6 +19,19 @@ class _HardCaseStore:
 
 
 class RetrievalRuntimeTests(unittest.TestCase):
+    def test_retrieve_context_supports_none_mode(self) -> None:
+        context = retrieve_context(
+            _LemmaStore(),
+            _HardCaseStore(),
+            "swebench_patch",
+            "Patch the repository carefully",
+            mode="none",
+            tool_names=["apply_patch"],
+        )
+
+        self.assertEqual(context["lemmas"], [])
+        self.assertEqual(context["tool_priors"], {})
+
     def test_retrieve_context_surfaces_tool_priors_and_failure_avoidance(self) -> None:
         context = retrieve_context(
             _LemmaStore(),

@@ -19,6 +19,7 @@ from sentinel.runtime_events import build_runtime_event_logger
 def main() -> None:
     ap = argparse.ArgumentParser(description="Run the local SWE-bench-style public smoke suite")
     ap.add_argument("--config", default="config/benchmarks/public_smoke.yaml")
+    ap.add_argument("--search-config", default="")
     ap.add_argument("--checkpoint", default="")
     ap.add_argument("--model-provider", default=None)
     ap.add_argument("--backbone", default=None)
@@ -29,7 +30,7 @@ def main() -> None:
     ap.add_argument("--checker-plugin", default="")
     args = ap.parse_args()
 
-    cfg = load_runtime_config(args.config)
+    cfg = load_runtime_config(args.config, search_config_path=args.search_config)
     if args.model_provider is not None:
         cfg["model"]["provider"] = args.model_provider
     if args.backbone is not None:

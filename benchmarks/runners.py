@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, Dict, Iterable, List
+from typing import Any, Dict, Iterable, List, Tuple
 
 import torch
 
@@ -13,7 +13,7 @@ from sentinel.search_runtime import build_action_bias_fn, build_prompt_builder, 
 from sentinel.verifier import StateVerifier
 
 from .base import BenchmarkCaseResult, BenchmarkSuite, BenchmarkSuiteResult
-from .public_catalog import load_public_suite
+from .public_catalog import available_public_suites, load_public_suite
 
 
 def verifier_init_kwargs(cfg: Dict[str, Any]) -> Dict[str, Any]:
@@ -32,6 +32,24 @@ def resolve_backends(spec: str) -> List[str]:
         return available_backends()
     names = [name.strip() for name in spec.split(",") if name.strip()]
     return names or available_backends()
+
+
+def resolve_suite_targets(suite_spec: str, backends_spec: str) -> List[Tuple[str, str]]:
+    targets: List[Tuple[str, str]] = []
+    normalized_suite = (suite_spec or "internal").strip().lower()
+    public_suites = set(available_public_suites())
+
+    if normalized_suite in {"internal", "all"}:
+        for backend_name in resolve_backends(backends_spec):
+            targets.append(("internal", backend_name))
+
+    if normalized_suite in {"public_smoke", "all"}:
+        for suite_name in available_public_suites():
+            targets.append(("public", suite_name))
+    elif normalized_suite in public_suites:
+        targets.append(("public", normalized_suite))
+
+    return targets
 
 
 def load_benchmark_runtime(
@@ -163,6 +181,24 @@ def run_backend_benchmark(
         checker_plugin=checker_plugin,
         event_logger=event_logger,
     )
+
+
+def run_suite_target(
+    target_kind: str,
+    target_name: str,
+    cfg: Dict[str, Any],
+    prover: torch.nn.Module,
+    verifier: StateVerifier,
+    tokenizer: Any,
+    device: str,
+    checker_plugin: str,
+    event_logger: Any,
+) -> BenchmarkSuiteResult:
+    if target_kind == "internal":
+        return run_backend_benchmark(target_name, cfg, prover, verifier, tokenizer, device, checker_plugin, event_logger)
+    if target_kind == "public":
+        return run_public_suite(target_name, cfg, prover, verifier, tokenizer, device, checker_plugin, event_logger)
+    raise ValueError(f"unknown benchmark target kind: {target_kind}")
 
 
 def run_public_suite(

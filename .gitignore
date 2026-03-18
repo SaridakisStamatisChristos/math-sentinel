@@ -46,6 +46,7 @@ Thumbs.db
 logs/
 *.log
 .tmp-benchmarks/
+.tmp-tests/
 
 # Checkpoints, models, large artifacts
 checkpoints/
@@ -68,4 +69,6 @@ memory/replay.jsonl
 
 # Benchmark artifacts
 results/*.json
+results/benchmark_ledger.jsonl
+results/campaigns/
 !results/README.md

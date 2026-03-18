@@ -11,6 +11,29 @@ def suite_result_path(results_dir: str, suite_name: str) -> str:
     return str(Path(results_dir) / f"{suite_name}.json")
 
 
+def save_json(path: str, payload: Dict[str, Any]) -> str:
+    target = Path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    with open(target, "w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=False, indent=2)
+    return str(target)
+
+
+def save_text(path: str, text: str) -> str:
+    target = Path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(text, encoding="utf-8")
+    return str(target)
+
+
+def append_jsonl(path: str, payload: Dict[str, Any]) -> str:
+    target = Path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    with open(target, "a", encoding="utf-8") as f:
+        f.write(json.dumps(payload, ensure_ascii=False) + "\n")
+    return str(target)
+
+
 def save_suite_result(results_dir: str, result: BenchmarkSuiteResult) -> str:
     path = Path(suite_result_path(results_dir, result.suite))
     path.parent.mkdir(parents=True, exist_ok=True)

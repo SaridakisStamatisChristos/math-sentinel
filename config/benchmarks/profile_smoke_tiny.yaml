@@ -1,0 +1,12 @@
+extends: public_smoke.yaml
+
+model:
+  provider: legacy_tiny
+  adapter_mode: none
+  backbone: Qwen/Qwen2.5-1.5B-Instruct
+
+search:
+  beam_width: 4
+  proposal_count: 4
+  mcts_simulations: 18
+  mcts_branching: 6

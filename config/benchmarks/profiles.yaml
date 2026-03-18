@@ -1,0 +1,57 @@
+profiles:
+  smoke_tiny:
+    description: Deterministic legacy-tiny smoke profile for CI, fast regressions, and ablation sanity checks.
+    config: profile_smoke_tiny.yaml
+    suites: [public_smoke, internal]
+    tags: [smoke, ci, deterministic]
+    metadata:
+      scale: tiny
+      purpose: regression
+  hf_tiny_local:
+    description: Cached Hugging Face tiny-model profile for local open-weight smoke testing.
+    config: profile_hf_tiny_local.yaml
+    suites: [public_smoke]
+    tags: [hf, smoke, local]
+    metadata:
+      scale: tiny
+      purpose: runtime_smoke
+  qwen_general_dev_1p5b:
+    description: Development profile for general reasoning on the local open-weight runtime.
+    config: profile_qwen_general_1p5b.yaml
+    suites: [gaia_smoke, math_public_smoke]
+    tags: [hf, qwen, dev, general]
+    metadata:
+      scale: 1.5b
+      purpose: general_dev
+  qwen_coder_dev_1p5b:
+    description: Development profile for code-agent tasks with the coder-tuned backbone.
+    config: profile_qwen_coder_1p5b.yaml
+    suites: [swebench_verified_smoke]
+    tags: [hf, qwen, dev, coder]
+    metadata:
+      scale: 1.5b
+      purpose: coder_dev
+  qwen_coder_benchmark_7b:
+    description: Mid-scale benchmark profile for public code-agent runs when local iteration still matters.
+    config: profile_qwen_coder_7b.yaml
+    suites: [swebench_verified_smoke]
+    tags: [hf, qwen, benchmark, coder]
+    metadata:
+      scale: 7b
+      purpose: benchmark_midscale
+  qwen_general_flagship_32b:
+    description: Flagship general-reasoning benchmark profile for GAIA-style runs on strong local hardware.
+    config: profile_qwen_general_32b.yaml
+    suites: [gaia_smoke, math_public_smoke]
+    tags: [hf, qwen, flagship, general]
+    metadata:
+      scale: 32b
+      purpose: flagship_general
+  qwen_coder_flagship_32b:
+    description: Flagship code-agent benchmark profile for SWE-bench-style runs on strong local hardware.
+    config: profile_qwen_coder_32b.yaml
+    suites: [swebench_verified_smoke]
+    tags: [hf, qwen, flagship, coder]
+    metadata:
+      scale: 32b
+      purpose: flagship_coder

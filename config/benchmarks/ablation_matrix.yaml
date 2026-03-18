@@ -1,0 +1,36 @@
+ablations:
+  baseline:
+    description: Full system with retrieval, value guidance, transposition caching, and guided fallback rollouts.
+    tags: [reference, full]
+    overrides: {}
+  no_retrieval:
+    description: Disable memory retrieval to measure how much episodic context changes decisions.
+    tags: [memory, ablation]
+    overrides:
+      memory:
+        retrieval_mode: none
+  no_guided_rollout:
+    description: Disable deterministic guided fallback rollouts after the main search budget is exhausted.
+    tags: [search, ablation]
+    overrides:
+      search:
+        guided_fallback_rollout: false
+  no_value:
+    description: Remove learned value guidance from branch scoring and MCTS evaluation.
+    tags: [search, value, ablation]
+    overrides:
+      search:
+        value_weight: 0.0
+  no_transposition:
+    description: Disable semantic transposition caching to expose the duplicate-state cost.
+    tags: [search, cache, ablation]
+    overrides:
+      search:
+        transposition_capacity: 0
+  beam_only:
+    description: Force beam search everywhere to compare against the hybrid auto planner.
+    tags: [search, beam, ablation]
+    overrides:
+      search:
+        mode: beam
+        guided_fallback_rollout: false

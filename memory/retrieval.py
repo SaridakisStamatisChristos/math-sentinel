@@ -124,6 +124,26 @@ def retrieve_context(
     tool_names: Sequence[str] | None = None,
     event_logger: Any | None = None,
 ) -> Dict[str, Any]:
+    if mode == "none":
+        result = {
+            "lemmas": [],
+            "hard_cases": [],
+            "tool_priors": {},
+            "failure_avoidance": [],
+        }
+        if event_logger is not None:
+            event_logger(
+                "retrieval_disabled",
+                domain=domain,
+                query=text[:160],
+                mode=mode,
+                embedding_model=embedding_model,
+                lemma_hits=0,
+                hard_case_hits=0,
+                tool_hints="",
+            )
+        return result
+
     service = RetrievalService(mode=mode, embedding_model=embedding_model)
     lemmas = lemma_store.retrieve(domain, text, limit=6)
     hard_cases = hard_case_store.retrieve(domain, limit=6)

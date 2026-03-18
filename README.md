@@ -327,6 +327,27 @@ python benchmark_v7.py --suite gaia_smoke --config config/benchmarks/public_smok
 python benchmark_v7.py --suite math_public_smoke --config config/benchmarks/public_smoke.yaml --deterministic --safe-runtime
 ```
 
+List the named benchmark profiles and ablations:
+
+```bash
+python benchmark_v7.py --list-profiles
+python benchmark_v7.py --list-ablations
+```
+
+Run a profile-driven ablation campaign with repeatable artifacts:
+
+```bash
+python benchmark_v7.py \
+  --config config/benchmarks/public_smoke.yaml \
+  --suite public_smoke \
+  --profile smoke_tiny \
+  --ablations baseline,no_retrieval \
+  --repeat 2 \
+  --campaign-name roadmap_phase_smoke \
+  --deterministic \
+  --safe-runtime
+```
+
 There are also focused runner entrypoints:
 
 ```bash
@@ -336,6 +357,14 @@ python benchmarks/math_runner.py --deterministic --safe-runtime
 ```
 
 Benchmark JSON summaries are written into `results/`.
+Campaign runs additionally write:
+
+- per-run suite results
+- per-run manifests
+- config snapshots
+- campaign summary JSON
+- campaign markdown report
+- append-only entries in `results/benchmark_ledger.jsonl`
 
 ## Memory modes
 
@@ -381,6 +410,11 @@ The strongest next steps after this repo are:
 This codebase is intended to be a **working V7 skeleton with real logic**. It is not the final mathematical sentinel, but it is the first repo in the line that genuinely reasons over mathematical state rather than only text, while also beginning to separate a reusable reasoning engine from the math-specific backend.
 
 For the open-weight profile, see [config/product_openweights.yaml](/C:/Users/scsar/Desktop/math_sentinel_v7/config/product_openweights.yaml). That profile turns on deterministic safe runtime defaults and strict structured decoding.
+
+For benchmark profile snapshots and the ablation matrix, see:
+
+- [config/benchmarks/profiles.yaml](/C:/Users/scsar/Desktop/math_sentinel_v7/config/benchmarks/profiles.yaml)
+- [config/benchmarks/ablation_matrix.yaml](/C:/Users/scsar/Desktop/math_sentinel_v7/config/benchmarks/ablation_matrix.yaml)
 
 ## Quick Commands
 

@@ -1,6 +1,6 @@
 ## Road To SOTA Progress
 
-Branch: `sota-real-benchmark-agents`
+Branch: `sota-benchmark-ablation-phase`
 
 ### Completed
 
@@ -24,13 +24,15 @@ Branch: `sota-real-benchmark-agents`
 - `swebench_ops` now drafts, applies, and verifies fixes without the gold-patch shortcut path
 - `gaia_ops` now plans, gathers evidence, computes candidate answers, and answers from evidence
 - guided fallback rollouts now let benchmark agents complete multi-step traces under tighter search budgets
-
-### In Progress
-
-- harder benchmark fixtures beyond smoke proxy suites
-- larger-model benchmark profiles and ablations
+- benchmark profile snapshots now live under `config/benchmarks/`
+- benchmark config loading now supports `extends` inheritance
+- benchmark ablation matrix now lives under `config/benchmarks/ablation_matrix.yaml`
+- `benchmark_v7.py` now supports campaign runs, profile listing, ablation listing, repeat runs, manifests, and ledger output
+- campaign artifacts now include config snapshots, per-run manifests, per-campaign JSON summaries, markdown reports, and `results/benchmark_ledger.jsonl`
+- deterministic smoke ablation campaign executed successfully on this branch
 
 ### Remaining
 
-- larger-model benchmark profiles
-- public benchmark score collection and ablations
+- harder benchmark fixtures beyond smoke proxy suites
+- official-scale benchmark score collection on 7B and 32B profiles
+- benchmark-directed training and public ablation reports

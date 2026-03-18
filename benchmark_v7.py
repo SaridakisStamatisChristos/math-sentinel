@@ -4,8 +4,15 @@ from __future__ import annotations
 import argparse
 from typing import Any, Dict
 
-from benchmarks import available_public_suites, save_suite_result
-from benchmarks.runners import load_benchmark_runtime, resolve_backends, run_backend_benchmark, run_public_suite
+from benchmarks import (
+    available_benchmark_ablations,
+    available_benchmark_profiles,
+    run_benchmark_campaign,
+    save_suite_result,
+)
+from benchmarks.ablations import resolve_benchmark_ablations
+from benchmarks.profiles import resolve_benchmark_profiles
+from benchmarks.runners import load_benchmark_runtime, resolve_suite_targets, run_suite_target
 from sentinel.config import load_runtime_config
 from sentinel.runtime import configure_runtime
 from sentinel.runtime_events import build_runtime_event_logger
@@ -14,6 +21,7 @@ from sentinel.runtime_events import build_runtime_event_logger
 def main() -> None:
     ap = argparse.ArgumentParser(description="Benchmark Math Sentinel V7 backends")
     ap.add_argument("--config", default="config/default.yaml")
+    ap.add_argument("--search-config", default="")
     ap.add_argument("--checkpoint", default="")
     ap.add_argument("--model-provider", default=None)
     ap.add_argument("--backbone", default=None)
@@ -24,34 +32,61 @@ def main() -> None:
     ap.add_argument("--backends", default="all")
     ap.add_argument("--results-dir", default="results")
     ap.add_argument("--checker-plugin", default="")
+    ap.add_argument("--profile", default="")
+    ap.add_argument("--profiles-config", default="config/benchmarks/profiles.yaml")
+    ap.add_argument("--list-profiles", action="store_true")
+    ap.add_argument("--ablations", default="")
+    ap.add_argument("--ablation-config", default="config/benchmarks/ablation_matrix.yaml")
+    ap.add_argument("--list-ablations", action="store_true")
+    ap.add_argument("--repeat", type=int, default=1)
+    ap.add_argument("--campaign-name", default="")
     args = ap.parse_args()
 
-    cfg = load_runtime_config(args.config)
+    if args.list_profiles:
+        for name in available_benchmark_profiles(args.profiles_config):
+            print(name)
+        return
+
+    if args.list_ablations:
+        for name in available_benchmark_ablations(args.ablation_config):
+            print(name)
+        return
+
+    cfg = load_runtime_config(args.config, search_config_path=args.search_config)
     if args.model_provider is not None:
         cfg["model"]["provider"] = args.model_provider
     if args.backbone is not None:
         cfg["model"]["backbone"] = args.backbone
     if args.local_files_only:
         cfg["model"]["local_files_only"] = True
+
+    campaign_mode = bool(args.profile or args.ablations or args.repeat > 1 or args.campaign_name)
+    if campaign_mode:
+        profiles = resolve_benchmark_profiles(args.profile or "smoke_tiny", args.profiles_config)
+        ablations = resolve_benchmark_ablations(args.ablations or "baseline", args.ablation_config)
+        summary = run_benchmark_campaign(
+            base_cfg=cfg,
+            suite_spec=args.suite,
+            backends_spec=args.backends,
+            profiles=profiles,
+            ablations=ablations,
+            checkpoint=args.checkpoint,
+            results_dir=args.results_dir,
+            checker_plugin=args.checker_plugin,
+            deterministic_override=(True if args.deterministic else None),
+            safe_override=(True if args.safe_runtime else None),
+            repeat=max(1, int(args.repeat)),
+            campaign_name=args.campaign_name,
+        )
+        print(summary.to_dict())
+        return
+
     device = configure_runtime(cfg, deterministic_override=(True if args.deterministic else None), safe_override=(True if args.safe_runtime else None))
     event_logger = build_runtime_event_logger(cfg)
     prover, tokenizer, verifier = load_benchmark_runtime(cfg, device, checkpoint=args.checkpoint)
 
-    normalized_suite = args.suite.strip().lower()
-    if normalized_suite in {"internal", "all"}:
-        for backend_name in resolve_backends(args.backends):
-            result = run_backend_benchmark(backend_name, cfg, prover, verifier, tokenizer, device, args.checker_plugin, event_logger)
-            save_suite_result(args.results_dir, result)
-            print(result.to_dict())
-
-    if normalized_suite in {"public_smoke", "all"}:
-        for suite_name in available_public_suites():
-            result = run_public_suite(suite_name, cfg, prover, verifier, tokenizer, device, args.checker_plugin, event_logger)
-            save_suite_result(args.results_dir, result)
-            print(result.to_dict())
-
-    if normalized_suite in set(available_public_suites()):
-        result = run_public_suite(normalized_suite, cfg, prover, verifier, tokenizer, device, args.checker_plugin, event_logger)
+    for target_kind, target_name in resolve_suite_targets(args.suite, args.backends):
+        result = run_suite_target(target_kind, target_name, cfg, prover, verifier, tokenizer, device, args.checker_plugin, event_logger)
         save_suite_result(args.results_dir, result)
         print(result.to_dict())
 

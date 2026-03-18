@@ -51,6 +51,42 @@ class ConfigLoadingTests(unittest.TestCase):
         self.assertFalse(cfg["runtime"]["safe_mode"])
         self.assertTrue(cfg["runtime"]["structured_logs"])
 
+    def test_runtime_config_supports_extends_without_search_overlay(self) -> None:
+        root = self._fresh_dir("config-extends")
+        base_path = root / "base.yaml"
+        child_path = root / "child.yaml"
+        search_path = root / "search.yaml"
+
+        base_path.write_text(
+            "runtime:\n"
+            "  safe_mode: true\n"
+            "search:\n"
+            "  beam_width: 6\n"
+            "model:\n"
+            "  provider: legacy_tiny\n"
+            "  seq_len: 32\n"
+            "  d_model: 16\n"
+            "  n_heads: 2\n"
+            "  n_layers: 1\n"
+            "  dropout: 0.1\n",
+            encoding="utf-8",
+        )
+        child_path.write_text(
+            "extends: base.yaml\n"
+            "search:\n"
+            "  beam_width: 9\n"
+            "model:\n"
+            "  backbone: fake/backbone\n",
+            encoding="utf-8",
+        )
+        search_path.write_text("beam_width: 2\n", encoding="utf-8")
+
+        cfg = load_runtime_config(str(child_path), search_config_path="")
+
+        self.assertEqual(cfg["search"]["beam_width"], 9)
+        self.assertTrue(cfg["runtime"]["safe_mode"])
+        self.assertEqual(cfg["model"]["backbone"], "fake/backbone")
+
 
 if __name__ == "__main__":
     unittest.main()

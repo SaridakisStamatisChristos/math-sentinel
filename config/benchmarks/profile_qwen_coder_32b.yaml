@@ -1,0 +1,18 @@
+extends: public_smoke.yaml
+
+model:
+  provider: hf_causal_lm
+  backbone: Qwen/Qwen2.5-Coder-32B-Instruct
+  adapter_mode: none
+  quantization: 4bit
+  dtype: bfloat16
+  device_map: auto
+  local_files_only: false
+
+search:
+  beam_width: 10
+  proposal_count: 10
+  max_depth: 8
+  mcts_simulations: 48
+  mcts_branching: 12
+  guided_rollout_depth: 10

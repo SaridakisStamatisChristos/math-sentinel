@@ -1,0 +1,14 @@
+extends: public_smoke.yaml
+
+model:
+  provider: hf_causal_lm
+  backbone: sshleifer/tiny-gpt2
+  adapter_mode: none
+  quantization: none
+  dtype: float32
+  device_map: single
+  local_files_only: true
+
+search:
+  beam_width: 4
+  proposal_count: 4
