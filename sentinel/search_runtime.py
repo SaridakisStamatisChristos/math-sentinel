@@ -42,11 +42,18 @@ def build_prompt_builder(
     return _builder
 
 
-def build_action_bias_fn(tactic_stats: TacticStats | None) -> Callable[[Any, Any], float]:
+def build_action_bias_fn(tactic_stats: TacticStats | None, reasoning_domain: Any | None = None) -> Callable[[Any, Any], float]:
     def _bias(state: Any, action: Any) -> float:
         if action is None:
             return 0.5
         base = tactic_stats.bias(state.domain, action.type.value) if tactic_stats is not None else 0.5
+        if reasoning_domain is not None and hasattr(reasoning_domain, "action_preference"):
+            try:
+                domain_bias = float(reasoning_domain.action_preference(state, action))
+            except Exception:
+                domain_bias = 0.0
+            if domain_bias > 0.0:
+                base = max(base, min(0.99, 0.35 + 0.60 * domain_bias))
         retrieval_context = getattr(state, "metadata", {}).get("_retrieval_context", {})
         tool_priors = retrieval_context.get("tool_priors", {}) if isinstance(retrieval_context, dict) else {}
         failure_avoidance = retrieval_context.get("failure_avoidance", []) if isinstance(retrieval_context, dict) else []

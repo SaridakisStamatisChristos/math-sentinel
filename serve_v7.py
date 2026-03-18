@@ -114,7 +114,7 @@ def main() -> None:
         embedding_model=str(cfg["memory"].get("embedding_model", "hashing")),
         event_logger=event_logger,
     )
-    action_bias_fn = build_action_bias_fn(tactic_stats)
+    action_bias_fn = build_action_bias_fn(tactic_stats, reasoning_domain=reasoning_domain)
 
     prover, tokenizer = create_prover_and_tokenizer(cfg, device, for_training=False)
     verifier = StateVerifier(vocab_size=tokenizer.vocab_size, **verifier_init_kwargs(cfg)).to(device)

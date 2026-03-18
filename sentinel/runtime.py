@@ -23,6 +23,8 @@ def ensure_benchmark_config_defaults(cfg: Dict[str, Any]) -> Dict[str, Any]:
     benchmark_cfg.setdefault("assistance_mode", "unassisted")
     benchmark_cfg.setdefault("oracle_hints_enabled", False)
     benchmark_cfg.setdefault("fail_on_integrity_violation", True)
+    benchmark_cfg.setdefault("holdout_enabled", True)
+    benchmark_cfg.setdefault("claim_mode", False)
     return cfg
 
 

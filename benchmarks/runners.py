@@ -130,6 +130,21 @@ def _case_audit_from_search(cfg: Dict[str, Any], task: ReasoningTask, final_stat
     return audit
 
 
+def _claim_profile_requirements(cfg: Dict[str, Any], audit: Dict[str, Any]) -> tuple[bool, List[str]]:
+    if not bool(cfg.get("benchmark", {}).get("claim_mode", False)):
+        return True, []
+    failures: List[str] = []
+    if not bool(audit.get("benchmark_integrity_passed", False)):
+        failures.append("benchmark_integrity_passed=false")
+    if bool(audit.get("fallback_chain_used", False)):
+        failures.append("fallback_chain_used=true")
+    if bool(audit.get("fallback_repair_used", False)):
+        failures.append("fallback_repair_used=true")
+    if bool(audit.get("guided_rollout_used", False)):
+        failures.append("guided_rollout_used=true")
+    return (not failures), failures
+
+
 def load_benchmark_runtime(
     cfg: Dict[str, Any],
     device: str,
@@ -170,7 +185,7 @@ def run_task_collection(
         embedding_model=str(cfg["memory"].get("embedding_model", "hashing")),
         event_logger=event_logger,
     )
-    action_bias_fn = build_action_bias_fn(tactic_stats)
+    action_bias_fn = build_action_bias_fn(tactic_stats, reasoning_domain=reasoning_domain)
 
     solved = 0
     equivalent = 0
@@ -204,6 +219,8 @@ def run_task_collection(
         case_solved = final_state.status == "solved"
         case_equivalent = reasoning_domain.evaluate_answer(task, final_state.final_answer) if final_state.final_answer else False
         case_audit = _case_audit_from_search(cfg, task, final_state, explored)
+        claim_ok, claim_failures = _claim_profile_requirements(cfg, case_audit)
+        case_audit["claim_profile_passed"] = claim_ok
         if not bool(case_audit.get("benchmark_integrity_passed", True)):
             if event_logger is not None:
                 event_logger(
@@ -218,6 +235,20 @@ def run_task_collection(
                 raise RuntimeError(
                     f"benchmark integrity violation for suite={suite_name} task={getattr(task, 'task_id', '')}: "
                     f"{case_audit.get('integrity_events', [])}"
+                )
+        if not claim_ok:
+            if event_logger is not None:
+                event_logger(
+                    "benchmark_claim_path_violation",
+                    suite=suite_name,
+                    backend=backend_name,
+                    task_id=str(getattr(task, "task_id", "")),
+                    failures="|".join(claim_failures),
+                )
+            if bool(cfg.get("benchmark", {}).get("fail_on_integrity_violation", True)):
+                raise RuntimeError(
+                    f"benchmark claim-path violation for suite={suite_name} task={getattr(task, 'task_id', '')}: "
+                    f"{claim_failures}"
                 )
         solved += int(case_solved)
         equivalent += int(case_equivalent)
@@ -250,6 +281,7 @@ def run_task_collection(
         metadata={
             "task_count": len(task_list),
             "benchmark_integrity_passed": all(bool(case.audit.get("benchmark_integrity_passed", True)) for case in case_results),
+            "claim_profile_passed": all(bool(case.audit.get("claim_profile_passed", True)) for case in case_results),
             "guided_rollout_used": any(bool(case.audit.get("guided_rollout_used", False)) for case in case_results),
             "fallback_repair_used": any(bool(case.audit.get("fallback_repair_used", False)) for case in case_results),
             "fallback_chain_used": any(bool(case.audit.get("fallback_chain_used", False)) for case in case_results),

@@ -1,5 +1,13 @@
 extends: profile_public_unassisted_strict.yaml
 
+benchmark:
+  claim_mode: false
+
 search:
+  mode: auto
+  enable_fallback_repairs: true
   deterministic_fallback_chain: false
   guided_fallback_rollout: true
+
+memory:
+  retrieval_mode: hybrid

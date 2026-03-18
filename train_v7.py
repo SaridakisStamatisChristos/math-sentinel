@@ -320,15 +320,21 @@ def run_eval(
     }
 
 
-def benchmark_tasks_for_backend(backend_name: str, suite_names: List[str]) -> List[tuple[str, Any]]:
+def benchmark_tasks_for_backend(reasoning_domain: Any, suite_names: List[str]) -> List[tuple[str, Any]]:
     tasks: List[tuple[str, Any]] = []
-    requested = suite_names or available_public_suites()
+    private_train_tasks = list(reasoning_domain.training_tasks()) if hasattr(reasoning_domain, "training_tasks") else []
+    requested = suite_names or (["train_cases"] if private_train_tasks else available_public_suites())
     for suite_name in requested:
+        normalized = str(suite_name).strip().lower()
+        if normalized in {"train_cases", "private_train", "backend_train"}:
+            for task in private_train_tasks:
+                tasks.append((normalized, task))
+            continue
         try:
             suite = load_public_suite(suite_name)
         except Exception:
             continue
-        if suite.backend != backend_name:
+        if suite.backend != str(getattr(reasoning_domain, "name", "")):
             continue
         for task in suite.cases:
             tasks.append((suite.name, task))
@@ -356,7 +362,7 @@ def harvest_benchmark_failures(
 ) -> int:
     if limit <= 0:
         return 0
-    tasks = benchmark_tasks_for_backend(str(getattr(reasoning_domain, "name", "")), suite_names)
+    tasks = benchmark_tasks_for_backend(reasoning_domain, suite_names)
     if not tasks:
         return 0
     sample_count = min(limit, len(tasks))
@@ -391,14 +397,18 @@ def harvest_benchmark_failures(
         bundle = {
             "kind": "benchmark_failure",
             "suite": suite_name,
+            "task_id": str(task.task_id),
             "domain": task.domain,
             "task": task.prompt,
+            "goal": task.goal,
             "expected": task.answer,
             "answer": final_state.final_answer or "<no_answer>",
             "status": final_state.status,
             "score": len(explored),
             "weight": 3.0,
-            "source": "benchmark",
+            "source": str(task.meta.get("source", "benchmark_train")),
+            "holdout_group": str(task.meta.get("holdout_group", "")),
+            "meta": dict(task.meta),
             "state": final_state.serialize(),
             "search_audit": dict(final_state.metadata.get("search_audit", {})),
         }
@@ -406,6 +416,28 @@ def harvest_benchmark_failures(
         hard_cases.add_failure_bundle(bundle)
         harvested += 1
     return harvested
+
+
+def sample_benchmark_recovery_examples(replay: ReplayBuffer, reasoning_domain: Any, limit: int) -> List[str]:
+    if limit <= 0 or not hasattr(reasoning_domain, "build_failure_recovery_example"):
+        return []
+    private_domains = {task.domain for task in (reasoning_domain.training_tasks() if hasattr(reasoning_domain, "training_tasks") else [])}
+    candidates = [
+        item
+        for item in replay.sample_weighted(max(limit * 6, limit))
+        if item.get("kind") == "benchmark_failure"
+        and str(item.get("source", "")).strip() == "benchmark_train"
+        and (not private_domains or str(item.get("domain", "")).strip() in private_domains)
+    ]
+    examples: List[str] = []
+    for item in candidates:
+        try:
+            examples.append(str(reasoning_domain.build_failure_recovery_example(item)))
+        except Exception:
+            continue
+        if len(examples) >= limit:
+            break
+    return examples
 
 
 def main() -> None:
@@ -507,7 +539,7 @@ def main() -> None:
         embedding_model=str(cfg["memory"].get("embedding_model", "hashing")),
         event_logger=event_logger,
     )
-    action_bias_fn = build_action_bias_fn(tactic_stats)
+    action_bias_fn = build_action_bias_fn(tactic_stats, reasoning_domain=reasoning_domain)
 
     start_step = 1
     if args.resume:
@@ -577,6 +609,13 @@ def main() -> None:
             neg_texts.append(str(pair["neg_text"]))
             pos_targets.append(_normalize_verifier_target(pair["pos_target"]))
             neg_targets.append(_normalize_verifier_target(pair["neg_target"]))
+
+        recovery_examples = sample_benchmark_recovery_examples(
+            replay,
+            reasoning_domain,
+            int(cfg["training"].get("benchmark_recovery_examples_per_step", 0)),
+        )
+        examples.extend(recovery_examples)
 
         training_prover.train()
         verifier.train()
@@ -657,6 +696,7 @@ def main() -> None:
             "verifier_bce_loss": v_bce_loss_value,
             "verifier_rank_loss": v_rank_loss_value,
             "verifier_online_pairs": float(len(online_pairs)),
+            "benchmark_recovery_examples": float(len(recovery_examples)),
             "total_loss": total_loss_value,
         }
 

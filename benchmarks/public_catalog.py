@@ -11,6 +11,23 @@ from .base import BenchmarkSuite
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def _annotate_case(case: ReasoningTask, suite_name: str, tier: str) -> ReasoningTask:
+    meta = dict(case.meta)
+    meta.setdefault("benchmark_suite", suite_name)
+    meta.setdefault("benchmark_tier", tier)
+    meta.setdefault("holdout_group", suite_name)
+    meta.setdefault("source", "benchmark_claim_holdout")
+    meta.setdefault("fixture_role", "benchmark")
+    return ReasoningTask(
+        task_id=case.task_id,
+        domain=case.domain,
+        prompt=case.prompt,
+        answer=case.answer,
+        goal=case.goal,
+        meta=meta,
+    )
+
+
 def _swebench_fixture_case(name: str, prompt: str, patch: list[dict[str, str]], *, fixture_family: str) -> ReasoningTask:
     fixture_dir = ROOT / "benchmarks" / "fixtures" / fixture_family / name
     primary_file = patch[0]["path"] if patch else ""
@@ -45,6 +62,7 @@ def swebench_verified_smoke_suite() -> BenchmarkSuite:
             fixture_family="swebench_lite_smoke",
         ),
     ]
+    cases = [_annotate_case(case, "swebench_verified_smoke", "smoke") for case in cases]
     return BenchmarkSuite(
         name="swebench_verified_smoke",
         backend="swebench_ops",
@@ -81,6 +99,7 @@ def swebench_verified_medium_suite() -> BenchmarkSuite:
             fixture_family="swebench_medium_smoke",
         ),
     ]
+    cases = [_annotate_case(case, "swebench_verified_medium", "medium") for case in cases]
     return BenchmarkSuite(
         name="swebench_verified_medium",
         backend="swebench_ops",
@@ -152,6 +171,7 @@ def gaia_smoke_suite() -> BenchmarkSuite:
             "meeting_case",
         ),
     ]
+    cases = [_annotate_case(case, "gaia_smoke", "smoke") for case in cases]
     return BenchmarkSuite(
         name="gaia_smoke",
         backend="gaia_ops",
@@ -194,6 +214,7 @@ def gaia_medium_suite() -> BenchmarkSuite:
             "roadmap_dates",
         ),
     ]
+    cases = [_annotate_case(case, "gaia_medium", "medium") for case in cases]
     return BenchmarkSuite(
         name="gaia_medium",
         backend="gaia_ops",
@@ -222,6 +243,7 @@ def math_public_smoke_suite() -> BenchmarkSuite:
             meta={"family": "linear_equation"},
         ),
     ]
+    cases = [_annotate_case(case, "math_public_smoke", "smoke") for case in cases]
     return BenchmarkSuite(
         name="math_public_smoke",
         backend="math",

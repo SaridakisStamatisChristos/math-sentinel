@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Dict, List
+from typing import Any, Dict, List
 
 
 class HardCaseStore:
@@ -25,8 +25,30 @@ class HardCaseStore:
         bundle.setdefault("source", "benchmark")
         self.add(bundle)
 
-    def retrieve(self, domain: str, limit: int = 5) -> List[Dict]:
+    def retrieve(self, domain: str, limit: int = 5, filters: Dict[str, Any] | None = None) -> List[Dict]:
+        filters = dict(filters or {})
+        exclude_sources = {str(item) for item in filters.get("exclude_sources", []) if str(item).strip()}
+        exclude_suites = {str(item) for item in filters.get("exclude_suites", []) if str(item).strip()}
+        exclude_holdout_groups = {str(item) for item in filters.get("exclude_holdout_groups", []) if str(item).strip()}
+        exclude_task_ids = {str(item) for item in filters.get("exclude_task_ids", []) if str(item).strip()}
         items = [c for c in self.cases if c.get("domain") == domain]
+        if exclude_sources or exclude_suites or exclude_holdout_groups or exclude_task_ids:
+            filtered: List[Dict] = []
+            for case in items:
+                source = str(case.get("source", "")).strip()
+                suite = str(case.get("suite", "")).strip()
+                holdout_group = str(case.get("holdout_group", "")).strip()
+                task_id = str(case.get("task_id", "")).strip()
+                if source and source in exclude_sources:
+                    continue
+                if suite and suite in exclude_suites:
+                    continue
+                if holdout_group and holdout_group in exclude_holdout_groups:
+                    continue
+                if task_id and task_id in exclude_task_ids:
+                    continue
+                filtered.append(case)
+            items = filtered
         items.sort(key=lambda x: x.get("score", 0.0), reverse=True)
         return items[:limit]
 

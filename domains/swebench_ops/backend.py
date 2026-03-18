@@ -36,6 +36,47 @@ ROOT = Path(__file__).resolve().parents[2]
 TMP_ROOT = ROOT / ".tmp-benchmarks" / "swebench"
 
 
+def _private_train_case(name: str, prompt: str, patch: list[dict[str, str]], *, fixture_relpath: str) -> ReasoningTask:
+    fixture_dir = ROOT / fixture_relpath
+    primary_file = patch[0]["path"] if patch else ""
+    return ReasoningTask(
+        task_id=f"swebench_train_{name}",
+        domain="swebench_patch",
+        prompt=prompt,
+        answer="patched_and_verified",
+        goal="Patch the repository so the tests pass",
+        meta={
+            "family": "swebench_patch",
+            "fixture_dir": str(fixture_dir),
+            "oracle_primary_file": primary_file,
+            "oracle_patch": patch,
+            "test_command": ["python", "-m", "unittest", "discover", "-s", "tests", "-q"],
+            "benchmark_suite": "swebench_private_train",
+            "benchmark_tier": "train",
+            "holdout_group": "swebench_private_train",
+            "source": "benchmark_train",
+            "fixture_role": "train",
+        },
+    )
+
+
+def _private_train_cases() -> List[ReasoningTask]:
+    return [
+        _private_train_case(
+            "count_bug",
+            "Patch the repository so the failing tests pass. Fix the counting behavior in stats.py and verify with the test suite.",
+            [{"path": "stats.py", "search": "    return len(items) - 1\n", "replace": "    return len(items)\n"}],
+            fixture_relpath="benchmarks/fixtures/code_ops_repo/count_bug",
+        ),
+        _private_train_case(
+            "positive_filter_bug",
+            "Patch the repository so the failing tests pass. Update the positivity filter so zero is excluded and verify with the test suite.",
+            [{"path": "app.py", "search": ">= 0", "replace": "> 0"}],
+            fixture_relpath="benchmarks/fixtures/code_ops_repo/filter_bug",
+        ),
+    ]
+
+
 def _workspace_for(task: ReasoningTask, *, deterministic: bool = False) -> Path:
     return create_workspace(task, TMP_ROOT, deterministic=deterministic)
 
@@ -166,17 +207,21 @@ class SwebenchOpsReasoningDomain:
     default_curriculum_config = "config/swebench_ops_curriculum.yaml"
 
     def __init__(self, runtime_config: Dict[str, Any] | None = None) -> None:
-        self._cases = list(swebench_verified_smoke_suite().cases) + list(swebench_verified_medium_suite().cases)
+        self._train_cases = _private_train_cases()
+        self._benchmark_cases = list(swebench_verified_smoke_suite().cases) + list(swebench_verified_medium_suite().cases)
+        self._all_cases = self._train_cases + self._benchmark_cases
         runtime_cfg = dict((runtime_config or {}).get("runtime", {}))
         benchmark_cfg = dict((runtime_config or {}).get("benchmark", {}))
         self.deterministic_runtime = bool(runtime_cfg.get("deterministic", False))
         self.assistance_mode = str(benchmark_cfg.get("assistance_mode", "unassisted")).lower()
         self.oracle_hints_enabled = bool(benchmark_cfg.get("oracle_hints_enabled", False))
+        self.holdout_enabled = bool(benchmark_cfg.get("holdout_enabled", True))
+        self.claim_mode = bool(benchmark_cfg.get("claim_mode", False))
 
     def _match_manual_case(self, prompt: str, domain: str) -> Optional[ReasoningTask]:
         text = f"{domain}\n{prompt}".lower()
         score_map: List[tuple[int, ReasoningTask]] = []
-        for case in self._cases:
+        for case in self._all_cases:
             keywords = set([case.task_id.lower(), case.domain.lower(), str(case.meta.get("family", "")).lower()])
             prompt_bits = case.prompt.lower().replace(".", " ").replace(",", " ").replace(":", " ").split()
             keywords.update(bit for bit in prompt_bits if len(bit) >= 4)
@@ -196,7 +241,9 @@ class SwebenchOpsReasoningDomain:
         return None
 
     def sample_task(self, domains: List[str]) -> ReasoningTask:
-        return random.choice(self._cases)
+        del domains
+        pool = self._train_cases if self.holdout_enabled and self._train_cases else self._all_cases
+        return random.choice(pool)
 
     def make_state(self, task: ReasoningTask) -> ReasoningState:
         workspace = _workspace_for(task, deterministic=self.deterministic_runtime)
@@ -208,6 +255,11 @@ class SwebenchOpsReasoningDomain:
         metadata["primary_file"] = infer_primary_file(files)
         metadata["benchmark_assistance_mode"] = self.assistance_mode
         metadata["oracle_hints_enabled"] = self.oracle_hints_enabled
+        metadata["claim_mode"] = self.claim_mode
+        metadata["benchmark_suite"] = str(raw_metadata.get("benchmark_suite", metadata.get("benchmark_suite", "")))
+        metadata["holdout_group"] = str(raw_metadata.get("holdout_group", metadata.get("holdout_group", "")))
+        metadata["source"] = str(raw_metadata.get("source", metadata.get("source", "")))
+        metadata["fixture_role"] = str(raw_metadata.get("fixture_role", metadata.get("fixture_role", "")))
         ensure_benchmark_audit(metadata, assistance_mode=self.assistance_mode)
         if self.assistance_mode == "assisted" and self.oracle_hints_enabled:
             oracle_primary = str(raw_metadata.get("oracle_primary_file", ""))
@@ -300,8 +352,74 @@ class SwebenchOpsReasoningDomain:
     def parse_actions(self, text: str) -> tuple[List[Any], float]:
         return parse_actions(text)
 
+    @staticmethod
+    def _tool_names(state: ReasoningState) -> List[str]:
+        return [record.get("tool", "") for record in state.tool_history if isinstance(record, dict)]
+
+    def _answer_candidates(self, state: ReasoningState) -> List[Dict[str, str]]:
+        answers: List[str] = []
+        for candidate in [
+            state.final_answer,
+            str(state.metadata.get("candidate_answer", "")),
+        ]:
+            text = str(candidate).strip()
+            if text and text not in answers:
+                answers.append(text)
+        for record in reversed(list(state.tool_history)):
+            if not isinstance(record, dict):
+                continue
+            result = record.get("result", {})
+            if not isinstance(result, dict):
+                continue
+            candidate = str(result.get("answer", "")).strip()
+            if candidate and candidate not in answers:
+                answers.append(candidate)
+        return [{"content": item} for item in answers]
+
+    def _next_apply_tools(self, state: ReasoningState) -> List[str]:
+        tool_names = self._tool_names(state)
+        run_tests_count = tool_names.count("run_unit_tests")
+        if bool(state.metadata.get("claim_mode", False)):
+            if "inspect_workspace" not in tool_names:
+                return ["inspect_workspace"]
+            if "inspect_tests" not in tool_names:
+                return ["inspect_tests"]
+            if "localize_failure" not in tool_names:
+                return ["localize_failure"] if run_tests_count >= 1 or bool(state.metadata.get("last_test_failed", False)) else ["localize_failure", "search_code"]
+            if "draft_patch" not in tool_names:
+                return ["draft_patch", "read_file"] if str(state.metadata.get("primary_file", "")).strip() else ["draft_patch"]
+            if "apply_patch" not in tool_names:
+                return ["apply_patch"]
+            return ["rollback_patch", "draft_patch"]
+        if "inspect_workspace" not in tool_names:
+            return ["inspect_workspace"]
+        if "inspect_tests" not in tool_names:
+            return ["inspect_tests", "search_code"]
+        if "localize_failure" not in tool_names:
+            return ["localize_failure", "search_code"]
+        if "draft_patch" not in tool_names:
+            tools = ["read_file", "draft_patch", "search_code"]
+            return tools if str(state.metadata.get("primary_file", "")).strip() else ["search_code", "draft_patch"]
+        if "apply_patch" not in tool_names:
+            return ["apply_patch", "rollback_patch"]
+        return ["draft_patch", "read_file", "search_code", "rollback_patch"]
+
+    def _retrieval_filters(self, state: ReasoningState) -> Dict[str, Any]:
+        if not bool(state.metadata.get("claim_mode", False)):
+            return {}
+        filters: Dict[str, Any] = {
+            "exclude_sources": ["benchmark", "benchmark_claim_holdout", "public_benchmark"],
+        }
+        suite = str(state.metadata.get("benchmark_suite", "")).strip()
+        holdout_group = str(state.metadata.get("holdout_group", "")).strip()
+        if suite:
+            filters["exclude_suites"] = [suite]
+        if holdout_group:
+            filters["exclude_holdout_groups"] = [holdout_group]
+        return filters
+
     def fallback_repairs(self, state: ReasoningState) -> List[Action]:
-        tool_names = [record.get("tool", "") for record in state.tool_history if isinstance(record, dict)]
+        tool_names = self._tool_names(state)
         if "inspect_workspace" not in tool_names:
             return [Action(type=ActionType.APPLY, tool="inspect_workspace", content="")]
         if "inspect_tests" not in tool_names:
@@ -321,18 +439,27 @@ class SwebenchOpsReasoningDomain:
         return [Action(type=ActionType.BACKTRACK, content="search another repository fix")]
 
     def allowed_action_types(self, state: ReasoningState) -> List[str]:
-        actions = ["THINK", "SUBGOAL", "APPLY", "CHECK"]
-        if state.derived_facts or state.tool_history:
+        if state.final_answer.strip():
+            return ["ANSWER"]
+        if bool(state.metadata.get("claim_mode", False)):
+            actions = ["APPLY", "CHECK"]
+        else:
+            actions = ["THINK", "SUBGOAL", "APPLY", "CHECK"]
+        if state.derived_facts or state.tool_history or state.metadata.get("candidate_answer"):
             actions.append("ANSWER")
         return actions
 
     def allowed_tools(self, state: ReasoningState, action_type: str) -> List[str]:
         normalized = action_type.upper()
         if normalized == "CHECK":
-            return ["run_unit_tests"]
+            tool_names = self._tool_names(state)
+            run_tests_count = tool_names.count("run_unit_tests")
+            if "inspect_tests" in tool_names and (run_tests_count == 0 or ("apply_patch" in tool_names and run_tests_count < 2)):
+                return ["run_unit_tests"]
+            return []
         if normalized != "APPLY":
             return []
-        return ["inspect_workspace", "inspect_tests", "localize_failure", "read_file", "search_code", "draft_patch", "apply_patch", "rollback_patch"]
+        return self._next_apply_tools(state)
 
     def candidate_bindings(self, state: ReasoningState, action_type: str, tool: str = "") -> List[Dict[str, str]]:
         normalized = action_type.upper()
@@ -342,8 +469,7 @@ class SwebenchOpsReasoningDomain:
             pending = state.obligations[:3] or ["inspect tests", "localize failure", "verify tests"]
             return [{"content": item} for item in pending]
         if normalized == "ANSWER":
-            answers = [state.final_answer, str(state.metadata.get("candidate_answer", "")), state.expected_answer]
-            return [{"content": item} for item in answers if str(item).strip()]
+            return self._answer_candidates(state)
         if normalized == "CHECK":
             return [{"content": ""}]
         if tool in {"inspect_workspace", "inspect_tests", "localize_failure", "apply_patch", "rollback_patch"}:
@@ -360,12 +486,51 @@ class SwebenchOpsReasoningDomain:
             return [{"content": context}]
         return []
 
+    def action_preference(self, state: ReasoningState, action: Action) -> float:
+        tool_names = self._tool_names(state)
+        run_tests_count = tool_names.count("run_unit_tests")
+        primary_file = str(state.metadata.get("primary_file", "")).strip()
+        if action.type == ActionType.ANSWER:
+            return 1.0 if state.final_answer.strip() or str(state.metadata.get("candidate_answer", "")).strip() else 0.0
+        if action.type == ActionType.CHECK and action.tool == "run_unit_tests":
+            if "inspect_tests" in tool_names and run_tests_count == 0:
+                return 1.0
+            if "apply_patch" in tool_names and run_tests_count < 2:
+                return 1.0
+            return 0.25
+        if action.type == ActionType.APPLY:
+            if action.tool == "inspect_workspace":
+                return 1.0 if "inspect_workspace" not in tool_names else 0.05
+            if action.tool == "inspect_tests":
+                return 0.98 if "inspect_workspace" in tool_names and "inspect_tests" not in tool_names else 0.10
+            if action.tool == "localize_failure":
+                return 0.98 if run_tests_count >= 1 and "localize_failure" not in tool_names else 0.20
+            if action.tool == "read_file":
+                last_read = str(state.metadata.get("last_read_file", "")).strip()
+                return 0.92 if "localize_failure" in tool_names and primary_file and last_read != primary_file else 0.12
+            if action.tool == "draft_patch":
+                if "localize_failure" in tool_names and "draft_patch" not in tool_names:
+                    return 0.98
+                return 0.30
+            if action.tool == "apply_patch":
+                return 1.0 if "draft_patch" in tool_names and "apply_patch" not in tool_names else 0.18
+            if action.tool == "search_code":
+                return 0.55 if "localize_failure" not in tool_names else 0.20
+            if action.tool == "rollback_patch":
+                return 0.40 if "apply_patch" in tool_names and state.status != "solved" else 0.05
+        if action.type == ActionType.THINK:
+            return 0.65 if not tool_names else 0.12
+        if action.type == ActionType.SUBGOAL:
+            return 0.35 if state.obligations else 0.08
+        return 0.0
+
     def action_schema(self, state: ReasoningState) -> Dict[str, Any]:
+        apply_tools = ["inspect_workspace", "inspect_tests", "localize_failure", "read_file", "search_code", "draft_patch", "apply_patch", "rollback_patch"]
         return {
             "strict": True,
             "action_types": {
                 action_type: {
-                    "tools": self.allowed_tools(state, action_type),
+                    "tools": apply_tools if action_type == "APPLY" else self.allowed_tools(state, action_type),
                     "bindings": self.candidate_bindings(state, action_type),
                 }
                 for action_type in self.allowed_action_types(state)
@@ -402,6 +567,7 @@ class SwebenchOpsReasoningDomain:
                 state.problem_text,
                 mode=retrieval_mode,
                 embedding_model=embedding_model,
+                filters=self._retrieval_filters(state),
                 tool_names=self.allowed_tools(state, "APPLY") + self.allowed_tools(state, "CHECK"),
                 event_logger=event_logger,
             )
@@ -448,5 +614,19 @@ class SwebenchOpsReasoningDomain:
     def maybe_derive_lemma(self, task: ReasoningTask) -> None:
         return None
 
+    def build_failure_recovery_example(self, bundle: Dict[str, Any]) -> str:
+        task = ReasoningTask(
+            task_id=str(bundle.get("task_id", f"recovery_{uuid.uuid4().hex[:8]}")),
+            domain=str(bundle.get("domain", "swebench_patch")),
+            prompt=str(bundle.get("task", "")),
+            answer=str(bundle.get("expected", "")),
+            goal=str(bundle.get("goal", "Patch the repository so the tests pass")),
+            meta=dict(bundle.get("meta", {})),
+        )
+        return self.build_training_example(task)
+
+    def training_tasks(self) -> List[ReasoningTask]:
+        return list(self._train_cases)
+
     def benchmark_tasks(self) -> List[ReasoningTask]:
-        return list(self._cases)
+        return list(self._benchmark_cases)

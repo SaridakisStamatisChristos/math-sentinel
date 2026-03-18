@@ -54,10 +54,18 @@ def _score_state(verifier: StateVerifier, tokenizer: StructuredTokenizer, device
     return {k: float(v.item()) for k, v in pred.items()}
 
 
-def _build_exec_features(state: ProofState, exec_info: Dict[str, float], action: Any, action_bias_fn: Optional[Callable[[ProofState, Any], float]]) -> Dict[str, float]:
+def _build_exec_features(
+    state: ProofState,
+    exec_info: Dict[str, float],
+    action: Any,
+    action_bias_fn: Optional[Callable[[ProofState, Any], float]],
+    *,
+    bias_state: Optional[ProofState] = None,
+) -> Dict[str, float]:
     exec_info = dict(exec_info)
     exec_info["answer_present"] = 1.0 if state.final_answer.strip() else 0.0
-    exec_info["tactic_bias"] = action_bias_fn(state, action) if action_bias_fn and action is not None else 0.5
+    action_state = bias_state if bias_state is not None else state
+    exec_info["tactic_bias"] = action_bias_fn(action_state, action) if action_bias_fn and action is not None else 0.5
     exec_info["tool_bias"] = exec_info.get("tactic_bias", 0.5)
     exec_info["novelty_bonus"] = 1.0
     evidence_count = len(getattr(state, "evidence_refs", []))
@@ -150,7 +158,9 @@ def beam_search(
                 exec_info: Dict[str, float] = {"goal_progress": 0.0, "valid_step": confidence}
                 child_state = state
                 last_action = None
+                last_action_state = state
                 for action in actions:
+                    last_action_state = child_state
                     child_state, local = executor.apply(child_state, action)
                     exec_info["goal_progress"] = exec_info.get("goal_progress", 0.0) + float(local.get("goal_progress", 0.0))
                     exec_info["valid_step"] = min(exec_info.get("valid_step", 1.0), float(local.get("valid_step", 1.0)))
@@ -166,7 +176,7 @@ def beam_search(
                         )
                     if child_state.status == "solved":
                         break
-                exec_info = _build_exec_features(child_state, exec_info, last_action, action_bias_fn)
+                exec_info = _build_exec_features(child_state, exec_info, last_action, action_bias_fn, bias_state=last_action_state)
                 if _should_prune_candidate(child_state, exec_info, score_config):
                     if event_logger is not None:
                         event_logger(
@@ -242,9 +252,10 @@ def beam_search(
                 candidates.append(child)
                 explored.append(child)
 
-            for repair in fallback_repairs_fn(node.state):
+            repair_candidates = fallback_repairs_fn(node.state) if bool(score_config.get("enable_fallback_repairs", True)) else []
+            for repair in repair_candidates:
                 child_state, exec_info = executor.apply(node.state, repair)
-                exec_info = _build_exec_features(child_state, exec_info, repair, action_bias_fn)
+                exec_info = _build_exec_features(child_state, exec_info, repair, action_bias_fn, bias_state=node.state)
                 exec_info["fallback_repair_used"] = 1.0
                 exec_info["tactic_bias"] = max(float(exec_info.get("tactic_bias", 0.5)), 1.0)
                 exec_info["tool_bias"] = max(float(exec_info.get("tool_bias", 0.5)), 1.0)

@@ -10,9 +10,6 @@ benchmark:
 
 training:
   benchmark_harvest_cases: 4
+  benchmark_recovery_examples_per_step: 2
   benchmark_harvest_suites:
-    - swebench_verified_smoke
-    - swebench_verified_medium
-    - gaia_smoke
-    - gaia_medium
-    - math_public_smoke
+    - train_cases

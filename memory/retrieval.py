@@ -41,7 +41,7 @@ def _item_text(item: Any) -> str:
     if hasattr(item, "pattern"):
         return f"{getattr(item, 'pattern', '')} {getattr(item, 'statement', '')}"
     if isinstance(item, dict):
-        return " ".join(str(item.get(key, "")) for key in ["task", "answer", "expected", "domain"])
+        return " ".join(str(item.get(key, "")) for key in ["task", "answer", "domain", "suite"])
     return str(item)
 
 
@@ -121,6 +121,7 @@ def retrieve_context(
     text: str,
     mode: str = "hybrid",
     embedding_model: str = "hashing",
+    filters: Dict[str, Any] | None = None,
     tool_names: Sequence[str] | None = None,
     event_logger: Any | None = None,
 ) -> Dict[str, Any]:
@@ -146,7 +147,10 @@ def retrieve_context(
 
     service = RetrievalService(mode=mode, embedding_model=embedding_model)
     lemmas = lemma_store.retrieve(domain, text, limit=6)
-    hard_cases = hard_case_store.retrieve(domain, limit=6)
+    try:
+        hard_cases = hard_case_store.retrieve(domain, limit=6, filters=filters or {})
+    except TypeError:
+        hard_cases = hard_case_store.retrieve(domain, limit=6)
     ranked_lemmas = service.rerank(text, lemmas, limit=3)
     ranked_hard_cases = service.rerank(text, hard_cases, limit=3)
     tool_priors = _collect_tool_priors(text, list(ranked_lemmas) + list(ranked_hard_cases), tool_names or [])

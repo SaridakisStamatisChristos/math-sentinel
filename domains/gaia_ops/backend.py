@@ -28,6 +28,56 @@ ROOT = Path(__file__).resolve().parents[2]
 TMP_ROOT = ROOT / ".tmp-benchmarks" / "gaia"
 
 
+def _private_train_case(
+    case_id: str,
+    domain: str,
+    prompt: str,
+    answer: str,
+    *,
+    fixture_relpath: str,
+    evidence_file: str,
+) -> ReasoningTask:
+    fixture_dir = ROOT / fixture_relpath
+    return ReasoningTask(
+        task_id=f"gaia_train_{case_id}",
+        domain=domain,
+        prompt=prompt,
+        answer=answer,
+        goal="Return the shortest correct final answer",
+        meta={
+            "family": domain,
+            "fixture_dir": str(fixture_dir),
+            "oracle_evidence_file": evidence_file,
+            "benchmark_suite": "gaia_private_train",
+            "benchmark_tier": "train",
+            "holdout_group": "gaia_private_train",
+            "source": "benchmark_train",
+            "fixture_role": "train",
+        },
+    )
+
+
+def _private_train_cases() -> List[ReasoningTask]:
+    return [
+        _private_train_case(
+            "team_hours",
+            "gaia_csv_reasoning",
+            "Use the files in the workspace to answer this question: what is the total support hours for the Orion team in activity.csv? Return only the number.",
+            "17",
+            fixture_relpath="benchmarks/fixtures/gaia_train/team_hours",
+            evidence_file="activity.csv",
+        ),
+        _private_train_case(
+            "theo_tasks",
+            "gaia_json_reasoning",
+            "Use the files in the workspace to answer this question: in tasks.json, which pending task owned by Theo has the earliest due date? Return only the task title.",
+            "Draft brief",
+            fixture_relpath="benchmarks/fixtures/gaia_train/theo_tasks",
+            evidence_file="tasks.json",
+        ),
+    ]
+
+
 def _workspace_for(task: ReasoningTask, *, deterministic: bool = False) -> Path:
     fixture_ref = str(task.meta.get("fixture_dir", "")).strip()
     suffix = "det" if deterministic else uuid.uuid4().hex[:8]
@@ -547,17 +597,21 @@ class GaiaOpsReasoningDomain:
     default_curriculum_config = "config/gaia_ops_curriculum.yaml"
 
     def __init__(self, runtime_config: Dict[str, Any] | None = None) -> None:
-        self._cases = list(gaia_smoke_suite().cases) + list(gaia_medium_suite().cases)
+        self._train_cases = _private_train_cases()
+        self._benchmark_cases = list(gaia_smoke_suite().cases) + list(gaia_medium_suite().cases)
+        self._all_cases = self._train_cases + self._benchmark_cases
         runtime_cfg = dict((runtime_config or {}).get("runtime", {}))
         benchmark_cfg = dict((runtime_config or {}).get("benchmark", {}))
         self.deterministic_runtime = bool(runtime_cfg.get("deterministic", False))
         self.assistance_mode = str(benchmark_cfg.get("assistance_mode", "unassisted")).lower()
         self.oracle_hints_enabled = bool(benchmark_cfg.get("oracle_hints_enabled", False))
+        self.holdout_enabled = bool(benchmark_cfg.get("holdout_enabled", True))
+        self.claim_mode = bool(benchmark_cfg.get("claim_mode", False))
 
     def _match_manual_case(self, prompt: str, domain: str) -> Optional[ReasoningTask]:
         text = f"{domain}\n{prompt}".lower()
         score_map: List[tuple[int, ReasoningTask]] = []
-        for case in self._cases:
+        for case in self._all_cases:
             keywords = {case.task_id.lower(), case.domain.lower(), str(case.meta.get("family", "")).lower()}
             prompt_bits = case.prompt.lower().replace(".", " ").replace(",", " ").replace(":", " ").split()
             keywords.update(bit for bit in prompt_bits if len(bit) >= 4)
@@ -577,7 +631,8 @@ class GaiaOpsReasoningDomain:
         return None
 
     def sample_task(self, domains: List[str]) -> ReasoningTask:
-        eligible = [task for task in self._cases if task.domain in domains] or self._cases
+        pool = self._train_cases if self.holdout_enabled and self._train_cases else self._all_cases
+        eligible = [task for task in pool if task.domain in domains] or pool
         return random.choice(eligible)
 
     def make_state(self, task: ReasoningTask) -> ReasoningState:
@@ -589,6 +644,11 @@ class GaiaOpsReasoningDomain:
         metadata["workspace_files"] = files
         metadata["benchmark_assistance_mode"] = self.assistance_mode
         metadata["oracle_hints_enabled"] = self.oracle_hints_enabled
+        metadata["claim_mode"] = self.claim_mode
+        metadata["benchmark_suite"] = str(raw_metadata.get("benchmark_suite", metadata.get("benchmark_suite", "")))
+        metadata["holdout_group"] = str(raw_metadata.get("holdout_group", metadata.get("holdout_group", "")))
+        metadata["source"] = str(raw_metadata.get("source", metadata.get("source", "")))
+        metadata["fixture_role"] = str(raw_metadata.get("fixture_role", metadata.get("fixture_role", "")))
         metadata["target_file"] = _infer_target_file(task.prompt, files)
         metadata["candidate_files"] = _resolve_target_files(task.prompt, files, str(metadata.get("target_file", "")))
         ensure_benchmark_audit(metadata, assistance_mode=self.assistance_mode)
@@ -680,8 +740,58 @@ class GaiaOpsReasoningDomain:
     def parse_actions(self, text: str) -> tuple[List[Any], float]:
         return parse_actions(text)
 
+    @staticmethod
+    def _tool_names(state: ReasoningState) -> List[str]:
+        return [record.get("tool", "") for record in state.tool_history if isinstance(record, dict)]
+
+    def _answer_candidates(self, state: ReasoningState) -> List[Dict[str, str]]:
+        answers: List[str] = []
+        for candidate in [
+            state.final_answer,
+            str(state.metadata.get("candidate_answer", "")),
+        ]:
+            text = str(candidate).strip()
+            if text and text not in answers:
+                answers.append(text)
+        for record in reversed(list(state.tool_history)):
+            if not isinstance(record, dict):
+                continue
+            result = record.get("result", {})
+            if not isinstance(result, dict):
+                continue
+            candidate = str(result.get("answer", "")).strip()
+            if candidate and candidate not in answers:
+                answers.append(candidate)
+        return [{"content": item} for item in answers]
+
+    def _next_apply_tools(self, state: ReasoningState) -> List[str]:
+        tool_names = self._tool_names(state)
+        if "plan_question" not in tool_names:
+            return ["plan_question"]
+        if "list_files" not in tool_names:
+            return ["list_files"]
+        if "inspect_file" not in tool_names:
+            return ["inspect_file"]
+        if "solve_question" not in tool_names:
+            return ["solve_question"]
+        return ["inspect_file", "solve_question", "list_files"]
+
+    def _retrieval_filters(self, state: ReasoningState) -> Dict[str, Any]:
+        if not bool(state.metadata.get("claim_mode", False)):
+            return {}
+        filters: Dict[str, Any] = {
+            "exclude_sources": ["benchmark", "benchmark_claim_holdout", "public_benchmark"],
+        }
+        suite = str(state.metadata.get("benchmark_suite", "")).strip()
+        holdout_group = str(state.metadata.get("holdout_group", "")).strip()
+        if suite:
+            filters["exclude_suites"] = [suite]
+        if holdout_group:
+            filters["exclude_holdout_groups"] = [holdout_group]
+        return filters
+
     def fallback_repairs(self, state: ReasoningState) -> List[Action]:
-        tool_names = [record.get("tool", "") for record in state.tool_history if isinstance(record, dict)]
+        tool_names = self._tool_names(state)
         if "plan_question" not in tool_names:
             return [Action(type=ActionType.APPLY, tool="plan_question", content=state.problem_text)]
         if "list_files" not in tool_names:
@@ -696,15 +806,20 @@ class GaiaOpsReasoningDomain:
         return [Action(type=ActionType.BACKTRACK, content="collect different evidence")]
 
     def allowed_action_types(self, state: ReasoningState) -> List[str]:
-        actions = ["THINK", "SUBGOAL", "APPLY"]
-        if state.derived_facts or state.tool_history:
+        if state.final_answer.strip():
+            return ["ANSWER"]
+        if bool(state.metadata.get("claim_mode", False)):
+            actions = ["APPLY"]
+        else:
+            actions = ["THINK", "SUBGOAL", "APPLY"]
+        if state.derived_facts or state.tool_history or state.metadata.get("candidate_answer"):
             actions.extend(["CHECK", "ANSWER"])
         return actions
 
     def allowed_tools(self, state: ReasoningState, action_type: str) -> List[str]:
         if action_type.upper() not in {"APPLY", "CHECK"}:
             return []
-        return ["plan_question", "list_files", "inspect_file", "solve_question"]
+        return self._next_apply_tools(state) if action_type.upper() == "APPLY" else ["solve_question"]
 
     def candidate_bindings(self, state: ReasoningState, action_type: str, tool: str = "") -> List[Dict[str, str]]:
         normalized = action_type.upper()
@@ -714,8 +829,7 @@ class GaiaOpsReasoningDomain:
             pending = state.obligations[:3] or ["inspect evidence file", "solve from evidence"]
             return [{"content": item} for item in pending]
         if normalized == "ANSWER":
-            answers = [state.final_answer, str(state.metadata.get("candidate_answer", "")), state.expected_answer]
-            return [{"content": item} for item in answers if str(item).strip()]
+            return self._answer_candidates(state)
         if tool == "plan_question":
             return [{"content": state.problem_text}]
         if tool == "list_files":
@@ -728,6 +842,27 @@ class GaiaOpsReasoningDomain:
         if tool == "solve_question":
             return [{"content": state.problem_text}]
         return []
+
+    def action_preference(self, state: ReasoningState, action: Action) -> float:
+        tool_names = self._tool_names(state)
+        if action.type == ActionType.ANSWER:
+            return 1.0 if state.final_answer.strip() or str(state.metadata.get("candidate_answer", "")).strip() else 0.0
+        if action.type == ActionType.APPLY:
+            if action.tool == "plan_question":
+                return 1.0 if "plan_question" not in tool_names else 0.05
+            if action.tool == "list_files":
+                return 0.98 if "plan_question" in tool_names and "list_files" not in tool_names else 0.10
+            if action.tool == "inspect_file":
+                return 0.98 if "list_files" in tool_names and "inspect_file" not in tool_names else 0.18
+            if action.tool == "solve_question":
+                return 1.0 if "inspect_file" in tool_names and "solve_question" not in tool_names else 0.25
+        if action.type == ActionType.CHECK and action.tool == "solve_question":
+            return 0.80 if "inspect_file" in tool_names else 0.20
+        if action.type == ActionType.THINK:
+            return 0.60 if not tool_names else 0.10
+        if action.type == ActionType.SUBGOAL:
+            return 0.30 if state.obligations else 0.08
+        return 0.0
 
     def action_schema(self, state: ReasoningState) -> Dict[str, Any]:
         return {
@@ -770,6 +905,7 @@ class GaiaOpsReasoningDomain:
                 state.problem_text,
                 mode=retrieval_mode,
                 embedding_model=embedding_model,
+                filters=self._retrieval_filters(state),
                 tool_names=self.allowed_tools(state, "APPLY"),
                 event_logger=event_logger,
             )
@@ -812,5 +948,19 @@ class GaiaOpsReasoningDomain:
     def maybe_derive_lemma(self, task: ReasoningTask) -> None:
         return None
 
+    def build_failure_recovery_example(self, bundle: Dict[str, Any]) -> str:
+        task = ReasoningTask(
+            task_id=str(bundle.get("task_id", f"recovery_{uuid.uuid4().hex[:8]}")),
+            domain=str(bundle.get("domain", "gaia_csv_reasoning")),
+            prompt=str(bundle.get("task", "")),
+            answer=str(bundle.get("expected", "")),
+            goal=str(bundle.get("goal", "Return the shortest correct final answer")),
+            meta=dict(bundle.get("meta", {})),
+        )
+        return self.build_training_example(task)
+
+    def training_tasks(self) -> List[ReasoningTask]:
+        return list(self._train_cases)
+
     def benchmark_tasks(self) -> List[ReasoningTask]:
-        return list(self._cases)
+        return list(self._benchmark_cases)

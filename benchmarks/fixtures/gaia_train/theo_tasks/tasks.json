@@ -1,0 +1,28 @@
+{
+  "tasks": [
+    {
+      "title": "Draft brief",
+      "owner": "Theo",
+      "status": "pending",
+      "due": "2025-04-02"
+    },
+    {
+      "title": "Review deck",
+      "owner": "Theo",
+      "status": "pending",
+      "due": "2025-04-07"
+    },
+    {
+      "title": "Archive notes",
+      "owner": "Theo",
+      "status": "done",
+      "due": "2025-03-30"
+    },
+    {
+      "title": "Sync budget",
+      "owner": "Mira",
+      "status": "pending",
+      "due": "2025-04-01"
+    }
+  ]
+}

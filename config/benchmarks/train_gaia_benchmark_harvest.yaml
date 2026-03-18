@@ -2,6 +2,6 @@ extends: train_public_benchmark_harvest.yaml
 
 training:
   benchmark_harvest_cases: 4
+  benchmark_recovery_examples_per_step: 2
   benchmark_harvest_suites:
-    - gaia_smoke
-    - gaia_medium
+    - train_cases

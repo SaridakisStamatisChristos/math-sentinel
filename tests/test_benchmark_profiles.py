@@ -41,9 +41,15 @@ class BenchmarkProfileTests(unittest.TestCase):
         assisted_cfg = load_runtime_config("config/benchmarks/profile_public_search_assisted.yaml", search_config_path="")
 
         self.assertEqual(strict_cfg["benchmark"]["assistance_mode"], "unassisted")
+        self.assertTrue(strict_cfg["benchmark"]["claim_mode"])
         self.assertFalse(strict_cfg["search"]["guided_fallback_rollout"])
+        self.assertFalse(strict_cfg["search"]["deterministic_fallback_chain"])
+        self.assertFalse(strict_cfg["search"]["enable_fallback_repairs"])
         self.assertTrue(strict_cfg["benchmark"]["fail_on_integrity_violation"])
+        self.assertEqual(strict_cfg["memory"]["retrieval_mode"], "none")
+        self.assertFalse(assisted_cfg["benchmark"]["claim_mode"])
         self.assertTrue(assisted_cfg["search"]["guided_fallback_rollout"])
+        self.assertTrue(assisted_cfg["search"]["enable_fallback_repairs"])
 
     def test_ablation_catalog_lists_expected_entries(self) -> None:
         ablations = set(available_benchmark_ablations())

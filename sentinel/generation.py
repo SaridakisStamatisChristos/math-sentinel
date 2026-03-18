@@ -43,6 +43,21 @@ def _unique_texts(texts: Iterable[str]) -> List[str]:
     return out
 
 
+def _unique_scored_candidates(items: Iterable[tuple[str, float]]) -> List[tuple[str, float]]:
+    scores: dict[str, float] = {}
+    order: List[str] = []
+    for text, score in items:
+        normalized = text.strip()
+        if not normalized:
+            continue
+        if normalized not in scores:
+            order.append(normalized)
+            scores[normalized] = float(score)
+        else:
+            scores[normalized] = max(scores[normalized], float(score))
+    return [(text, scores[text]) for text in order]
+
+
 def _recent_tool_results(state: Any | None) -> List[str]:
     if state is None:
         return []
@@ -125,14 +140,23 @@ def _rank_tools(state: Any | None, available_tools: Sequence[str] | None) -> Lis
     return ranked[:8]
 
 
-def _schema_candidates(state: Any | None, schema_provider: Any | None) -> List[str]:
+def _action_preference_bonus(state: Any | None, action: Action, schema_provider: Any | None) -> float:
+    if state is None or schema_provider is None or not hasattr(schema_provider, "action_preference"):
+        return 0.0
+    try:
+        return float(schema_provider.action_preference(state, action))
+    except Exception:
+        return 0.0
+
+
+def _schema_candidates(state: Any | None, schema_provider: Any | None) -> List[tuple[str, float]]:
     if state is None or schema_provider is None:
         return []
     required = ("allowed_action_types", "allowed_tools", "candidate_bindings")
     if not all(hasattr(schema_provider, name) for name in required):
         return []
 
-    candidates: List[str] = []
+    candidates: List[tuple[str, float]] = []
     for raw_action_type in schema_provider.allowed_action_types(state):
         action_name = str(raw_action_type).upper()
         try:
@@ -145,25 +169,25 @@ def _schema_candidates(state: Any | None, schema_provider: Any | None) -> List[s
                     content = str(binding.get("content", "")).strip()
                     action = Action(type=action_type, tool=str(tool), content=content)
                     if action.validate():
-                        candidates.append(render_canonical_action(action))
+                        candidates.append((render_canonical_action(action), _action_preference_bonus(state, action, schema_provider)))
         else:
             for binding in schema_provider.candidate_bindings(state, action_type.value, ""):
                 content = str(binding.get("content", "")).strip()
                 action = Action(type=action_type, content=content)
                 if action.validate():
-                    candidates.append(render_canonical_action(action))
-    return _unique_texts(candidates)
+                    candidates.append((render_canonical_action(action), _action_preference_bonus(state, action, schema_provider)))
+    return _unique_scored_candidates(candidates)
 
 
-def build_structured_action_candidates(
+def _build_scored_structured_action_candidates(
     state: Any | None,
     available_tools: Sequence[str] | None = None,
     schema_provider: Any | None = None,
-) -> List[str]:
+) -> List[tuple[str, float]]:
     schema_first = _schema_candidates(state, schema_provider)
     if schema_first:
         return schema_first
-    candidates: List[str] = []
+    candidates: List[tuple[str, float]] = []
     ranked_tools = _rank_tools(state, available_tools)
     for action_type in _candidate_action_types(state):
         contents = _content_candidates(state, action_type)
@@ -172,13 +196,21 @@ def build_structured_action_candidates(
                 for content in contents[:3]:
                     action = Action(type=action_type, tool=tool, content=content)
                     if action.validate():
-                        candidates.append(render_canonical_action(action))
+                        candidates.append((render_canonical_action(action), _action_preference_bonus(state, action, schema_provider)))
         else:
             for content in contents[:3]:
                 action = Action(type=action_type, content=content)
                 if action.validate():
-                    candidates.append(render_canonical_action(action))
-    return _unique_texts(candidates)
+                    candidates.append((render_canonical_action(action), _action_preference_bonus(state, action, schema_provider)))
+    return _unique_scored_candidates(candidates)
+
+
+def build_structured_action_candidates(
+    state: Any | None,
+    available_tools: Sequence[str] | None = None,
+    schema_provider: Any | None = None,
+) -> List[str]:
+    return [text for text, _ in _build_scored_structured_action_candidates(state, available_tools=available_tools, schema_provider=schema_provider)]
 
 
 def _trim_prefix_ids(prefix_ids: List[int], continuation_ids: List[int], seq_len: int) -> tuple[List[int], int]:
@@ -245,15 +277,22 @@ def propose_structured_actions(
     if not hasattr(tokenizer, "encode_unpadded") or not hasattr(tokenizer, "tokenize"):
         return []
 
-    candidates = build_structured_action_candidates(state, available_tools=available_tools, schema_provider=schema_provider)
-    if not candidates:
+    candidate_items = _build_scored_structured_action_candidates(state, available_tools=available_tools, schema_provider=schema_provider)
+    if not candidate_items:
         return []
+    candidates = [text for text, _ in candidate_items]
+    bonuses = [bonus for _, bonus in candidate_items]
 
     scores = _score_candidate_texts(model, tokenizer, prompt, candidates, device)
-    ranked = sorted(zip(candidates, scores), key=lambda item: item[1], reverse=True)
+    heuristic_weight = 2.75
+    ranked = sorted(
+        zip(candidates, scores, bonuses),
+        key=lambda item: (item[1] + heuristic_weight * item[2], item[2], item[1]),
+        reverse=True,
+    )
     if temperature > 0 and len(ranked) > proposal_count:
         top = ranked[: max(proposal_count * 2, proposal_count)]
-        weight_values = torch.tensor([score for _, score in top], dtype=torch.float32)
+        weight_values = torch.tensor([score + heuristic_weight * bonus for _, score, bonus in top], dtype=torch.float32)
         probs = torch.softmax(weight_values / max(temperature, 1e-4), dim=0)
         picked: List[str] = []
         picked_idx: set[int] = set()
@@ -268,7 +307,7 @@ def propose_structured_actions(
             picked.append(top[next_idx][0])
         if picked:
             return picked
-    return [text for text, _ in ranked[:proposal_count]]
+    return [text for text, _, _ in ranked[:proposal_count]]
 
 
 def propose_actions(

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import hashlib
 import json
 import re
 import shutil
@@ -111,6 +112,31 @@ def _latest_payload(state: Any, tool_name: str) -> Dict[str, Any]:
     return {}
 
 
+def isolate_workspace_for_mutation(state: Any, ops: Sequence[Dict[str, str]]) -> Path:
+    current = Path(str(state.metadata["workspace_dir"]))
+    if bool(state.metadata.get("workspace_isolated", False)):
+        return current
+    fingerprint = hashlib.sha1(
+        (
+            current.as_posix()
+            + "\n"
+            + json.dumps(list(ops), ensure_ascii=True, sort_keys=True)
+            + "\n"
+            + str(getattr(state, "task_id", ""))
+            + "\n"
+            + str(len(getattr(state, "action_history", [])))
+        ).encode("utf-8")
+    ).hexdigest()[:10]
+    isolated = current.parent / f"{current.name}_branch_{fingerprint}"
+    if isolated.exists():
+        shutil.rmtree(isolated, ignore_errors=True)
+    shutil.copytree(current, isolated)
+    state.metadata["workspace_parent_dir"] = str(current)
+    state.metadata["workspace_dir"] = str(isolated)
+    state.metadata["workspace_isolated"] = True
+    return isolated
+
+
 def apply_patch_ops(workspace: Path, ops: List[Dict[str, str]]) -> Dict[str, Any]:
     changed_files: List[str] = []
     backups: List[Dict[str, str]] = []
@@ -138,10 +164,10 @@ def apply_patch_ops(workspace: Path, ops: List[Dict[str, str]]) -> Dict[str, Any
 
 
 def apply_patch_tool(arg: str, state: Any = None) -> Dict[str, Any]:
-    workspace = Path(str(state.metadata["workspace_dir"]))
     ops = parse_patch_ops(arg) if arg.strip() else _latest_patch_ops_from_state(state)
     if not ops:
         return {"ok": False, "result": "no patch operations available", "risk": 0.8}
+    workspace = isolate_workspace_for_mutation(state, ops)
     return apply_patch_ops(workspace, ops)
 
 
@@ -175,20 +201,24 @@ def run_unit_tests_tool(arg: str, state: Any = None) -> Dict[str, Any]:
     proc = subprocess.run(resolved, cwd=str(workspace), capture_output=True, text=True, timeout=30)
     output = (proc.stdout + proc.stderr).strip()
     passed = proc.returncode == 0
+    failure = summarize_test_failures(output)
+    evidence = [f"test return code {proc.returncode}"]
+    evidence.extend(failure["line_refs"][:3])
     return {
-        "ok": passed,
+        "ok": True,
         "result": output or ("tests passed" if passed else "tests failed"),
-        "goal_progress": 1.0 if passed else 0.35,
+        "goal_progress": 1.0 if passed else 0.45,
         "solved": passed,
         "answer": "patched_and_verified" if passed else "",
-        "risk": 0.0 if passed else 0.6,
+        "risk": 0.0 if passed else 0.22,
         "payload": {
             "command": resolved,
             "returncode": proc.returncode,
             "test_output": output,
-            "evidence": [f"test return code {proc.returncode}"],
-            "resolved_obligations": ["verify tests"] if passed else [],
+            "evidence": evidence,
+            "resolved_obligations": ["verify tests"] if passed else ["run tests"],
             "obligations": [] if passed else ["localize failure", "draft patch"],
+            "state_metadata": {"last_test_failed": not passed, "last_test_returncode": proc.returncode},
         },
     }
 

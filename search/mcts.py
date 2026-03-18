@@ -98,7 +98,9 @@ def _expand_node(
         child_state = node.state
         exec_info: Dict[str, float] = {"goal_progress": 0.0, "valid_step": confidence}
         last_action = None
+        last_action_state = node.state
         for action in actions:
+            last_action_state = child_state
             child_state, local = executor.apply(child_state, action)
             exec_info["goal_progress"] = exec_info.get("goal_progress", 0.0) + float(local.get("goal_progress", 0.0))
             exec_info["valid_step"] = min(exec_info.get("valid_step", 1.0), float(local.get("valid_step", 1.0)))
@@ -114,7 +116,7 @@ def _expand_node(
                 )
             if child_state.status == "solved":
                 break
-        exec_info = _build_exec_features(child_state, exec_info, last_action, action_bias_fn)
+        exec_info = _build_exec_features(child_state, exec_info, last_action, action_bias_fn, bias_state=last_action_state)
         if _should_prune_candidate(child_state, exec_info, score_config):
             if event_logger is not None:
                 event_logger(
@@ -202,9 +204,10 @@ def _expand_node(
             )
         )
 
-    for repair in fallback_repairs_fn(node.state):
+    repair_candidates = fallback_repairs_fn(node.state) if bool(score_config.get("enable_fallback_repairs", True)) else []
+    for repair in repair_candidates:
         child_state, exec_info = executor.apply(node.state, repair)
-        exec_info = _build_exec_features(child_state, exec_info, repair, action_bias_fn)
+        exec_info = _build_exec_features(child_state, exec_info, repair, action_bias_fn, bias_state=node.state)
         exec_info["fallback_repair_used"] = 1.0
         exec_info["tactic_bias"] = max(float(exec_info.get("tactic_bias", 0.5)), 1.0)
         exec_info["tool_bias"] = max(float(exec_info.get("tool_bias", 0.5)), 1.0)
@@ -394,7 +397,15 @@ def mcts_search(
             best = node
 
     if root.children:
-        root.children.sort(key=lambda child: (child.state.status == "solved", child.visits, child.cumulative_score), reverse=True)
+        root.children.sort(
+            key=lambda child: (
+                child.state.status == "solved",
+                child.cumulative_score,
+                child.q_value(),
+                child.visits,
+            ),
+            reverse=True,
+        )
         candidate = root.children[0]
         if candidate.state.status == "solved" or best.state.status != "solved":
             best = candidate if candidate.cumulative_score >= best.cumulative_score or candidate.state.status == "solved" else best

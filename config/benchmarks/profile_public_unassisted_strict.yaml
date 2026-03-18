@@ -4,12 +4,19 @@ benchmark:
   assistance_mode: unassisted
   oracle_hints_enabled: false
   fail_on_integrity_violation: true
+  claim_mode: true
+  holdout_enabled: true
 
 search:
+  mode: beam
   beam_width: 6
   max_depth: 8
   mcts_simulations: 32
-  fallback_bonus: 0.9
-  deterministic_fallback_chain: true
-  fallback_chain_depth: 8
+  fallback_bonus: 0.0
+  deterministic_fallback_chain: false
+  fallback_chain_depth: 0
   guided_fallback_rollout: false
+  enable_fallback_repairs: false
+
+memory:
+  retrieval_mode: none
