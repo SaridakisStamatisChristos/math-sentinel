@@ -176,7 +176,7 @@ python sample_v7.py --checkpoint checkpoints/last.pt --domain linear_equation --
 
 ## Cleanup
 
-The cleanup script removes checkpoints, logs, and persistent memory artifacts, then recreates empty `checkpoints` and `logs` directories.
+The cleanup script removes checkpoints, logs, persistent memory artifacts, benchmark temp directories, pytest cache, recursive `__pycache__` folders, and generated benchmark result JSON files. It then recreates empty `checkpoints` and `logs` directories.
 
 Interactive cleanup:
 
@@ -188,6 +188,12 @@ Non-interactive cleanup:
 
 ```powershell
 .\scripts\clean_training.ps1 -Yes
+```
+
+Keep generated benchmark results while still cleaning training/runtime residue:
+
+```powershell
+.\scripts\clean_training.ps1 -Yes -KeepResults
 ```
 
 ## Operational Notes
