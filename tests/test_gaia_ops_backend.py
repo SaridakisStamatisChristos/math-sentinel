@@ -6,9 +6,12 @@ from domains.gaia_ops.backend import GaiaOpsReasoningDomain
 
 
 class GaiaOpsBackendTests(unittest.TestCase):
-    def test_evidence_driven_fallback_loop_solves_csv_case(self) -> None:
+    def test_evidence_driven_fallback_loop_solves_csv_case_without_oracle_tool_hints(self) -> None:
         backend = GaiaOpsReasoningDomain()
         task = backend.benchmark_tasks()[0]
+        task.meta.pop("oracle_evidence_file", None)
+        task.meta.pop("oracle_tool", None)
+        task.meta.pop("oracle_input", None)
         state = backend.make_state(task)
         executor = backend.create_executor()
 
@@ -26,6 +29,7 @@ class GaiaOpsBackendTests(unittest.TestCase):
         self.assertEqual(state.final_answer, "22")
         self.assertIn("22", " ".join(state.evidence_refs + state.derived_facts))
         self.assertGreaterEqual(float(info["goal_progress"]), 0.8)
+        self.assertEqual(state.metadata.get("target_file"), "sales.csv")
 
     def test_benchmark_tasks_cover_multiple_reasoning_families(self) -> None:
         backend = GaiaOpsReasoningDomain()
@@ -44,3 +48,4 @@ class GaiaOpsBackendTests(unittest.TestCase):
         self.assertIn("fixture_dir", task.meta)
         state = backend.make_state(task)
         self.assertIn("sales.csv", state.metadata["workspace_files"])
+        self.assertEqual(state.metadata.get("target_file"), "sales.csv")

@@ -8,6 +8,18 @@ from typing import Any, Dict, List, Optional
 import torch
 
 from benchmarks.public_catalog import swebench_verified_smoke_suite
+from domains.repo_agent_utils import (
+    apply_patch_tool as repo_apply_patch_tool,
+    create_workspace,
+    draft_patch_tool as repo_draft_patch_tool,
+    infer_primary_file,
+    inspect_tests_tool as repo_inspect_tests_tool,
+    list_workspace_files,
+    localize_failure_tool as repo_localize_failure_tool,
+    read_workspace_file,
+    rollback_patch_tool as repo_rollback_patch_tool,
+    run_unit_tests_tool as repo_run_unit_tests_tool,
+)
 from engine.action_format import render_canonical_actions
 from engine.actions import Action, ActionType
 from engine.executor import StateExecutor
@@ -16,16 +28,6 @@ from engine.state import ReasoningState
 from engine.task import ReasoningTask
 from engine.traces import render_human_trace
 from memory.retrieval import retrieve_context
-from domains.repo_agent_utils import (
-    apply_patch_tool as repo_apply_patch_tool,
-    create_workspace,
-    draft_patch_tool as repo_draft_patch_tool,
-    infer_primary_file,
-    list_workspace_files,
-    read_workspace_file,
-    rollback_patch_tool as repo_rollback_patch_tool,
-    run_unit_tests_tool as repo_run_unit_tests_tool,
-)
 from proof.parser import parse_actions
 
 
@@ -48,6 +50,7 @@ def _read_workspace_file(workspace: Path, relpath: str) -> str:
 def inspect_workspace(arg: str, state: Any = None) -> Dict[str, Any]:
     workspace = Path(str(state.metadata["workspace_dir"]))
     files = _list_workspace_files(workspace)
+    primary_file = infer_primary_file(files, preferred_file=str(state.metadata.get("primary_file", "")))
     return {
         "ok": True,
         "result": "\n".join(files),
@@ -55,9 +58,21 @@ def inspect_workspace(arg: str, state: Any = None) -> Dict[str, Any]:
         "payload": {
             "files": files,
             "evidence": [f"workspace contains {name}" for name in files[:4]],
-            "obligations": ["inspect source", "inspect tests"],
+            "obligations": ["inspect tests", "run tests", "localize failure"],
+            "state_metadata": {
+                "workspace_files": files,
+                "primary_file": primary_file,
+            },
         },
     }
+
+
+def inspect_tests(arg: str, state: Any = None) -> Dict[str, Any]:
+    return repo_inspect_tests_tool(arg, state)
+
+
+def localize_failure(arg: str, state: Any = None) -> Dict[str, Any]:
+    return repo_localize_failure_tool(arg, state)
 
 
 def read_file(arg: str, state: Any = None) -> Dict[str, Any]:
@@ -65,10 +80,11 @@ def read_file(arg: str, state: Any = None) -> Dict[str, Any]:
     relpath = arg.strip() or str(state.metadata.get("primary_file", ""))
     if not relpath:
         files = _list_workspace_files(workspace)
-        relpath = files[0] if files else ""
+        relpath = infer_primary_file(files)
     if not relpath:
         return {"ok": False, "result": "no file available"}
     text = _read_workspace_file(workspace, relpath)
+    resolved = ["inspect source"] if not relpath.startswith("tests/") else ["inspect tests"]
     return {
         "ok": True,
         "result": text,
@@ -76,7 +92,9 @@ def read_file(arg: str, state: Any = None) -> Dict[str, Any]:
         "payload": {
             "path": relpath,
             "evidence": [f"read {relpath}"],
-            "resolved_obligations": ["inspect source"] if not relpath.startswith("tests/") else ["inspect tests"],
+            "resolved_obligations": resolved,
+            "obligations": ["draft patch"] if not relpath.startswith("tests/") else ["inspect source", "draft patch"],
+            "state_metadata": {"last_read_file": relpath},
         },
     }
 
@@ -93,7 +111,7 @@ def search_code(arg: str, state: Any = None) -> Dict[str, Any]:
     return {
         "ok": True,
         "result": "\n".join(matches) if matches else "no matches",
-        "goal_progress": 0.2,
+        "goal_progress": 0.18,
         "payload": {
             "matches": matches,
             "evidence": matches[:4],
@@ -122,6 +140,8 @@ class SwebenchToolRegistry:
     def __init__(self) -> None:
         self.tools = {
             "inspect_workspace": inspect_workspace,
+            "inspect_tests": inspect_tests,
+            "localize_failure": localize_failure,
             "read_file": read_file,
             "search_code": search_code,
             "draft_patch": draft_patch,
@@ -144,27 +164,18 @@ class SwebenchOpsReasoningDomain:
     name = "swebench_ops"
     default_curriculum_config = "config/swebench_ops_curriculum.yaml"
 
-    def __init__(self) -> None:
+    def __init__(self, runtime_config: Dict[str, Any] | None = None) -> None:
         self._cases = list(swebench_verified_smoke_suite().cases)
+        benchmark_cfg = dict((runtime_config or {}).get("benchmark", {}))
+        self.assistance_mode = str(benchmark_cfg.get("assistance_mode", "unassisted")).lower()
+        self.oracle_hints_enabled = bool(benchmark_cfg.get("oracle_hints_enabled", False))
 
     def _match_manual_case(self, prompt: str, domain: str) -> Optional[ReasoningTask]:
         text = f"{domain}\n{prompt}".lower()
         score_map: List[tuple[int, ReasoningTask]] = []
         for case in self._cases:
-            keywords = set(
-                [
-                    case.task_id.lower(),
-                    case.domain.lower(),
-                    str(case.meta.get("family", "")).lower(),
-                ]
-            )
-            prompt_bits = (
-                case.prompt.lower()
-                .replace(".", " ")
-                .replace(",", " ")
-                .replace(":", " ")
-                .split()
-            )
+            keywords = set([case.task_id.lower(), case.domain.lower(), str(case.meta.get("family", "")).lower()])
+            prompt_bits = case.prompt.lower().replace(".", " ").replace(",", " ").replace(":", " ").split()
             keywords.update(bit for bit in prompt_bits if len(bit) >= 4)
             score = sum(1 for keyword in keywords if keyword and keyword in text)
             score_map.append((score, case))
@@ -191,6 +202,11 @@ class SwebenchOpsReasoningDomain:
         metadata["workspace_dir"] = str(workspace)
         metadata["workspace_files"] = files
         metadata["primary_file"] = infer_primary_file(files)
+        metadata["benchmark_assistance_mode"] = self.assistance_mode
+        if self.assistance_mode == "assisted" and self.oracle_hints_enabled:
+            oracle_primary = str(metadata.get("oracle_primary_file", ""))
+            if oracle_primary:
+                metadata["primary_file"] = oracle_primary
         problem_text = task.prompt + "\nWorkspace files:\n" + ("\n".join(f"- {name}" for name in files) if files else "- none")
         return ReasoningState(
             task_id=task.task_id,
@@ -220,9 +236,12 @@ class SwebenchOpsReasoningDomain:
 
     def build_gold_trace(self, task: ReasoningTask) -> str:
         actions = [
-            Action(type=ActionType.THINK, content="inspect source and tests, draft a patch, apply it, and verify the repository"),
+            Action(type=ActionType.THINK, content="inspect workspace and tests, run tests, localize failure, patch the source, and verify"),
             Action(type=ActionType.APPLY, tool="inspect_workspace", content=""),
-            Action(type=ActionType.APPLY, tool="read_file", content=str(task.meta.get("primary_file", ""))),
+            Action(type=ActionType.APPLY, tool="inspect_tests", content=""),
+            Action(type=ActionType.CHECK, tool="run_unit_tests", content=""),
+            Action(type=ActionType.APPLY, tool="localize_failure", content=""),
+            Action(type=ActionType.APPLY, tool="read_file", content=str(task.meta.get("oracle_primary_file", ""))),
             Action(type=ActionType.APPLY, tool="draft_patch", content=task.prompt),
             Action(type=ActionType.APPLY, tool="apply_patch", content=""),
             Action(type=ActionType.CHECK, tool="run_unit_tests", content=""),
@@ -267,10 +286,7 @@ class SwebenchOpsReasoningDomain:
         risk = float(local_scores.get("risk_score", 0.05 if correct else (0.75 if has_answer else 0.55)))
         branch_priority = max(0.05, min(0.99, 0.58 * goal_progress + 0.22 * valid_step + 0.20 * proof_completion))
         value_estimate = max(0.01, min(0.99, 0.45 * goal_progress + 0.30 * proof_completion + 0.20 * branch_priority + 0.10 * valid_step - 0.15 * risk))
-        return torch.tensor(
-            [valid_step, goal_progress, proof_completion, risk, branch_priority, value_estimate],
-            dtype=torch.float32,
-        )
+        return torch.tensor([valid_step, goal_progress, proof_completion, risk, branch_priority, value_estimate], dtype=torch.float32)
 
     def evaluate_answer(self, task: ReasoningTask, candidate: str) -> bool:
         return candidate.strip() == task.answer.strip()
@@ -282,48 +298,60 @@ class SwebenchOpsReasoningDomain:
         tool_names = [record.get("tool", "") for record in state.tool_history if isinstance(record, dict)]
         if "inspect_workspace" not in tool_names:
             return [Action(type=ActionType.APPLY, tool="inspect_workspace", content="")]
-        if "read_file" not in tool_names:
-            return [Action(type=ActionType.APPLY, tool="read_file", content=str(state.metadata.get("primary_file", "")))]
-        if "draft_patch" not in tool_names:
+        if "inspect_tests" not in tool_names:
+            return [Action(type=ActionType.APPLY, tool="inspect_tests", content="")]
+        if "run_unit_tests" not in tool_names:
+            return [Action(type=ActionType.CHECK, tool="run_unit_tests", content="")]
+        if "localize_failure" not in tool_names and state.status != "solved":
+            return [Action(type=ActionType.APPLY, tool="localize_failure", content="")]
+        if "draft_patch" not in tool_names and state.status != "solved":
             return [Action(type=ActionType.APPLY, tool="draft_patch", content=state.problem_text)]
-        if "apply_patch" not in tool_names:
+        if "apply_patch" not in tool_names and state.status != "solved":
             return [Action(type=ActionType.APPLY, tool="apply_patch", content="")]
-        if "run_unit_tests" not in tool_names or state.status != "solved":
+        if tool_names.count("run_unit_tests") < 2 and state.status != "solved":
             return [Action(type=ActionType.CHECK, tool="run_unit_tests", content="")]
         if state.final_answer.strip():
             return [Action(type=ActionType.ANSWER, content=state.final_answer)]
         return [Action(type=ActionType.BACKTRACK, content="search another repository fix")]
 
     def allowed_action_types(self, state: ReasoningState) -> List[str]:
-        actions = ["THINK", "SUBGOAL", "APPLY"]
+        actions = ["THINK", "SUBGOAL", "APPLY", "CHECK"]
         if state.derived_facts or state.tool_history:
-            actions.extend(["CHECK", "ANSWER"])
+            actions.append("ANSWER")
         return actions
 
     def allowed_tools(self, state: ReasoningState, action_type: str) -> List[str]:
-        if action_type.upper() not in {"APPLY", "CHECK"}:
+        normalized = action_type.upper()
+        if normalized == "CHECK":
+            return ["run_unit_tests"]
+        if normalized != "APPLY":
             return []
-        return ["inspect_workspace", "read_file", "search_code", "draft_patch", "apply_patch", "run_unit_tests", "rollback_patch"]
+        return ["inspect_workspace", "inspect_tests", "localize_failure", "read_file", "search_code", "draft_patch", "apply_patch", "rollback_patch"]
 
     def candidate_bindings(self, state: ReasoningState, action_type: str, tool: str = "") -> List[Dict[str, str]]:
         normalized = action_type.upper()
         if normalized == "THINK":
-            return [{"content": "inspect the workspace, read the bug source, draft a patch, apply it, and verify tests"}]
+            return [{"content": "inspect tests, run the failure, localize the bug, draft a validated patch, and verify the repository"}]
         if normalized == "SUBGOAL":
-            pending = state.obligations[:3] or ["inspect source", "draft patch", "verify tests"]
+            pending = state.obligations[:3] or ["inspect tests", "localize failure", "verify tests"]
             return [{"content": item} for item in pending]
-        if action_type.upper() == "ANSWER":
+        if normalized == "ANSWER":
             answers = [state.final_answer, str(state.metadata.get("candidate_answer", "")), state.expected_answer]
             return [{"content": item} for item in answers if str(item).strip()]
+        if normalized == "CHECK":
+            return [{"content": ""}]
+        if tool in {"inspect_workspace", "inspect_tests", "localize_failure", "apply_patch", "rollback_patch"}:
+            return [{"content": ""}]
         if tool == "read_file":
-            paths = [str(state.metadata.get("primary_file", ""))] + [name for name in state.metadata.get("workspace_files", []) if name.startswith("tests/")]
+            paths = [str(state.metadata.get("primary_file", ""))]
+            paths.extend([name for name in state.metadata.get("workspace_files", []) if name.startswith("tests/")])
             return [{"content": path} for path in paths if path][:3]
         if tool == "search_code":
-            return [{"content": "return"}, {"content": "slugify"}, {"content": "add"}]
-        if tool in {"inspect_workspace", "apply_patch", "run_unit_tests", "rollback_patch"}:
-            return [{"content": ""}]
+            symbols = list(state.metadata.get("test_symbols", []))
+            return [{"content": symbol} for symbol in symbols[:3]] or [{"content": "return"}]
         if tool == "draft_patch":
-            return [{"content": state.problem_text}]
+            context = str(state.metadata.get("primary_file", "")) or state.problem_text
+            return [{"content": context}]
         return []
 
     def action_schema(self, state: ReasoningState) -> Dict[str, Any]:
@@ -340,11 +368,11 @@ class SwebenchOpsReasoningDomain:
 
     def action_format_instructions(self) -> str:
         return (
-            "Emit canonical JSON actions. Use the repository tools to inspect files, patch code, and verify tests.\n"
-            'ACTION {"type":"APPLY","tool":"read_file","content":"app.py"}\n'
-            'ACTION {"type":"APPLY","tool":"draft_patch","content":"task prompt"}\n'
-            'ACTION {"type":"APPLY","tool":"apply_patch","content":""}\n'
+            "Emit canonical JSON actions. Solve the repository task without oracle patch hints.\n"
+            'ACTION {"type":"APPLY","tool":"inspect_tests","content":""}\n'
             'ACTION {"type":"CHECK","tool":"run_unit_tests","content":""}\n'
+            'ACTION {"type":"APPLY","tool":"localize_failure","content":""}\n'
+            'ACTION {"type":"APPLY","tool":"draft_patch","content":"bug context"}\n'
             'ACTION {"type":"ANSWER","content":"patched_and_verified"}'
         )
 
@@ -368,7 +396,7 @@ class SwebenchOpsReasoningDomain:
                 state.problem_text,
                 mode=retrieval_mode,
                 embedding_model=embedding_model,
-                tool_names=self.allowed_tools(state, "APPLY"),
+                tool_names=self.allowed_tools(state, "APPLY") + self.allowed_tools(state, "CHECK"),
                 event_logger=event_logger,
             )
         state.metadata["_retrieval_context"] = retrieval_context or {}

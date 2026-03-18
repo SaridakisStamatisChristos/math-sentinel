@@ -18,7 +18,7 @@ def available_backends() -> list[str]:
     return ["math", "string_ops", "code_ops", "planning_ops", "swebench_ops", "gaia_ops"]
 
 
-def create_reasoning_domain(name: str, checker_plugin: str = "") -> Any:
+def create_reasoning_domain(name: str, checker_plugin: str = "", runtime_config: dict[str, Any] | None = None) -> Any:
     normalized = _normalize_name(name or "math")
     if normalized == "math":
         return MathReasoningDomain(checker_plugin=checker_plugin)
@@ -29,9 +29,9 @@ def create_reasoning_domain(name: str, checker_plugin: str = "") -> Any:
     if normalized in {"planning_ops", "planning", "planner"}:
         return PlanningOpsReasoningDomain()
     if normalized in {"swebench_ops", "swebench", "swe_bench"}:
-        return SwebenchOpsReasoningDomain()
+        return SwebenchOpsReasoningDomain(runtime_config=runtime_config)
     if normalized in {"gaia_ops", "gaia"}:
-        return GaiaOpsReasoningDomain()
+        return GaiaOpsReasoningDomain(runtime_config=runtime_config)
     raise ValueError(f"unknown backend: {name}")
 
 

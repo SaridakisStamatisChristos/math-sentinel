@@ -57,7 +57,7 @@ def main() -> None:
     curriculum_cfg = load_yaml(curriculum_path)
     scheduler = PhaseScheduler.from_dict(curriculum_cfg)
     phase = scheduler.phase_for_step(args.step)
-    reasoning_domain = create_reasoning_domain(args.backend, checker_plugin=args.checker_plugin)
+    reasoning_domain = create_reasoning_domain(args.backend, checker_plugin=args.checker_plugin, runtime_config=cfg)
     event_logger = build_runtime_event_logger(cfg)
     lemma_store, hard_cases, tactic_stats = load_search_memory(cfg)
     prompt_builder = build_prompt_builder(

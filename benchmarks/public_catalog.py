@@ -23,8 +23,8 @@ def _swebench_fixture_case(name: str, prompt: str, patch: list[dict[str, str]]) 
         meta={
             "family": "swebench_patch",
             "fixture_dir": str(fixture_dir),
-            "primary_file": primary_file,
-            "gold_patch": patch,
+            "oracle_primary_file": primary_file,
+            "oracle_patch": patch,
             "test_command": ["python", "-m", "unittest", "discover", "-s", "tests", "-q"],
         },
     )
@@ -64,9 +64,9 @@ def _gaia_fixture_case(case_id: str, domain: str, prompt: str, answer: str, reco
         meta={
             "family": domain,
             "fixture_dir": str(fixture_dir),
-            "recommended_tool": recommended_tool,
-            "tool_input": tool_input,
-            "evidence_file": evidence_file,
+            "oracle_tool": recommended_tool,
+            "oracle_input": tool_input,
+            "oracle_evidence_file": evidence_file,
         },
     )
 

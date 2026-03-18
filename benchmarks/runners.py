@@ -80,7 +80,7 @@ def run_task_collection(
     checker_plugin: str,
     event_logger: Any,
 ) -> BenchmarkSuiteResult:
-    reasoning_domain = create_reasoning_domain(backend_name, checker_plugin=checker_plugin)
+    reasoning_domain = create_reasoning_domain(backend_name, checker_plugin=checker_plugin, runtime_config=cfg)
     executor = reasoning_domain.create_executor()
     lemma_store, hard_cases, tactic_stats = load_search_memory(cfg)
     prompt_builder = build_prompt_builder(
@@ -166,7 +166,7 @@ def run_backend_benchmark(
     checker_plugin: str,
     event_logger: Any,
 ) -> BenchmarkSuiteResult:
-    reasoning_domain = create_reasoning_domain(backend_name, checker_plugin=checker_plugin)
+    reasoning_domain = create_reasoning_domain(backend_name, checker_plugin=checker_plugin, runtime_config=cfg)
     return run_task_collection(
         suite_name=f"internal_{backend_name}",
         tier="internal",

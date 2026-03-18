@@ -84,19 +84,21 @@ The `planning_ops` backend currently supports:
 The `swebench_ops` backend currently supports:
 
 - repository workspace inspection
+- test inspection and failure localization
 - file reading and code search
-- heuristic patch drafting from source plus tests
+- test-guided patch drafting from source plus extracted test cases
 - deterministic patch application and rollback
 - unit-test execution
 - local SWE-bench-style smoke tasks with fixture repos
 
 The `gaia_ops` backend currently supports:
 
-- question planning
+- question planning with file/intent inference
 - workspace file inspection
-- CSV aggregation
-- JSON path lookup
-- meeting-slot overlap resolution
+- generic evidence-file inspection
+- CSV aggregation from prompt/entity matching
+- JSON scalar lookup from path scoring
+- meeting-slot overlap resolution from generic JSON evidence
 - evidence-aware answer synthesis
 - local GAIA-style smoke tasks with fixture data
 
@@ -300,6 +302,11 @@ The search stack now also includes:
 - deterministic strict-decoder product mode
 - guided fallback rollouts for multi-step benchmark agents
 - runtime event logs for retrieval hits, schema failures, tool failures, search budget exhaustion, and verifier/value disagreement
+
+For the benchmark configs, the default public baseline is now unassisted:
+
+- `benchmark.assistance_mode: unassisted`
+- oracle-style metadata remains available for gold traces and optional analysis, but the default runtime path does not rely on it
 
 Curriculum phases are backend-specific:
 

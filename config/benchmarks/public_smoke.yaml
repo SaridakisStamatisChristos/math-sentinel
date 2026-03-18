@@ -9,6 +9,10 @@ runtime:
   event_log_path: logs/public_benchmark_events.jsonl
   fail_on_checkpoint_mismatch: false
 
+benchmark:
+  assistance_mode: unassisted
+  oracle_hints_enabled: false
+
 model:
   provider: legacy_tiny
   backbone: Qwen/Qwen2.5-1.5B-Instruct
@@ -75,7 +79,7 @@ search:
   value_weight: 0.35
   novelty_weight: 0.08
   guided_fallback_rollout: true
-  guided_rollout_depth: 6
+  guided_rollout_depth: 8
 
 memory:
   replay_capacity: 2000

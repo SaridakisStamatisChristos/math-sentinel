@@ -103,7 +103,7 @@ def main() -> None:
         cfg["model"]["local_files_only"] = True
     device = configure_runtime(cfg, deterministic_override=(True if args.deterministic else None), safe_override=(True if args.safe_runtime else None))
     event_logger = build_runtime_event_logger(cfg)
-    reasoning_domain = create_reasoning_domain(args.backend, checker_plugin=args.checker_plugin)
+    reasoning_domain = create_reasoning_domain(args.backend, checker_plugin=args.checker_plugin, runtime_config=cfg)
     lemma_store, hard_cases, tactic_stats = load_search_memory(cfg)
     prompt_builder = build_prompt_builder(
         reasoning_domain,

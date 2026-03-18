@@ -50,6 +50,7 @@ class ConfigLoadingTests(unittest.TestCase):
         self.assertEqual(cfg["model"]["backbone"], "Qwen/Qwen2.5-1.5B-Instruct")
         self.assertFalse(cfg["runtime"]["safe_mode"])
         self.assertTrue(cfg["runtime"]["structured_logs"])
+        self.assertEqual(cfg["benchmark"]["assistance_mode"], "unassisted")
 
     def test_runtime_config_supports_extends_without_search_overlay(self) -> None:
         root = self._fresh_dir("config-extends")
@@ -86,6 +87,7 @@ class ConfigLoadingTests(unittest.TestCase):
         self.assertEqual(cfg["search"]["beam_width"], 9)
         self.assertTrue(cfg["runtime"]["safe_mode"])
         self.assertEqual(cfg["model"]["backbone"], "fake/backbone")
+        self.assertEqual(cfg["benchmark"]["assistance_mode"], "unassisted")
 
 
 if __name__ == "__main__":

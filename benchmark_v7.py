@@ -4,14 +4,12 @@ from __future__ import annotations
 import argparse
 from typing import Any, Dict
 
-from benchmarks import (
-    available_benchmark_ablations,
-    available_benchmark_profiles,
-    run_benchmark_campaign,
-    save_suite_result,
-)
 from benchmarks.ablations import resolve_benchmark_ablations
+from benchmarks.ablations import available_benchmark_ablations
+from benchmarks.campaign import run_benchmark_campaign
 from benchmarks.profiles import resolve_benchmark_profiles
+from benchmarks.profiles import available_benchmark_profiles
+from benchmarks.results import save_suite_result
 from benchmarks.runners import load_benchmark_runtime, resolve_suite_targets, run_suite_target
 from sentinel.config import load_runtime_config
 from sentinel.runtime import configure_runtime

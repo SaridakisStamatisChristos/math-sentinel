@@ -7,7 +7,7 @@ from typing import Any, Dict
 import yaml
 
 from .model_backends import ensure_model_config_defaults
-from .runtime import apply_safe_runtime_profile, ensure_runtime_config_defaults
+from .runtime import apply_safe_runtime_profile, ensure_benchmark_config_defaults, ensure_runtime_config_defaults
 
 
 def load_yaml(path: str) -> Dict[str, Any]:
@@ -49,6 +49,7 @@ def load_runtime_config(config_path: str, search_config_path: str = "config/sear
     if search_path is None or not search_path.exists():
         cfg = ensure_model_config_defaults(cfg)
         cfg = ensure_runtime_config_defaults(cfg)
+        cfg = ensure_benchmark_config_defaults(cfg)
         if bool(cfg.get("runtime", {}).get("safe_mode", False)):
             apply_safe_runtime_profile(cfg)
         return cfg
@@ -57,6 +58,7 @@ def load_runtime_config(config_path: str, search_config_path: str = "config/sear
     if not raw_search_cfg:
         cfg = ensure_model_config_defaults(cfg)
         cfg = ensure_runtime_config_defaults(cfg)
+        cfg = ensure_benchmark_config_defaults(cfg)
         if bool(cfg.get("runtime", {}).get("safe_mode", False)):
             apply_safe_runtime_profile(cfg)
         return cfg
@@ -65,6 +67,7 @@ def load_runtime_config(config_path: str, search_config_path: str = "config/sear
     cfg["search"] = deep_merge_dicts(dict(cfg.get("search", {})), search_cfg)
     cfg = ensure_model_config_defaults(cfg)
     cfg = ensure_runtime_config_defaults(cfg)
+    cfg = ensure_benchmark_config_defaults(cfg)
     if bool(cfg.get("runtime", {}).get("safe_mode", False)):
         apply_safe_runtime_profile(cfg)
     return cfg

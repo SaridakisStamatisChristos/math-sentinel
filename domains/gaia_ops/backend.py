@@ -6,7 +6,7 @@ import random
 import shutil
 import uuid
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Iterable, List, Optional, Sequence
 
 import torch
 
@@ -42,11 +42,139 @@ def _workspace_for(task: ReasoningTask) -> Path:
 
 
 def _list_workspace_files(workspace: Path) -> List[str]:
-    return sorted(
-        str(path.relative_to(workspace)).replace("\\", "/")
-        for path in workspace.rglob("*")
-        if path.is_file()
-    )
+    return sorted(str(path.relative_to(workspace)).replace("\\", "/") for path in workspace.rglob("*") if path.is_file())
+
+
+def _tokenize(text: str) -> List[str]:
+    cleaned = text.lower()
+    for ch in [".", ",", ":", "?", "!", "(", ")", "[", "]", "{", "}", '"', "'"]:
+        cleaned = cleaned.replace(ch, " ")
+    return [part for part in cleaned.split() if part]
+
+
+def _infer_target_file(prompt: str, files: Sequence[str]) -> str:
+    prompt_lower = prompt.lower()
+    for name in files:
+        if name.lower() in prompt_lower:
+            return name
+    prompt_tokens = set(_tokenize(prompt))
+    best = ""
+    best_score = -1
+    for name in files:
+        score = sum(1 for token in _tokenize(name) if token in prompt_tokens)
+        if score > best_score:
+            best = name
+            best_score = score
+    return best or (files[0] if files else "")
+
+
+def _infer_question_intent(prompt: str) -> str:
+    tokens = set(_tokenize(prompt))
+    if {"total", "sum"} & tokens:
+        return "aggregate_sum"
+    if {"earliest", "latest"} & tokens and {"available", "slot", "meeting"} & tokens:
+        return "availability_overlap"
+    if {"version", "latest"} & tokens:
+        return "scalar_lookup"
+    if {"count", "many", "number"} & tokens:
+        return "count"
+    return "scalar_lookup"
+
+
+def _json_scalar_paths(payload: Any, prefix: str = "") -> List[tuple[str, Any]]:
+    items: List[tuple[str, Any]] = []
+    if isinstance(payload, dict):
+        for key, value in payload.items():
+            next_prefix = f"{prefix}.{key}" if prefix else str(key)
+            items.extend(_json_scalar_paths(value, next_prefix))
+    elif isinstance(payload, list):
+        if all(not isinstance(value, (dict, list)) for value in payload):
+            items.append((prefix, payload))
+        else:
+            for index, value in enumerate(payload):
+                next_prefix = f"{prefix}[{index}]"
+                items.extend(_json_scalar_paths(value, next_prefix))
+    else:
+        items.append((prefix, payload))
+    return items
+
+
+def _score_scalar_path(prompt: str, path: str, value: Any) -> float:
+    prompt_tokens = set(_tokenize(prompt))
+    path_tokens = set(_tokenize(path))
+    value_tokens = set(_tokenize(str(value)))
+    score = float(len(prompt_tokens & path_tokens)) + 0.35 * float(len(prompt_tokens & value_tokens))
+    if "latest" in prompt_tokens and "latest" in path_tokens:
+        score += 1.0
+    if "version" in prompt_tokens and "version" in path_tokens:
+        score += 0.8
+    return score
+
+
+def _infer_csv_answer(prompt: str, csv_text: str) -> tuple[str, List[str]]:
+    rows = list(csv.DictReader(csv_text.splitlines()))
+    if not rows:
+        return "", []
+    headers = list(rows[0].keys())
+    prompt_tokens = set(_tokenize(prompt))
+    value_map: Dict[str, List[str]] = {}
+    for header in headers:
+        for row in rows:
+            value = str(row.get(header, "")).strip()
+            if value:
+                value_map.setdefault(value.lower(), []).append(header)
+    filter_value = ""
+    filter_col = ""
+    for value, columns in value_map.items():
+        if value in prompt_tokens:
+            filter_value = value
+            filter_col = columns[0]
+            break
+    numeric_headers = []
+    for header in headers:
+        try:
+            [float(str(row.get(header, "0"))) for row in rows]
+            numeric_headers.append(header)
+        except Exception:
+            continue
+    target_header = numeric_headers[0] if numeric_headers else headers[-1]
+    for header in numeric_headers:
+        if any(token in header.lower() for token in prompt_tokens):
+            target_header = header
+            break
+    filtered_rows = rows
+    if filter_col and filter_value:
+        filtered_rows = [row for row in rows if str(row.get(filter_col, "")).strip().lower() == filter_value]
+    total = sum(float(str(row.get(target_header, "0") or 0)) for row in filtered_rows)
+    rendered = str(int(total)) if float(total).is_integer() else str(total)
+    evidence = [f"sum({target_header}) over {len(filtered_rows)} matching rows -> {rendered}"]
+    if filter_col and filter_value:
+        evidence.insert(0, f"filtered {filter_col}={filter_value}")
+    return rendered, evidence
+
+
+def _infer_json_answer(prompt: str, payload: Any) -> tuple[str, List[str]]:
+    prompt_tokens = set(_tokenize(prompt))
+    if isinstance(payload, dict):
+        lower_keys = {str(key).lower(): key for key in payload.keys()}
+        if "people" in lower_keys and isinstance(payload[lower_keys["people"]], dict):
+            people = payload[lower_keys["people"]]
+            mentioned = [name for name in people.keys() if str(name).lower() in prompt_tokens]
+            if len(mentioned) >= 2:
+                common = None
+                for name in mentioned[:2]:
+                    slots = set(str(value) for value in people.get(name, []))
+                    common = slots if common is None else common & slots
+                if common:
+                    ordered = sorted(common)
+                    rendered = ordered[0] if "earliest" in prompt_tokens else ordered[-1]
+                    return rendered, [f"intersection({', '.join(mentioned[:2])}) -> {rendered}"]
+    candidates = _json_scalar_paths(payload)
+    if not candidates:
+        return "", []
+    scored = sorted(candidates, key=lambda item: _score_scalar_path(prompt, item[0], item[1]), reverse=True)
+    best_path, best_value = scored[0]
+    return str(best_value), [f"{best_path} -> {best_value}"]
 
 
 def list_files(arg: str, state: Any = None) -> Dict[str, Any]:
@@ -59,107 +187,105 @@ def list_files(arg: str, state: Any = None) -> Dict[str, Any]:
         "payload": {
             "files": files,
             "evidence": [f"workspace contains {name}" for name in files[:4]],
-            "obligations": ["inspect evidence file", "compute candidate answer"],
+            "obligations": ["inspect evidence file", "solve from evidence"],
+            "state_metadata": {"workspace_files": files},
         },
     }
 
 
 def plan_question(arg: str, state: Any = None) -> Dict[str, Any]:
-    recommended = str(state.metadata.get("recommended_tool", "")).strip()
-    tool_input = str(state.metadata.get("tool_input", "")).strip()
+    prompt = str(getattr(state, "problem_text", "")).strip()
     files = list(state.metadata.get("workspace_files", []))
-    first_file = files[0] if files else ""
-    plan = f"inspect {first_file or 'workspace'} then use {recommended} with {tool_input}"
+    target_file = _infer_target_file(prompt, files)
+    intent = _infer_question_intent(prompt)
+    plan = f"inspect {target_file or 'the most relevant file'} then solve intent={intent}"
+    if str(state.metadata.get("benchmark_assistance_mode", "unassisted")) == "assisted" and bool(state.metadata.get("oracle_hints_enabled", False)):
+        oracle_file = str(state.metadata.get("oracle_evidence_file", "")).strip()
+        if oracle_file:
+            target_file = oracle_file
+            plan = f"inspect {target_file} then solve intent={intent}"
     return {
         "ok": True,
         "result": plan,
         "goal_progress": 0.18,
         "payload": {
             "evidence": [plan],
-            "suggested_tools": ["list_files", "read_file", recommended],
-            "obligations": ["inspect evidence file", "compute candidate answer"],
+            "suggested_tools": ["list_files", "inspect_file", "solve_question"],
+            "obligations": ["inspect evidence file", "solve from evidence"],
+            "state_metadata": {"target_file": target_file, "question_intent": intent},
         },
     }
 
 
-def read_file(arg: str, state: Any = None) -> Dict[str, Any]:
+def inspect_file(arg: str, state: Any = None) -> Dict[str, Any]:
     workspace = Path(str(state.metadata["workspace_dir"]))
-    relpath = arg.strip()
-    if not relpath:
-        files = _list_workspace_files(workspace)
-        relpath = files[0] if files else ""
+    files = list(state.metadata.get("workspace_files", []))
+    relpath = arg.strip() or str(state.metadata.get("target_file", "")) or _infer_target_file(str(getattr(state, "problem_text", "")), files)
     if not relpath:
         return {"ok": False, "result": "no file available"}
     text = (workspace / relpath).read_text(encoding="utf-8")
-    return {
-        "ok": True,
-        "result": text,
-        "goal_progress": 0.25,
-        "payload": {
-            "path": relpath,
-            "evidence": [f"read {relpath}"],
+    summary = ""
+    file_kind = Path(relpath).suffix.lower().lstrip(".") or "text"
+    payload: Dict[str, Any] = {
+        "path": relpath,
+        "state_metadata": {"target_file": relpath, "active_file": relpath, "active_file_kind": file_kind},
+    }
+    if file_kind == "csv":
+        rows = list(csv.DictReader(text.splitlines()))
+        columns = list(rows[0].keys()) if rows else []
+        summary = f"csv columns: {', '.join(columns)}"
+        payload["columns"] = columns
+        payload["row_count"] = len(rows)
+    elif file_kind == "json":
+        json_payload = json.loads(text)
+        scalar_paths = _json_scalar_paths(json_payload)
+        top_paths = [path for path, _ in scalar_paths[:6]]
+        summary = f"json paths: {', '.join(top_paths)}"
+        payload["scalar_paths"] = top_paths
+    else:
+        summary = text[:200]
+    payload.update(
+        {
+            "evidence": [f"inspected {relpath}", summary],
             "resolved_obligations": ["inspect evidence file"],
-            "obligations": ["compute candidate answer"],
-        },
-    }
+            "obligations": ["solve from evidence"],
+        }
+    )
+    return {"ok": True, "result": text, "goal_progress": 0.25, "payload": payload}
 
 
-def csv_region_total(arg: str, state: Any = None) -> Dict[str, Any]:
+def solve_question(arg: str, state: Any = None) -> Dict[str, Any]:
     workspace = Path(str(state.metadata["workspace_dir"]))
-    filename, filter_col, filter_value, sum_col = [part.strip() for part in arg.split("|", 3)]
-    total = 0
-    with open(workspace / filename, "r", encoding="utf-8") as f:
-        reader = csv.DictReader(f)
-        for row in reader:
-            if row.get(filter_col, "") == filter_value:
-                total += int(row.get(sum_col, "0"))
-    rendered = str(total)
+    prompt = arg.strip() or str(getattr(state, "problem_text", ""))
+    files = list(state.metadata.get("workspace_files", []))
+    target_file = str(state.metadata.get("target_file", "")) or _infer_target_file(prompt, files)
+    if str(state.metadata.get("benchmark_assistance_mode", "unassisted")) == "assisted" and bool(state.metadata.get("oracle_hints_enabled", False)):
+        target_file = str(state.metadata.get("oracle_evidence_file", "") or target_file)
+    if not target_file:
+        return {"ok": False, "result": "no target file inferred", "risk": 0.7}
+    path = workspace / target_file
+    if not path.exists():
+        return {"ok": False, "result": f"file not found: {target_file}", "risk": 0.7}
+    text = path.read_text(encoding="utf-8")
+    suffix = path.suffix.lower()
+    if suffix == ".csv":
+        candidate, evidence = _infer_csv_answer(prompt, text)
+    elif suffix == ".json":
+        candidate, evidence = _infer_json_answer(prompt, json.loads(text))
+    else:
+        candidate = text.strip().splitlines()[0] if text.strip() else ""
+        evidence = [f"used first non-empty line from {target_file}"]
+    if not candidate:
+        return {"ok": False, "result": "could not infer answer from evidence", "risk": 0.75}
     return {
         "ok": True,
-        "result": rendered,
+        "result": candidate,
         "goal_progress": 0.8,
         "payload": {
-            "candidate_answer": rendered,
-            "evidence": [f"sum({sum_col}) where {filter_col}={filter_value} in {filename} -> {rendered}"],
-            "resolved_obligations": ["compute candidate answer"],
-        },
-    }
-
-
-def json_path_lookup(arg: str, state: Any = None) -> Dict[str, Any]:
-    workspace = Path(str(state.metadata["workspace_dir"]))
-    filename, dotted_path = [part.strip() for part in arg.split("|", 1)]
-    payload = json.loads((workspace / filename).read_text(encoding="utf-8"))
-    current: Any = payload
-    for key in dotted_path.split("."):
-        current = current[key]
-    rendered = str(current)
-    return {
-        "ok": True,
-        "result": rendered,
-        "goal_progress": 0.8,
-        "payload": {
-            "candidate_answer": rendered,
-            "evidence": [f"{filename}:{dotted_path} -> {rendered}"],
-            "resolved_obligations": ["compute candidate answer"],
-        },
-    }
-
-
-def meeting_overlap(arg: str, state: Any = None) -> Dict[str, Any]:
-    workspace = Path(str(state.metadata["workspace_dir"]))
-    payload = json.loads((workspace / arg.strip()).read_text(encoding="utf-8"))
-    alice = set(payload["people"]["Alice"])
-    bob = set(payload["people"]["Bob"])
-    rendered = sorted(alice & bob)[0]
-    return {
-        "ok": True,
-        "result": rendered,
-        "goal_progress": 0.8,
-        "payload": {
-            "candidate_answer": rendered,
-            "evidence": [f"intersection(Alice, Bob) in {arg.strip()} -> {rendered}"],
-            "resolved_obligations": ["compute candidate answer"],
+            "candidate_answer": candidate,
+            "evidence": evidence,
+            "resolved_obligations": ["solve from evidence"],
+            "state_metadata": {"candidate_answer": candidate, "target_file": target_file},
         },
     }
 
@@ -169,10 +295,8 @@ class GaiaToolRegistry:
         self.tools = {
             "plan_question": plan_question,
             "list_files": list_files,
-            "read_file": read_file,
-            "csv_region_total": csv_region_total,
-            "json_path_lookup": json_path_lookup,
-            "meeting_overlap": meeting_overlap,
+            "inspect_file": inspect_file,
+            "solve_question": solve_question,
         }
 
     def call(self, name: str, arg: str, state: Any = None) -> Dict[str, Any]:
@@ -189,28 +313,18 @@ class GaiaOpsReasoningDomain:
     name = "gaia_ops"
     default_curriculum_config = "config/gaia_ops_curriculum.yaml"
 
-    def __init__(self) -> None:
+    def __init__(self, runtime_config: Dict[str, Any] | None = None) -> None:
         self._cases = list(gaia_smoke_suite().cases)
+        benchmark_cfg = dict((runtime_config or {}).get("benchmark", {}))
+        self.assistance_mode = str(benchmark_cfg.get("assistance_mode", "unassisted")).lower()
+        self.oracle_hints_enabled = bool(benchmark_cfg.get("oracle_hints_enabled", False))
 
     def _match_manual_case(self, prompt: str, domain: str) -> Optional[ReasoningTask]:
         text = f"{domain}\n{prompt}".lower()
         score_map: List[tuple[int, ReasoningTask]] = []
         for case in self._cases:
-            keywords = set(
-                [
-                    case.task_id.lower(),
-                    case.domain.lower(),
-                    str(case.meta.get("family", "")).lower(),
-                    str(case.meta.get("recommended_tool", "")).lower(),
-                ]
-            )
-            prompt_bits = (
-                case.prompt.lower()
-                .replace(".", " ")
-                .replace(",", " ")
-                .replace(":", " ")
-                .split()
-            )
+            keywords = {case.task_id.lower(), case.domain.lower(), str(case.meta.get("family", "")).lower()}
+            prompt_bits = case.prompt.lower().replace(".", " ").replace(",", " ").replace(":", " ").split()
             keywords.update(bit for bit in prompt_bits if len(bit) >= 4)
             score = sum(1 for keyword in keywords if keyword and keyword in text)
             score_map.append((score, case))
@@ -237,6 +351,13 @@ class GaiaOpsReasoningDomain:
         metadata = dict(task.meta)
         metadata["workspace_dir"] = str(workspace)
         metadata["workspace_files"] = files
+        metadata["benchmark_assistance_mode"] = self.assistance_mode
+        metadata["oracle_hints_enabled"] = self.oracle_hints_enabled
+        metadata["target_file"] = _infer_target_file(task.prompt, files)
+        if self.assistance_mode == "assisted" and self.oracle_hints_enabled:
+            oracle_file = str(metadata.get("oracle_evidence_file", "")).strip()
+            if oracle_file:
+                metadata["target_file"] = oracle_file
         problem_text = task.prompt + "\nWorkspace files:\n" + ("\n".join(f"- {name}" for name in files) if files else "- none")
         return ReasoningState(
             task_id=task.task_id,
@@ -265,13 +386,12 @@ class GaiaOpsReasoningDomain:
         return state.serialize() + "\n" + self.build_gold_trace(task)
 
     def build_gold_trace(self, task: ReasoningTask) -> str:
-        target_file = str(task.meta.get("evidence_file", ""))
         actions = [
-            Action(type=ActionType.THINK, content="plan the question, inspect the relevant file, compute the candidate answer, then answer from evidence"),
+            Action(type=ActionType.THINK, content="plan the question, inspect the relevant file, solve from evidence, then answer"),
             Action(type=ActionType.APPLY, tool="plan_question", content=task.prompt),
             Action(type=ActionType.APPLY, tool="list_files", content=""),
-            Action(type=ActionType.APPLY, tool="read_file", content=target_file),
-            Action(type=ActionType.APPLY, tool=str(task.meta.get("recommended_tool", "")), content=str(task.meta.get("tool_input", ""))),
+            Action(type=ActionType.APPLY, tool="inspect_file", content=str(task.meta.get("oracle_evidence_file", ""))),
+            Action(type=ActionType.APPLY, tool="solve_question", content=task.prompt),
             Action(type=ActionType.ANSWER, content=task.answer),
         ]
         return render_canonical_actions(actions)
@@ -282,7 +402,7 @@ class GaiaOpsReasoningDomain:
         pos.status = "solved"
         pos.derived_facts.append(task.answer)
         pos.action_history.append({"type": "ANSWER", "content": task.answer})
-        pos.tool_history.append({"tool": task.meta.get("recommended_tool", "oracle"), "result": {"ok": True, "answer": task.answer}})
+        pos.tool_history.append({"tool": "solve_question", "result": {"ok": True, "answer": task.answer}})
 
         neg = self.make_state(task)
         neg.derived_facts.append("files_not_inspected")
@@ -313,10 +433,7 @@ class GaiaOpsReasoningDomain:
         risk = float(local_scores.get("risk_score", 0.05 if correct else (0.82 if has_answer else 0.5)))
         branch_priority = max(0.05, min(0.99, 0.57 * goal_progress + 0.23 * valid_step + 0.20 * proof_completion))
         value_estimate = max(0.01, min(0.99, 0.45 * goal_progress + 0.30 * proof_completion + 0.20 * branch_priority + 0.10 * valid_step - 0.15 * risk))
-        return torch.tensor(
-            [valid_step, goal_progress, proof_completion, risk, branch_priority, value_estimate],
-            dtype=torch.float32,
-        )
+        return torch.tensor([valid_step, goal_progress, proof_completion, risk, branch_priority, value_estimate], dtype=torch.float32)
 
     def evaluate_answer(self, task: ReasoningTask, candidate: str) -> bool:
         return candidate.strip() == task.answer.strip()
@@ -330,11 +447,10 @@ class GaiaOpsReasoningDomain:
             return [Action(type=ActionType.APPLY, tool="plan_question", content=state.problem_text)]
         if "list_files" not in tool_names:
             return [Action(type=ActionType.APPLY, tool="list_files", content="")]
-        if "read_file" not in tool_names:
-            target_file = str(state.metadata.get("tool_input", "")).split("|", 1)[0] if "|" in str(state.metadata.get("tool_input", "")) else str(state.metadata.get("tool_input", ""))
-            return [Action(type=ActionType.APPLY, tool="read_file", content=target_file)]
-        if str(state.metadata.get("recommended_tool", "")) not in tool_names:
-            return [Action(type=ActionType.APPLY, tool=str(state.metadata.get("recommended_tool", "")), content=str(state.metadata.get("tool_input", "")))]
+        if "inspect_file" not in tool_names:
+            return [Action(type=ActionType.APPLY, tool="inspect_file", content=str(state.metadata.get("target_file", "")))]
+        if "solve_question" not in tool_names:
+            return [Action(type=ActionType.APPLY, tool="solve_question", content=state.problem_text)]
         candidate_answer = str(state.metadata.get("candidate_answer", "")).strip()
         if candidate_answer:
             return [Action(type=ActionType.ANSWER, content=candidate_answer)]
@@ -349,14 +465,14 @@ class GaiaOpsReasoningDomain:
     def allowed_tools(self, state: ReasoningState, action_type: str) -> List[str]:
         if action_type.upper() not in {"APPLY", "CHECK"}:
             return []
-        return ["plan_question", "list_files", "read_file", str(state.metadata.get("recommended_tool", ""))]
+        return ["plan_question", "list_files", "inspect_file", "solve_question"]
 
     def candidate_bindings(self, state: ReasoningState, action_type: str, tool: str = "") -> List[Dict[str, str]]:
         normalized = action_type.upper()
         if normalized == "THINK":
-            return [{"content": "plan the question, gather evidence, compute the candidate answer, and answer concisely"}]
+            return [{"content": "infer the target file, inspect its structure, solve from evidence, and answer concisely"}]
         if normalized == "SUBGOAL":
-            pending = state.obligations[:3] or ["inspect evidence file", "compute candidate answer"]
+            pending = state.obligations[:3] or ["inspect evidence file", "solve from evidence"]
             return [{"content": item} for item in pending]
         if normalized == "ANSWER":
             answers = [state.final_answer, str(state.metadata.get("candidate_answer", "")), state.expected_answer]
@@ -365,11 +481,10 @@ class GaiaOpsReasoningDomain:
             return [{"content": state.problem_text}]
         if tool == "list_files":
             return [{"content": ""}]
-        if tool == "read_file":
-            target_file = str(state.metadata.get("tool_input", "")).split("|", 1)[0] if "|" in str(state.metadata.get("tool_input", "")) else next(iter(state.metadata.get("workspace_files", [])), "")
-            return [{"content": str(target_file)}]
-        if tool == str(state.metadata.get("recommended_tool", "")):
-            return [{"content": str(state.metadata.get("tool_input", ""))}]
+        if tool == "inspect_file":
+            return [{"content": str(state.metadata.get("target_file", ""))}]
+        if tool == "solve_question":
+            return [{"content": state.problem_text}]
         return []
 
     def action_schema(self, state: ReasoningState) -> Dict[str, Any]:
@@ -386,10 +501,10 @@ class GaiaOpsReasoningDomain:
 
     def action_format_instructions(self) -> str:
         return (
-            "Emit canonical JSON actions. Plan the question, inspect workspace files, gather evidence, then answer.\n"
+            "Emit canonical JSON actions. Solve the question from workspace evidence without oracle tool hints.\n"
             'ACTION {"type":"APPLY","tool":"plan_question","content":"task prompt"}\n'
-            'ACTION {"type":"APPLY","tool":"list_files","content":""}\n'
-            'ACTION {"type":"APPLY","tool":"read_file","content":"report.json"}\n'
+            'ACTION {"type":"APPLY","tool":"inspect_file","content":"sales.csv"}\n'
+            'ACTION {"type":"APPLY","tool":"solve_question","content":"task prompt"}\n'
             'ACTION {"type":"ANSWER","content":"final answer"}'
         )
 
@@ -421,15 +536,19 @@ class GaiaOpsReasoningDomain:
         if tactic_stats is not None:
             ranked = tactic_stats.top_tactics(state.domain, limit=3)
             tactic_hints = [f"{name} bias={bias:.2f}" for name, bias in ranked if bias != 0.5]
-        return build_search_prompt(
-            state,
-            self.action_format_instructions(),
-            retrieval_context=retrieval_context,
-            tactic_hints=tactic_hints,
-        )
+        return build_search_prompt(state, self.action_format_instructions(), retrieval_context=retrieval_context, tactic_hints=tactic_hints)
 
     def state_signature(self, state: ReasoningState) -> str:
-        return " || ".join([state.domain, " | ".join(state.derived_facts[-3:]), " | ".join(state.obligations[-3:]), state.final_answer.strip()])
+        return " || ".join(
+            [
+                state.domain,
+                str(state.metadata.get("target_file", "")),
+                str(state.metadata.get("question_intent", "")),
+                " | ".join(state.derived_facts[-3:]),
+                " | ".join(state.obligations[-3:]),
+                state.final_answer.strip(),
+            ]
+        )
 
     def render_human_trace(self, state: ReasoningState) -> str:
         return render_human_trace(state)

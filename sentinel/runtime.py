@@ -18,6 +18,13 @@ def ensure_runtime_config_defaults(cfg: Dict[str, Any]) -> Dict[str, Any]:
     return cfg
 
 
+def ensure_benchmark_config_defaults(cfg: Dict[str, Any]) -> Dict[str, Any]:
+    benchmark_cfg = cfg.setdefault("benchmark", {})
+    benchmark_cfg.setdefault("assistance_mode", "unassisted")
+    benchmark_cfg.setdefault("oracle_hints_enabled", False)
+    return cfg
+
+
 def apply_safe_runtime_profile(cfg: Dict[str, Any]) -> Dict[str, Any]:
     search_cfg = cfg.setdefault("search", {})
     search_cfg["decoder_mode"] = "strict"

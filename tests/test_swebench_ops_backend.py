@@ -6,14 +6,15 @@ from domains.swebench_ops.backend import SwebenchOpsReasoningDomain
 
 
 class SwebenchOpsBackendTests(unittest.TestCase):
-    def test_fallback_loop_solves_fixture_case_without_gold_patch_shortcut(self) -> None:
+    def test_fallback_loop_solves_fixture_case_without_oracle_patch_hints(self) -> None:
         backend = SwebenchOpsReasoningDomain()
         task = backend.benchmark_tasks()[0]
+        task.meta.pop("oracle_primary_file", None)
         state = backend.make_state(task)
         executor = backend.create_executor()
 
         info = {}
-        for _ in range(6):
+        for _ in range(10):
             repair = backend.fallback_repairs(state)[0]
             state, info = executor.apply(state, repair)
             if state.final_answer:
@@ -25,6 +26,7 @@ class SwebenchOpsBackendTests(unittest.TestCase):
         self.assertEqual(state.status, "solved")
         self.assertEqual(state.final_answer, "patched_and_verified")
         self.assertGreaterEqual(float(info["goal_progress"]), 0.8)
+        self.assertEqual(state.metadata.get("benchmark_assistance_mode"), "unassisted")
 
     def test_action_schema_exposes_patch_tools(self) -> None:
         backend = SwebenchOpsReasoningDomain()
@@ -34,6 +36,8 @@ class SwebenchOpsBackendTests(unittest.TestCase):
 
         self.assertTrue(schema["strict"])
         self.assertIn("APPLY", schema["action_types"])
+        self.assertIn("inspect_tests", schema["action_types"]["APPLY"]["tools"])
+        self.assertIn("localize_failure", schema["action_types"]["APPLY"]["tools"])
         self.assertIn("draft_patch", schema["action_types"]["APPLY"]["tools"])
         self.assertNotIn("apply_gold_patch", schema["action_types"]["APPLY"]["tools"])
 

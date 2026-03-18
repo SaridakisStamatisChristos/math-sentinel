@@ -21,6 +21,7 @@ class BenchmarkProfileTests(unittest.TestCase):
         self.assertEqual(cfg["model"]["backbone"], "Qwen/Qwen2.5-Coder-32B-Instruct")
         self.assertEqual(cfg["search"]["beam_width"], 10)
         self.assertTrue(cfg["runtime"]["safe_mode"])
+        self.assertEqual(cfg["benchmark"]["assistance_mode"], "unassisted")
 
     def test_apply_benchmark_profile_uses_catalog_config_snapshot(self) -> None:
         base_cfg = load_runtime_config("config/default.yaml", search_config_path="")
@@ -31,6 +32,7 @@ class BenchmarkProfileTests(unittest.TestCase):
         self.assertEqual(cfg["model"]["provider"], "legacy_tiny")
         self.assertEqual(cfg["search"]["beam_width"], 4)
         self.assertTrue(cfg["runtime"]["safe_mode"])
+        self.assertEqual(cfg["benchmark"]["assistance_mode"], "unassisted")
 
     def test_ablation_catalog_lists_expected_entries(self) -> None:
         ablations = set(available_benchmark_ablations())

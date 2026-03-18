@@ -40,6 +40,13 @@ class DomainRegistryTests(unittest.TestCase):
         self.assertIsInstance(backend, SwebenchOpsReasoningDomain)
         self.assertEqual(default_curriculum_config("swe_bench"), "config/swebench_ops_curriculum.yaml")
 
+    def test_create_reasoning_domain_passes_runtime_config_to_benchmark_backends(self) -> None:
+        backend = create_reasoning_domain("gaia", runtime_config={"benchmark": {"assistance_mode": "assisted", "oracle_hints_enabled": True}})
+
+        self.assertIsInstance(backend, GaiaOpsReasoningDomain)
+        self.assertEqual(backend.assistance_mode, "assisted")
+        self.assertTrue(backend.oracle_hints_enabled)
+
     def test_create_reasoning_domain_accepts_gaia_aliases(self) -> None:
         backend = create_reasoning_domain("gaia")
         self.assertIsInstance(backend, GaiaOpsReasoningDomain)

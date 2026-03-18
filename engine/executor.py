@@ -67,6 +67,9 @@ class StateExecutor:
                         self._extend_unique(child.obligations, (str(item) for item in payload.get("obligations", [])))
                         self._extend_unique(child.evidence_refs, (str(item) for item in payload.get("evidence", [])))
                         self._resolve_obligations(child, (str(item) for item in payload.get("resolved_obligations", [])))
+                        state_metadata = payload.get("state_metadata", {})
+                        if isinstance(state_metadata, dict):
+                            child.metadata.update({str(key): value for key, value in state_metadata.items()})
                         suggested_tools = [str(item) for item in payload.get("suggested_tools", []) if str(item).strip()]
                         if suggested_tools:
                             child.metadata["suggested_tools"] = suggested_tools

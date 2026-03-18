@@ -1,6 +1,6 @@
 ## Road To SOTA Progress
 
-Branch: `sota-benchmark-ablation-phase`
+Branch: `sota-unassisted-benchmark-baselines`
 
 ### Completed
 
@@ -30,6 +30,11 @@ Branch: `sota-benchmark-ablation-phase`
 - `benchmark_v7.py` now supports campaign runs, profile listing, ablation listing, repeat runs, manifests, and ledger output
 - campaign artifacts now include config snapshots, per-run manifests, per-campaign JSON summaries, markdown reports, and `results/benchmark_ledger.jsonl`
 - deterministic smoke ablation campaign executed successfully on this branch
+- benchmark config now carries a first-class `benchmark.assistance_mode`
+- the default public benchmark baseline is now `unassisted`
+- `swebench_ops` now uses a test-driven unassisted repair loop: inspect tests, run tests, localize failure, synthesize a validated patch, apply, verify
+- `gaia_ops` now uses generic question planning, file inspection, and answer synthesis without default oracle tool hints
+- public smoke benchmark rerun passed end to end with the unassisted default baseline
 
 ### Remaining
 

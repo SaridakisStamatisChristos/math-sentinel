@@ -393,7 +393,7 @@ def main() -> None:
         except Exception:
             pass
 
-    reasoning_domain = create_reasoning_domain(args.backend, checker_plugin=args.checker_plugin)
+    reasoning_domain = create_reasoning_domain(args.backend, checker_plugin=args.checker_plugin, runtime_config=cfg)
     executor = reasoning_domain.create_executor()
 
     prover_optim = torch.optim.AdamW(prover.parameters(), lr=float(cfg["training"]["lr"]), weight_decay=float(cfg["training"]["weight_decay"]))
