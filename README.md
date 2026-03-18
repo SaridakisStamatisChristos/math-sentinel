@@ -25,12 +25,14 @@ It now supports two prover runtimes:
 
 ## Backends
 
-The repo now has four wired backends:
+The repo now has six wired backends:
 
 - `math`: the original symbolic math backend
 - `string_ops`: a non-math backend for deterministic text and sequence operations
 - `code_ops`: a code-oriented backend for deterministic Python snippet analysis
 - `planning_ops`: a planning-oriented backend for dependency, budget, and time-constrained plan construction
+- `swebench_ops`: a repository-patching backend shaped like local SWE-bench-style bug-fix tasks
+- `gaia_ops`: a file-and-tool reasoning backend shaped like local GAIA-style tasks
 
 The shared engine lives in `engine/`, while domain adapters live in `domains/`.
 
@@ -75,6 +77,22 @@ The `planning_ops` backend currently supports:
 - dependency-respecting project plans
 - budget-constrained shopping plans
 - time-limited day plans with dependency handling
+
+The `swebench_ops` backend currently supports:
+
+- repository workspace inspection
+- file reading and code search
+- deterministic patch application
+- unit-test execution
+- local SWE-bench-style smoke tasks with fixture repos
+
+The `gaia_ops` backend currently supports:
+
+- workspace file inspection
+- CSV aggregation
+- JSON path lookup
+- meeting-slot overlap resolution
+- local GAIA-style smoke tasks with fixture data
 
 It can also execute typed proof actions such as:
 
@@ -231,6 +249,8 @@ Non-math sample:
 python sample_v7.py --backend string_ops --domain sort_words --problem "Sort words alphabetically: kiwi apple mango"
 python sample_v7.py --backend code_ops --domain function_name --problem "Read the Python function and return the function name:\ndef helper(x):\n    return x + 1"
 python sample_v7.py --backend planning_ops --domain project_plan --problem "Create a valid project plan.\nTasks:\n- design (duration=1, priority=3, deps=none)\n- build (duration=2, priority=4, deps=design)\n- test (duration=1, priority=2, deps=build)\nReturn the ordered task plan."
+python sample_v7.py --backend swebench_ops --domain swebench_patch --problem "Patch the repository so the failing tests pass. Fix the arithmetic bug in app.py and verify with the test suite."
+python sample_v7.py --backend gaia_ops --domain gaia_csv_reasoning --problem "Use the files in the workspace to answer this question: what is the total sales amount for the east region in sales.csv? Return only the number."
 ```
 
 Local serving wrapper:
@@ -280,6 +300,8 @@ Curriculum phases are backend-specific:
 - `string_ops` uses `config/string_ops_curriculum.yaml`
 - `code_ops` uses `config/code_ops_curriculum.yaml`
 - `planning_ops` uses `config/planning_ops_curriculum.yaml`
+- `swebench_ops` uses `config/swebench_ops_curriculum.yaml`
+- `gaia_ops` uses `config/gaia_ops_curriculum.yaml`
 
 ## Benchmarks
 
@@ -288,6 +310,25 @@ Run the fixed benchmark suites across all registered backends:
 ```bash
 python benchmark_v7.py --backends all
 ```
+
+Run the public-style smoke suites:
+
+```bash
+python benchmark_v7.py --suite public_smoke --config config/benchmarks/public_smoke.yaml --deterministic --safe-runtime
+python benchmark_v7.py --suite swebench_verified_smoke --config config/benchmarks/public_smoke.yaml --deterministic --safe-runtime
+python benchmark_v7.py --suite gaia_smoke --config config/benchmarks/public_smoke.yaml --deterministic --safe-runtime
+python benchmark_v7.py --suite math_public_smoke --config config/benchmarks/public_smoke.yaml --deterministic --safe-runtime
+```
+
+There are also focused runner entrypoints:
+
+```bash
+python benchmarks/swebench_runner.py --deterministic --safe-runtime
+python benchmarks/gaia_runner.py --deterministic --safe-runtime
+python benchmarks/math_runner.py --deterministic --safe-runtime
+```
+
+Benchmark JSON summaries are written into `results/`.
 
 ## Memory modes
 

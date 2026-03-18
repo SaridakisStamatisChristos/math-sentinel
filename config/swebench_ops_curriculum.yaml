@@ -1,0 +1,5 @@
+phases:
+  - name: basics
+    until_step: 999999999
+    domains:
+      - swebench_patch

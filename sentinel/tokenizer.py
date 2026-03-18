@@ -30,13 +30,14 @@ ACTION_TYPES = [
 ]
 
 DOMAIN_TOKENS = [
-    "math", "string_ops", "code_ops", "planning_ops",
+    "math", "string_ops", "code_ops", "planning_ops", "swebench_ops", "gaia_ops",
     "arithmetic", "fractions", "divmod", "gcd_lcm", "modular", "primality", "factorization",
     "linear_equation", "polynomial_simplify", "derivative", "integral", "parity_proof",
     "reverse_text", "uppercase_text", "vowel_count", "sort_words", "dedupe_words",
     "function_name", "parameter_count", "has_loop", "first_called_function", "return_literal",
     "has_conditional", "assignment_count", "called_function_count",
     "project_plan", "shopping_plan", "day_plan",
+    "swebench_patch", "gaia_csv_reasoning", "gaia_json_reasoning", "gaia_schedule_reasoning",
 ]
 
 CODE_TOKENS = [

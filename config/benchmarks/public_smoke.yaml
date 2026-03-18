@@ -1,0 +1,91 @@
+seed: 1337
+device: auto
+compile: false
+
+runtime:
+  deterministic: true
+  safe_mode: true
+  structured_logs: true
+  event_log_path: logs/public_benchmark_events.jsonl
+  fail_on_checkpoint_mismatch: false
+
+model:
+  provider: legacy_tiny
+  backbone: Qwen/Qwen2.5-1.5B-Instruct
+  adapter_mode: none
+  quantization: none
+  dtype: float32
+  device_map: single
+  trust_remote_code: false
+  local_files_only: false
+  special_tokens_version: 2
+  lora_r: 8
+  lora_alpha: 16
+  lora_dropout: 0.05
+  lora_target_modules: all-linear
+  seq_len: 192
+  d_model: 64
+  n_heads: 4
+  n_layers: 1
+  dropout: 0.1
+
+verifier:
+  hidden_size: 96
+  dropout: 0.1
+  n_heads: 4
+  n_layers: 2
+  max_seq_len: 192
+  ff_mult: 4
+  lr: 0.0006
+  margin: 0.6
+  rank_weight: 0.5
+  focal_gamma: 2.0
+  focal_alpha: 0.75
+  loss_weight: 0.55
+  mined_pairs_per_step: 4
+  online_pairs_per_step: 2
+
+training:
+  steps: 100
+  batch_size: 4
+  micro_batch_size: 2
+  lr: 0.0003
+  weight_decay: 0.01
+  grad_clip: 1.0
+  eval_every: 25
+  save_every: 25
+  log_every: 10
+  memory_refresh_samples: 4
+  amp: true
+  max_new_tokens: 64
+
+search:
+  mode: auto
+  beam_width: 4
+  max_depth: 5
+  proposal_count: 4
+  temperature: 0.0
+  top_k: 1
+  tactic_bonus: 0.12
+  decoder_mode: strict
+  mcts_simulations: 18
+  mcts_branching: 6
+  mcts_exploration: 1.25
+  transposition_capacity: 4096
+  value_weight: 0.35
+  novelty_weight: 0.08
+
+memory:
+  replay_capacity: 2000
+  hard_case_capacity: 1000
+  retrieval_mode: hybrid
+  embedding_model: hashing
+  lemma_store_path: memory/lemma_store.json
+  hard_cases_path: memory/hard_cases.json
+  tactic_stats_path: memory/tactic_stats.json
+  replay_path: memory/replay.jsonl
+
+paths:
+  checkpoints_dir: checkpoints
+  logs_dir: logs
+  data_dir: data

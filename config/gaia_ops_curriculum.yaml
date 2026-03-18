@@ -1,0 +1,7 @@
+phases:
+  - name: basics
+    until_step: 999999999
+    domains:
+      - gaia_csv_reasoning
+      - gaia_json_reasoning
+      - gaia_schedule_reasoning

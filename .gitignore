@@ -45,6 +45,7 @@ Thumbs.db
 # Logs and runtime files
 logs/
 *.log
+.tmp-benchmarks/
 
 # Checkpoints, models, large artifacts
 checkpoints/
@@ -64,3 +65,7 @@ memory/replay.jsonl
 # Local env files
 .env
 .venv
+
+# Benchmark artifacts
+results/*.json
+!results/README.md

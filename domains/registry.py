@@ -3,8 +3,10 @@ from __future__ import annotations
 from typing import Any
 
 from domains.code_ops.backend import CodeOpsReasoningDomain
+from domains.gaia_ops.backend import GaiaOpsReasoningDomain
 from domains.math.backend import MathReasoningDomain
 from domains.planning_ops.backend import PlanningOpsReasoningDomain
+from domains.swebench_ops.backend import SwebenchOpsReasoningDomain
 from domains.string_ops.backend import StringOpsReasoningDomain
 
 
@@ -13,7 +15,7 @@ def _normalize_name(name: str) -> str:
 
 
 def available_backends() -> list[str]:
-    return ["math", "string_ops", "code_ops", "planning_ops"]
+    return ["math", "string_ops", "code_ops", "planning_ops", "swebench_ops", "gaia_ops"]
 
 
 def create_reasoning_domain(name: str, checker_plugin: str = "") -> Any:
@@ -26,6 +28,10 @@ def create_reasoning_domain(name: str, checker_plugin: str = "") -> Any:
         return CodeOpsReasoningDomain()
     if normalized in {"planning_ops", "planning", "planner"}:
         return PlanningOpsReasoningDomain()
+    if normalized in {"swebench_ops", "swebench", "swe_bench"}:
+        return SwebenchOpsReasoningDomain()
+    if normalized in {"gaia_ops", "gaia"}:
+        return GaiaOpsReasoningDomain()
     raise ValueError(f"unknown backend: {name}")
 
 
@@ -39,4 +45,8 @@ def default_curriculum_config(name: str) -> str:
         return CodeOpsReasoningDomain.default_curriculum_config
     if normalized in {"planning_ops", "planning", "planner"}:
         return PlanningOpsReasoningDomain.default_curriculum_config
+    if normalized in {"swebench_ops", "swebench", "swe_bench"}:
+        return SwebenchOpsReasoningDomain.default_curriculum_config
+    if normalized in {"gaia_ops", "gaia"}:
+        return GaiaOpsReasoningDomain.default_curriculum_config
     raise ValueError(f"unknown backend: {name}")

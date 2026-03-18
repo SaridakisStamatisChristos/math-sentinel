@@ -1,0 +1,11 @@
+{
+  "release": {
+    "latest": {
+      "version": "2.4.1",
+      "date": "2025-01-14"
+    },
+    "stable": {
+      "version": "2.3.0"
+    }
+  }
+}
