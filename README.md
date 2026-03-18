@@ -314,7 +314,7 @@ The search stack now also includes:
 - value-aware scoring
 - deterministic strict-decoder product mode
 - explicit fallback-action scoring inside search
-- deterministic fallback-chain mode for strict benchmark profiles
+- deterministic fallback-chain mode for development and non-claim benchmark profiles
 - runtime event logs for retrieval hits, schema failures, tool failures, search budget exhaustion, and verifier/value disagreement
 
 For the benchmark configs, the headline public-claim baseline is now strict and unassisted:
@@ -322,8 +322,12 @@ For the benchmark configs, the headline public-claim baseline is now strict and 
 - `benchmark.assistance_mode: unassisted`
 - `benchmark.oracle_hints_enabled: false`
 - `search.guided_fallback_rollout: false`
+- `search.deterministic_fallback_chain: false`
+- `search.enable_fallback_repairs: false`
+- `memory.retrieval_mode: none`
 - oracle-style metadata remains available for gold traces and optional analysis, but the default runtime path does not rely on it
 - benchmark outputs now record whether guided rollout fired, whether fallback repairs fired, whether a deterministic fallback chain fired, and whether any oracle fields were touched
+- the strict claim path is required to pass with `benchmark_integrity_passed=true`, `fallback_chain_used=false`, `fallback_repair_used=false`, and `guided_rollout_used=false`
 
 Curriculum phases are backend-specific:
 
@@ -433,7 +437,7 @@ It still has important limits:
 - decoding now uses a structured tokenizer plus scored canonical action candidates, but it is not yet a full parser-level constrained decoder
 - MCTS is real now, but still lightweight and value-guided rather than AlphaZero-scale
 - public benchmark adapters are real, but the fixture suites are still local smoke proxies rather than full official benchmark runs
-- the strict claim profile is now honest and auditable, but it still leans on deterministic fallback-chain behavior in the tiny-model regime
+- the strict claim profile is now autonomous and benchmark-audited, but the flagship public path is still limited by local proxy fixtures and small-model regime performance
 
 ## Best next upgrades
 
