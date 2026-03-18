@@ -50,6 +50,25 @@ class SearchRouterTests(unittest.TestCase):
         self.assertEqual(resolve_search_mode(planning_state, {"mode": "auto"}), "mcts")
         self.assertEqual(resolve_search_mode(arithmetic_state, {"mode": "auto"}), "beam")
 
+    def test_auto_mode_prefers_mcts_for_benchmark_agents(self) -> None:
+        swebench_state = ProofState(
+            task_id="repo_1",
+            domain="swebench_patch",
+            problem_text="Patch the repository",
+            goal="Patch the repo",
+            metadata={"family": "swebench_patch"},
+        )
+        gaia_state = ProofState(
+            task_id="gaia_1",
+            domain="gaia_csv_reasoning",
+            problem_text="Use workspace files to answer",
+            goal="Answer from evidence",
+            metadata={"family": "gaia_csv_reasoning"},
+        )
+
+        self.assertEqual(resolve_search_mode(swebench_state, {"mode": "auto"}), "mcts")
+        self.assertEqual(resolve_search_mode(gaia_state, {"mode": "auto"}), "mcts")
+
     def test_run_search_routes_to_expected_engine(self) -> None:
         state = ProofState(
             task_id="plan_2",

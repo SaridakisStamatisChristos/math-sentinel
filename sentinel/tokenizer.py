@@ -11,7 +11,9 @@ STATE_MARKERS = [
     "[SUBGOALS]", "[LEMMAS]", "[TOOL_HISTORY]", "[ACTION_HISTORY]",
     "[STATUS]", "[FINAL_ANSWER]", "[METADATA]", "[END_STATE]",
     "[RETRIEVED_LEMMAS]", "[SIMILAR_HARD_CASES]", "[TACTIC_HINTS]",
-    "[PROVENANCE]", "[OBLIGATIONS]", "[DEPENDENCIES]", "[TERMINAL_CONFIDENCE]",
+    "[PROVENANCE]", "[EVIDENCE]", "[OBLIGATIONS]", "[DEPENDENCIES]",
+    "[TOOL_PAYLOADS]", "[TERMINAL_CONFIDENCE]", "[RETRIEVAL_TOOL_HINTS]",
+    "[FAILURE_AVOIDANCE]",
 ]
 
 LEGACY_ACTION_MARKERS = [
@@ -35,7 +37,7 @@ DOMAIN_TOKENS = [
     "linear_equation", "polynomial_simplify", "derivative", "integral", "parity_proof",
     "reverse_text", "uppercase_text", "vowel_count", "sort_words", "dedupe_words",
     "function_name", "parameter_count", "has_loop", "first_called_function", "return_literal",
-    "has_conditional", "assignment_count", "called_function_count",
+    "has_conditional", "assignment_count", "called_function_count", "repo_patch",
     "project_plan", "shopping_plan", "day_plan",
     "swebench_patch", "gaia_csv_reasoning", "gaia_json_reasoning", "gaia_schedule_reasoning",
 ]

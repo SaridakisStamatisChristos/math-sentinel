@@ -13,7 +13,7 @@ from sentinel.model import TinyTransformerLM
 from sentinel.tokenizer import StructuredTokenizer
 from sentinel.verifier import StateVerifier
 
-from .beam import _build_prompt, _default_state_signature, _score_state
+from .beam import _build_exec_features, _build_prompt, _default_state_signature, _score_state, _should_prune_candidate
 from .nodes import SearchNode
 from .repair import fallback_repairs
 from .scoring import combine_scores
@@ -114,9 +114,18 @@ def _expand_node(
                 )
             if child_state.status == "solved":
                 break
-        exec_info["answer_present"] = 1.0 if child_state.final_answer.strip() else 0.0
-        exec_info["tactic_bias"] = action_bias_fn(node.state, last_action) if action_bias_fn and last_action is not None else 0.5
-        exec_info["novelty_bonus"] = 1.0
+        exec_info = _build_exec_features(child_state, exec_info, last_action, action_bias_fn)
+        if _should_prune_candidate(child_state, exec_info, score_config):
+            if event_logger is not None:
+                event_logger(
+                    "branch_pruned",
+                    domain=node.state.domain,
+                    depth=node.depth + 1,
+                    reason="invalid_or_stagnant",
+                    action=getattr(last_action, "type", None).value if last_action is not None else "",
+                    tool=getattr(last_action, "tool", "") if last_action is not None else "",
+                )
+            continue
         verifier_scores = _score_state(verifier, tokenizer, device, child_state)
         delta = combine_scores(
             verifier_scores,
@@ -130,6 +139,10 @@ def _expand_node(
             tactic_bonus=float(score_config.get("tactic_bonus", 0.12)),
             value_weight=float(score_config.get("value_weight", 0.35)),
             novelty_weight=float(score_config.get("novelty_weight", 0.08)),
+            obligation_weight=float(score_config.get("obligation_weight", 0.08)),
+            evidence_weight=float(score_config.get("evidence_weight", 0.10)),
+            stagnation_penalty=float(score_config.get("stagnation_penalty", 0.18)),
+            repeat_penalty=float(score_config.get("repeat_penalty", 0.10)),
             depth=node.depth + 1,
             solved=(child_state.status == "solved"),
         )
@@ -152,6 +165,10 @@ def _expand_node(
                 tactic_bonus=float(score_config.get("tactic_bonus", 0.12)),
                 value_weight=float(score_config.get("value_weight", 0.35)),
                 novelty_weight=float(score_config.get("novelty_weight", 0.08)),
+                obligation_weight=float(score_config.get("obligation_weight", 0.08)),
+                evidence_weight=float(score_config.get("evidence_weight", 0.10)),
+                stagnation_penalty=float(score_config.get("stagnation_penalty", 0.18)),
+                repeat_penalty=float(score_config.get("repeat_penalty", 0.10)),
                 depth=node.depth + 1,
                 solved=(child_state.status == "solved"),
             )
@@ -187,9 +204,18 @@ def _expand_node(
 
     for repair in fallback_repairs_fn(node.state):
         child_state, exec_info = executor.apply(node.state, repair)
-        exec_info["answer_present"] = 1.0 if child_state.final_answer.strip() else 0.0
-        exec_info["tactic_bias"] = action_bias_fn(node.state, repair) if action_bias_fn else 0.5
-        exec_info["novelty_bonus"] = 1.0
+        exec_info = _build_exec_features(child_state, exec_info, repair, action_bias_fn)
+        if _should_prune_candidate(child_state, exec_info, score_config):
+            if event_logger is not None:
+                event_logger(
+                    "branch_pruned",
+                    domain=node.state.domain,
+                    depth=node.depth + 1,
+                    reason="invalid_or_stagnant",
+                    action=repair.type.value,
+                    tool=repair.tool,
+                )
+            continue
         verifier_scores = _score_state(verifier, tokenizer, device, child_state)
         delta = combine_scores(
             verifier_scores,
@@ -203,6 +229,10 @@ def _expand_node(
             tactic_bonus=float(score_config.get("tactic_bonus", 0.12)),
             value_weight=float(score_config.get("value_weight", 0.35)),
             novelty_weight=float(score_config.get("novelty_weight", 0.08)),
+            obligation_weight=float(score_config.get("obligation_weight", 0.08)),
+            evidence_weight=float(score_config.get("evidence_weight", 0.10)),
+            stagnation_penalty=float(score_config.get("stagnation_penalty", 0.18)),
+            repeat_penalty=float(score_config.get("repeat_penalty", 0.10)),
             depth=node.depth + 1,
             solved=(child_state.status == "solved"),
         )
@@ -225,6 +255,10 @@ def _expand_node(
                 tactic_bonus=float(score_config.get("tactic_bonus", 0.12)),
                 value_weight=float(score_config.get("value_weight", 0.35)),
                 novelty_weight=float(score_config.get("novelty_weight", 0.08)),
+                obligation_weight=float(score_config.get("obligation_weight", 0.08)),
+                evidence_weight=float(score_config.get("evidence_weight", 0.10)),
+                stagnation_penalty=float(score_config.get("stagnation_penalty", 0.18)),
+                repeat_penalty=float(score_config.get("repeat_penalty", 0.10)),
                 depth=node.depth + 1,
                 solved=(child_state.status == "solved"),
             )

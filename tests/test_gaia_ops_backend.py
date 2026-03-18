@@ -6,18 +6,26 @@ from domains.gaia_ops.backend import GaiaOpsReasoningDomain
 
 
 class GaiaOpsBackendTests(unittest.TestCase):
-    def test_recommended_tool_repair_solves_csv_case(self) -> None:
+    def test_evidence_driven_fallback_loop_solves_csv_case(self) -> None:
         backend = GaiaOpsReasoningDomain()
         task = backend.benchmark_tasks()[0]
         state = backend.make_state(task)
         executor = backend.create_executor()
 
-        repair = backend.fallback_repairs(state)[1]
-        child, info = executor.apply(state, repair)
+        info = {}
+        for _ in range(6):
+            repair = backend.fallback_repairs(state)[0]
+            state, info = executor.apply(state, repair)
+            if state.metadata.get("candidate_answer"):
+                answer_action = backend.fallback_repairs(state)[0]
+                state, info = executor.apply(state, answer_action)
+            if state.status == "solved":
+                break
 
-        self.assertEqual(child.status, "solved")
-        self.assertEqual(child.final_answer, "22")
-        self.assertGreaterEqual(float(info["goal_progress"]), 1.0)
+        self.assertEqual(state.status, "solved")
+        self.assertEqual(state.final_answer, "22")
+        self.assertIn("22", " ".join(state.evidence_refs + state.derived_facts))
+        self.assertGreaterEqual(float(info["goal_progress"]), 0.8)
 
     def test_benchmark_tasks_cover_multiple_reasoning_families(self) -> None:
         backend = GaiaOpsReasoningDomain()

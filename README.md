@@ -71,6 +71,9 @@ The `code_ops` backend currently supports:
 - first called-function extraction
 - distinct called-function counting
 - literal return-value extraction
+- repository workspace inspection
+- repo-aware patch drafting, application, verification, and rollback
+- local repo-patch tasks through the shared code-agent toolchain
 
 The `planning_ops` backend currently supports:
 
@@ -82,16 +85,19 @@ The `swebench_ops` backend currently supports:
 
 - repository workspace inspection
 - file reading and code search
-- deterministic patch application
+- heuristic patch drafting from source plus tests
+- deterministic patch application and rollback
 - unit-test execution
 - local SWE-bench-style smoke tasks with fixture repos
 
 The `gaia_ops` backend currently supports:
 
+- question planning
 - workspace file inspection
 - CSV aggregation
 - JSON path lookup
 - meeting-slot overlap resolution
+- evidence-aware answer synthesis
 - local GAIA-style smoke tasks with fixture data
 
 It can also execute typed proof actions such as:
@@ -292,6 +298,7 @@ The search stack now also includes:
 - semantic transposition pruning with bounded capacity
 - value-aware scoring
 - deterministic strict-decoder product mode
+- guided fallback rollouts for multi-step benchmark agents
 - runtime event logs for retrieval hits, schema failures, tool failures, search budget exhaustion, and verifier/value disagreement
 
 Curriculum phases are backend-specific:
@@ -355,6 +362,7 @@ It still has important limits:
 - theorem discovery is not the target yet
 - decoding now uses a structured tokenizer plus scored canonical action candidates, but it is not yet a full parser-level constrained decoder
 - MCTS is real now, but still lightweight and value-guided rather than AlphaZero-scale
+- public benchmark adapters are real, but the fixture suites are still local smoke proxies rather than full official benchmark runs
 
 ## Best next upgrades
 

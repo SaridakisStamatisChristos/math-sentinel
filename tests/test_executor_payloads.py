@@ -12,7 +12,13 @@ class _StructuredRegistry:
         return {
             "ok": True,
             "result_text": "derived_fact",
-            "result_payload": {"dependencies": ["dep_a"], "obligations": ["finish_subgoal"]},
+            "result_payload": {
+                "dependencies": ["dep_a"],
+                "obligations": ["finish_subgoal"],
+                "resolved_obligations": ["old_obligation"],
+                "evidence": ["fact from tool"],
+                "candidate_answer": "final_answer",
+            },
             "goal_progress": 0.8,
             "solved": True,
             "answer": "final_answer",
@@ -22,7 +28,7 @@ class _StructuredRegistry:
 
 class ExecutorPayloadTests(unittest.TestCase):
     def test_executor_normalizes_payloads_and_updates_state(self) -> None:
-        state = ReasoningState(task_id="task_1", domain="toy", problem_text="p", goal="g")
+        state = ReasoningState(task_id="task_1", domain="toy", problem_text="p", goal="g", obligations=["old_obligation"])
         executor = StateExecutor(_StructuredRegistry())
 
         child, info = executor.apply(state, Action(type=ActionType.APPLY, tool="toy_tool", content="p"))
@@ -31,7 +37,10 @@ class ExecutorPayloadTests(unittest.TestCase):
         self.assertEqual(child.final_answer, "final_answer")
         self.assertIn("derived_fact", child.derived_facts)
         self.assertIn("finish_subgoal", child.obligations)
+        self.assertNotIn("old_obligation", child.obligations)
         self.assertIn("dep_a", child.dependency_refs)
+        self.assertIn("fact from tool", child.evidence_refs)
+        self.assertEqual(child.metadata.get("candidate_answer"), "final_answer")
         self.assertGreater(child.terminal_confidence, 0.0)
         self.assertGreater(info["goal_progress"], 0.0)
 

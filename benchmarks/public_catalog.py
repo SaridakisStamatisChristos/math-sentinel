@@ -13,6 +13,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def _swebench_fixture_case(name: str, prompt: str, patch: list[dict[str, str]]) -> ReasoningTask:
     fixture_dir = ROOT / "benchmarks" / "fixtures" / "swebench_lite_smoke" / name
+    primary_file = patch[0]["path"] if patch else ""
     return ReasoningTask(
         task_id=f"swebench_{name}",
         domain="swebench_patch",
@@ -22,6 +23,7 @@ def _swebench_fixture_case(name: str, prompt: str, patch: list[dict[str, str]]) 
         meta={
             "family": "swebench_patch",
             "fixture_dir": str(fixture_dir),
+            "primary_file": primary_file,
             "gold_patch": patch,
             "test_command": ["python", "-m", "unittest", "discover", "-s", "tests", "-q"],
         },
@@ -52,6 +54,7 @@ def swebench_verified_smoke_suite() -> BenchmarkSuite:
 
 def _gaia_fixture_case(case_id: str, domain: str, prompt: str, answer: str, recommended_tool: str, tool_input: str, fixture_subdir: str) -> ReasoningTask:
     fixture_dir = ROOT / "benchmarks" / "fixtures" / "gaia_smoke" / fixture_subdir
+    evidence_file = tool_input.split("|", 1)[0] if "|" in tool_input else tool_input
     return ReasoningTask(
         task_id=f"gaia_{case_id}",
         domain=domain,
@@ -63,6 +66,7 @@ def _gaia_fixture_case(case_id: str, domain: str, prompt: str, answer: str, reco
             "fixture_dir": str(fixture_dir),
             "recommended_tool": recommended_tool,
             "tool_input": tool_input,
+            "evidence_file": evidence_file,
         },
     )
 

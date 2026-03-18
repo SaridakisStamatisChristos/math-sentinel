@@ -74,6 +74,8 @@ search:
   transposition_capacity: 4096
   value_weight: 0.35
   novelty_weight: 0.08
+  guided_fallback_rollout: true
+  guided_rollout_depth: 6
 
 memory:
   replay_capacity: 2000

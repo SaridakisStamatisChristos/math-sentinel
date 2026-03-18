@@ -6,17 +6,24 @@ from domains.swebench_ops.backend import SwebenchOpsReasoningDomain
 
 
 class SwebenchOpsBackendTests(unittest.TestCase):
-    def test_gold_patch_repair_solves_fixture_case(self) -> None:
+    def test_fallback_loop_solves_fixture_case_without_gold_patch_shortcut(self) -> None:
         backend = SwebenchOpsReasoningDomain()
         task = backend.benchmark_tasks()[0]
         state = backend.make_state(task)
         executor = backend.create_executor()
 
-        repair = next(action for action in backend.fallback_repairs(state) if action.tool == "apply_gold_patch")
-        child, info = executor.apply(state, repair)
+        info = {}
+        for _ in range(6):
+            repair = backend.fallback_repairs(state)[0]
+            state, info = executor.apply(state, repair)
+            if state.final_answer:
+                answer_action = backend.fallback_repairs(state)[0]
+                state, info = executor.apply(state, answer_action)
+            if state.status == "solved":
+                break
 
-        self.assertEqual(child.status, "solved")
-        self.assertEqual(child.final_answer, "patched_and_verified")
+        self.assertEqual(state.status, "solved")
+        self.assertEqual(state.final_answer, "patched_and_verified")
         self.assertGreaterEqual(float(info["goal_progress"]), 0.8)
 
     def test_action_schema_exposes_patch_tools(self) -> None:
@@ -27,7 +34,8 @@ class SwebenchOpsBackendTests(unittest.TestCase):
 
         self.assertTrue(schema["strict"])
         self.assertIn("APPLY", schema["action_types"])
-        self.assertIn("apply_gold_patch", schema["action_types"]["APPLY"]["tools"])
+        self.assertIn("draft_patch", schema["action_types"]["APPLY"]["tools"])
+        self.assertNotIn("apply_gold_patch", schema["action_types"]["APPLY"]["tools"])
 
     def test_manual_task_matches_fixture_case_for_sample_flow(self) -> None:
         backend = SwebenchOpsReasoningDomain()

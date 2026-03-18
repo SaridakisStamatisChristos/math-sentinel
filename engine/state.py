@@ -17,6 +17,7 @@ class ReasoningState:
     subgoals: List[str] = field(default_factory=list)
     lemma_refs: List[str] = field(default_factory=list)
     fact_provenance: List[Dict[str, Any]] = field(default_factory=list)
+    evidence_refs: List[str] = field(default_factory=list)
     obligations: List[str] = field(default_factory=list)
     dependency_refs: List[str] = field(default_factory=list)
     tool_payloads: List[Dict[str, Any]] = field(default_factory=list)
@@ -40,8 +41,10 @@ class ReasoningState:
             f"[SUBGOALS] {' | '.join(self.subgoals) if self.subgoals else 'none'}",
             f"[LEMMAS] {' | '.join(self.lemma_refs) if self.lemma_refs else 'none'}",
             f"[PROVENANCE] {self._stringify(self.fact_provenance)}",
+            f"[EVIDENCE] {' | '.join(self.evidence_refs) if self.evidence_refs else 'none'}",
             f"[OBLIGATIONS] {' | '.join(self.obligations) if self.obligations else 'none'}",
             f"[DEPENDENCIES] {' | '.join(self.dependency_refs) if self.dependency_refs else 'none'}",
+            f"[TOOL_PAYLOADS] {self._stringify(self.tool_payloads)}",
             f"[TOOL_HISTORY] {self._stringify(self.tool_history)}",
             f"[ACTION_HISTORY] {self._stringify(self.action_history)}",
             f"[STATUS] {self.status}",

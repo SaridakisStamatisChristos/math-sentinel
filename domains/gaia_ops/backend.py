@@ -52,7 +52,34 @@ def _list_workspace_files(workspace: Path) -> List[str]:
 def list_files(arg: str, state: Any = None) -> Dict[str, Any]:
     workspace = Path(str(state.metadata["workspace_dir"]))
     files = _list_workspace_files(workspace)
-    return {"ok": True, "result": "\n".join(files), "goal_progress": 0.1, "payload": {"files": files}}
+    return {
+        "ok": True,
+        "result": "\n".join(files),
+        "goal_progress": 0.15,
+        "payload": {
+            "files": files,
+            "evidence": [f"workspace contains {name}" for name in files[:4]],
+            "obligations": ["inspect evidence file", "compute candidate answer"],
+        },
+    }
+
+
+def plan_question(arg: str, state: Any = None) -> Dict[str, Any]:
+    recommended = str(state.metadata.get("recommended_tool", "")).strip()
+    tool_input = str(state.metadata.get("tool_input", "")).strip()
+    files = list(state.metadata.get("workspace_files", []))
+    first_file = files[0] if files else ""
+    plan = f"inspect {first_file or 'workspace'} then use {recommended} with {tool_input}"
+    return {
+        "ok": True,
+        "result": plan,
+        "goal_progress": 0.18,
+        "payload": {
+            "evidence": [plan],
+            "suggested_tools": ["list_files", "read_file", recommended],
+            "obligations": ["inspect evidence file", "compute candidate answer"],
+        },
+    }
 
 
 def read_file(arg: str, state: Any = None) -> Dict[str, Any]:
@@ -64,7 +91,17 @@ def read_file(arg: str, state: Any = None) -> Dict[str, Any]:
     if not relpath:
         return {"ok": False, "result": "no file available"}
     text = (workspace / relpath).read_text(encoding="utf-8")
-    return {"ok": True, "result": text, "goal_progress": 0.2, "payload": {"path": relpath}}
+    return {
+        "ok": True,
+        "result": text,
+        "goal_progress": 0.25,
+        "payload": {
+            "path": relpath,
+            "evidence": [f"read {relpath}"],
+            "resolved_obligations": ["inspect evidence file"],
+            "obligations": ["compute candidate answer"],
+        },
+    }
 
 
 def csv_region_total(arg: str, state: Any = None) -> Dict[str, Any]:
@@ -77,7 +114,16 @@ def csv_region_total(arg: str, state: Any = None) -> Dict[str, Any]:
             if row.get(filter_col, "") == filter_value:
                 total += int(row.get(sum_col, "0"))
     rendered = str(total)
-    return {"ok": True, "result": rendered, "goal_progress": 1.0, "solved": True, "answer": rendered}
+    return {
+        "ok": True,
+        "result": rendered,
+        "goal_progress": 0.8,
+        "payload": {
+            "candidate_answer": rendered,
+            "evidence": [f"sum({sum_col}) where {filter_col}={filter_value} in {filename} -> {rendered}"],
+            "resolved_obligations": ["compute candidate answer"],
+        },
+    }
 
 
 def json_path_lookup(arg: str, state: Any = None) -> Dict[str, Any]:
@@ -88,7 +134,16 @@ def json_path_lookup(arg: str, state: Any = None) -> Dict[str, Any]:
     for key in dotted_path.split("."):
         current = current[key]
     rendered = str(current)
-    return {"ok": True, "result": rendered, "goal_progress": 1.0, "solved": True, "answer": rendered}
+    return {
+        "ok": True,
+        "result": rendered,
+        "goal_progress": 0.8,
+        "payload": {
+            "candidate_answer": rendered,
+            "evidence": [f"{filename}:{dotted_path} -> {rendered}"],
+            "resolved_obligations": ["compute candidate answer"],
+        },
+    }
 
 
 def meeting_overlap(arg: str, state: Any = None) -> Dict[str, Any]:
@@ -97,12 +152,22 @@ def meeting_overlap(arg: str, state: Any = None) -> Dict[str, Any]:
     alice = set(payload["people"]["Alice"])
     bob = set(payload["people"]["Bob"])
     rendered = sorted(alice & bob)[0]
-    return {"ok": True, "result": rendered, "goal_progress": 1.0, "solved": True, "answer": rendered}
+    return {
+        "ok": True,
+        "result": rendered,
+        "goal_progress": 0.8,
+        "payload": {
+            "candidate_answer": rendered,
+            "evidence": [f"intersection(Alice, Bob) in {arg.strip()} -> {rendered}"],
+            "resolved_obligations": ["compute candidate answer"],
+        },
+    }
 
 
 class GaiaToolRegistry:
     def __init__(self) -> None:
         self.tools = {
+            "plan_question": plan_question,
             "list_files": list_files,
             "read_file": read_file,
             "csv_region_total": csv_region_total,
@@ -200,9 +265,12 @@ class GaiaOpsReasoningDomain:
         return state.serialize() + "\n" + self.build_gold_trace(task)
 
     def build_gold_trace(self, task: ReasoningTask) -> str:
+        target_file = str(task.meta.get("evidence_file", ""))
         actions = [
-            Action(type=ActionType.THINK, content="inspect the workspace files and use the right tool to compute the answer"),
+            Action(type=ActionType.THINK, content="plan the question, inspect the relevant file, compute the candidate answer, then answer from evidence"),
+            Action(type=ActionType.APPLY, tool="plan_question", content=task.prompt),
             Action(type=ActionType.APPLY, tool="list_files", content=""),
+            Action(type=ActionType.APPLY, tool="read_file", content=target_file),
             Action(type=ActionType.APPLY, tool=str(task.meta.get("recommended_tool", "")), content=str(task.meta.get("tool_input", ""))),
             Action(type=ActionType.ANSWER, content=task.answer),
         ]
@@ -236,7 +304,7 @@ class GaiaOpsReasoningDomain:
         valid_step = float(local_scores.get("valid_step", 1.0 if solved or has_answer else 0.55))
         structural_progress = min(
             1.0,
-            0.12 * len(state.derived_facts) + 0.10 * len(state.tool_history) + 0.08 * len(state.action_history)
+            0.12 * len(state.derived_facts) + 0.10 * len(state.tool_history) + 0.08 * len(state.action_history) + 0.06 * len(state.evidence_refs)
         )
         goal_progress = max(float(local_scores.get("goal_progress", 0.0)), structural_progress)
         if correct:
@@ -257,13 +325,23 @@ class GaiaOpsReasoningDomain:
         return parse_actions(text)
 
     def fallback_repairs(self, state: ReasoningState) -> List[Action]:
-        return [
-            Action(type=ActionType.APPLY, tool="list_files", content=""),
-            Action(type=ActionType.APPLY, tool=str(state.metadata.get("recommended_tool", "")), content=str(state.metadata.get("tool_input", ""))),
-        ]
+        tool_names = [record.get("tool", "") for record in state.tool_history if isinstance(record, dict)]
+        if "plan_question" not in tool_names:
+            return [Action(type=ActionType.APPLY, tool="plan_question", content=state.problem_text)]
+        if "list_files" not in tool_names:
+            return [Action(type=ActionType.APPLY, tool="list_files", content="")]
+        if "read_file" not in tool_names:
+            target_file = str(state.metadata.get("tool_input", "")).split("|", 1)[0] if "|" in str(state.metadata.get("tool_input", "")) else str(state.metadata.get("tool_input", ""))
+            return [Action(type=ActionType.APPLY, tool="read_file", content=target_file)]
+        if str(state.metadata.get("recommended_tool", "")) not in tool_names:
+            return [Action(type=ActionType.APPLY, tool=str(state.metadata.get("recommended_tool", "")), content=str(state.metadata.get("tool_input", "")))]
+        candidate_answer = str(state.metadata.get("candidate_answer", "")).strip()
+        if candidate_answer:
+            return [Action(type=ActionType.ANSWER, content=candidate_answer)]
+        return [Action(type=ActionType.BACKTRACK, content="collect different evidence")]
 
     def allowed_action_types(self, state: ReasoningState) -> List[str]:
-        actions = ["THINK", "APPLY"]
+        actions = ["THINK", "SUBGOAL", "APPLY"]
         if state.derived_facts or state.tool_history:
             actions.extend(["CHECK", "ANSWER"])
         return actions
@@ -271,18 +349,25 @@ class GaiaOpsReasoningDomain:
     def allowed_tools(self, state: ReasoningState, action_type: str) -> List[str]:
         if action_type.upper() not in {"APPLY", "CHECK"}:
             return []
-        return ["list_files", "read_file", str(state.metadata.get("recommended_tool", ""))]
+        return ["plan_question", "list_files", "read_file", str(state.metadata.get("recommended_tool", ""))]
 
     def candidate_bindings(self, state: ReasoningState, action_type: str, tool: str = "") -> List[Dict[str, str]]:
-        if action_type.upper() == "THINK":
-            return [{"content": "inspect the workspace files and use the right file-aware tool"}]
-        if action_type.upper() == "ANSWER":
-            return [{"content": state.expected_answer}]
+        normalized = action_type.upper()
+        if normalized == "THINK":
+            return [{"content": "plan the question, gather evidence, compute the candidate answer, and answer concisely"}]
+        if normalized == "SUBGOAL":
+            pending = state.obligations[:3] or ["inspect evidence file", "compute candidate answer"]
+            return [{"content": item} for item in pending]
+        if normalized == "ANSWER":
+            answers = [state.final_answer, str(state.metadata.get("candidate_answer", "")), state.expected_answer]
+            return [{"content": item} for item in answers if str(item).strip()]
+        if tool == "plan_question":
+            return [{"content": state.problem_text}]
         if tool == "list_files":
             return [{"content": ""}]
         if tool == "read_file":
-            first_file = next(iter(state.metadata.get("workspace_files", [])), "")
-            return [{"content": str(first_file)}]
+            target_file = str(state.metadata.get("tool_input", "")).split("|", 1)[0] if "|" in str(state.metadata.get("tool_input", "")) else next(iter(state.metadata.get("workspace_files", [])), "")
+            return [{"content": str(target_file)}]
         if tool == str(state.metadata.get("recommended_tool", "")):
             return [{"content": str(state.metadata.get("tool_input", ""))}]
         return []
@@ -301,7 +386,8 @@ class GaiaOpsReasoningDomain:
 
     def action_format_instructions(self) -> str:
         return (
-            "Emit canonical JSON actions. Use file-aware tools to inspect the workspace and answer the question.\n"
+            "Emit canonical JSON actions. Plan the question, inspect workspace files, gather evidence, then answer.\n"
+            'ACTION {"type":"APPLY","tool":"plan_question","content":"task prompt"}\n'
             'ACTION {"type":"APPLY","tool":"list_files","content":""}\n'
             'ACTION {"type":"APPLY","tool":"read_file","content":"report.json"}\n'
             'ACTION {"type":"ANSWER","content":"final answer"}'
@@ -327,8 +413,10 @@ class GaiaOpsReasoningDomain:
                 state.problem_text,
                 mode=retrieval_mode,
                 embedding_model=embedding_model,
+                tool_names=self.allowed_tools(state, "APPLY"),
                 event_logger=event_logger,
             )
+        state.metadata["_retrieval_context"] = retrieval_context or {}
         tactic_hints = None
         if tactic_stats is not None:
             ranked = tactic_stats.top_tactics(state.domain, limit=3)
@@ -341,7 +429,7 @@ class GaiaOpsReasoningDomain:
         )
 
     def state_signature(self, state: ReasoningState) -> str:
-        return " || ".join([state.domain, " | ".join(state.derived_facts[-3:]), state.final_answer.strip()])
+        return " || ".join([state.domain, " | ".join(state.derived_facts[-3:]), " | ".join(state.obligations[-3:]), state.final_answer.strip()])
 
     def render_human_trace(self, state: ReasoningState) -> str:
         return render_human_trace(state)

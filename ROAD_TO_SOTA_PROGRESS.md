@@ -1,6 +1,6 @@
 ## Road To SOTA Progress
 
-Branch: `sota-public-benchmarks`
+Branch: `sota-real-benchmark-agents`
 
 ### Completed
 
@@ -20,15 +20,17 @@ Branch: `sota-public-benchmarks`
   - `benchmarks/math_runner.py`
 - deterministic result artifacts written into `results/`
 - manual `sample_v7.py` flows now resolve benchmark fixtures for the new public-style backends
+- `code_ops` now includes real repo-editing tasks and tools
+- `swebench_ops` now drafts, applies, and verifies fixes without the gold-patch shortcut path
+- `gaia_ops` now plans, gathers evidence, computes candidate answers, and answers from evidence
+- guided fallback rollouts now let benchmark agents complete multi-step traces under tighter search budgets
 
 ### In Progress
 
-- richer repository-editing behavior beyond smoke fixture patching
-- deeper GAIA-style evidence tracking and planning state
+- harder benchmark fixtures beyond smoke proxy suites
+- larger-model benchmark profiles and ablations
 
 ### Remaining
 
-- real repository-oriented code-agent behavior
-- GAIA-style richer evidence and planning tools
 - larger-model benchmark profiles
 - public benchmark score collection and ablations

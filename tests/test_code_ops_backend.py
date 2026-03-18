@@ -54,6 +54,24 @@ class CodeOpsBackendTests(unittest.TestCase):
         self.assertEqual(calls_child.final_answer, "2")
         self.assertEqual(calls_child.status, "solved")
 
+    def test_repo_patch_task_solves_via_multi_step_fallback_loop(self) -> None:
+        backend = CodeOpsReasoningDomain()
+        state = backend.make_state(backend.benchmark_tasks()[0])
+        executor = backend.create_executor()
+
+        for _ in range(6):
+            repair = backend.fallback_repairs(state)[0]
+            state, _ = executor.apply(state, repair)
+            if state.final_answer:
+                answer_action = backend.fallback_repairs(state)[0]
+                state, _ = executor.apply(state, answer_action)
+            if state.status == "solved":
+                break
+
+        self.assertEqual(state.status, "solved")
+        self.assertEqual(state.final_answer, "patched_and_verified")
+        self.assertIn("app.py", "\n".join(state.metadata.get("workspace_files", [])))
+
 
 if __name__ == "__main__":
     unittest.main()

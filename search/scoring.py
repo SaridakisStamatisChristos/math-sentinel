@@ -16,6 +16,10 @@ def combine_scores(
     tactic_bonus: float = 0.12,
     value_weight: float = 0.35,
     novelty_weight: float = 0.08,
+    obligation_weight: float = 0.08,
+    evidence_weight: float = 0.10,
+    stagnation_penalty: float = 0.18,
+    repeat_penalty: float = 0.10,
     depth: int = 1,
     solved: bool = False,
 ) -> float:
@@ -30,6 +34,11 @@ def combine_scores(
     answer_present = float(exec_info.get("answer_present", 0.0))
     tactic_bias = float(exec_info.get("tactic_bias", 0.5))
     novelty_bonus = float(exec_info.get("novelty_bonus", 0.5))
+    tool_bias = float(exec_info.get("tool_bias", 0.5))
+    evidence_bonus = float(exec_info.get("evidence_bonus", 0.0))
+    obligation_progress = float(exec_info.get("obligation_progress", 0.0))
+    stagnation = float(exec_info.get("stagnation_penalty", 0.0))
+    repeat_bias = float(exec_info.get("repeat_penalty", 0.0))
 
     score = 0.0
     score += 0.45 * valid
@@ -41,7 +50,12 @@ def combine_scores(
     score += completion_bonus * answer_present
     score += tactic_bonus * (tactic_bias - 0.5)
     score += novelty_weight * (novelty_bonus - 0.5)
+    score += 0.08 * (tool_bias - 0.5)
+    score += evidence_weight * evidence_bonus
+    score += obligation_weight * obligation_progress
     score -= 0.25 * risk
+    score -= stagnation_penalty * stagnation
+    score -= repeat_penalty * repeat_bias
     score -= simplicity_penalty * depth
     if local_valid < 0.5:
         score -= invalid_penalty

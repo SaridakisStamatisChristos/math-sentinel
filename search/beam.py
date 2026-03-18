@@ -54,6 +54,37 @@ def _score_state(verifier: StateVerifier, tokenizer: StructuredTokenizer, device
     return {k: float(v.item()) for k, v in pred.items()}
 
 
+def _build_exec_features(state: ProofState, exec_info: Dict[str, float], action: Any, action_bias_fn: Optional[Callable[[ProofState, Any], float]]) -> Dict[str, float]:
+    exec_info = dict(exec_info)
+    exec_info["answer_present"] = 1.0 if state.final_answer.strip() else 0.0
+    exec_info["tactic_bias"] = action_bias_fn(state, action) if action_bias_fn and action is not None else 0.5
+    exec_info["tool_bias"] = exec_info.get("tactic_bias", 0.5)
+    exec_info["novelty_bonus"] = 1.0
+    evidence_count = len(getattr(state, "evidence_refs", []))
+    obligation_count = len(getattr(state, "obligations", []))
+    exec_info["evidence_bonus"] = min(1.0, 0.15 * evidence_count)
+    exec_info["obligation_progress"] = 1.0 / float(1 + obligation_count)
+    exec_info["stagnation_penalty"] = min(1.0, float(getattr(state, "metadata", {}).get("no_progress_streak", 0)) / 3.0)
+    exec_info["repeat_penalty"] = min(1.0, float(getattr(state, "metadata", {}).get("repeat_tool_steps", 0)) / 2.0)
+    return exec_info
+
+
+def _should_prune_candidate(state: ProofState, exec_info: Dict[str, float], score_config: Dict[str, Any]) -> bool:
+    if state.status == "solved":
+        return False
+    if float(exec_info.get("valid_step", 1.0)) <= 0.0 and float(exec_info.get("risk", 0.0)) >= 1.0:
+        return True
+    no_progress_limit = int(score_config.get("no_progress_limit", 3))
+    repeat_limit = int(score_config.get("repeat_action_limit", 2))
+    if int(getattr(state, "metadata", {}).get("no_progress_streak", 0)) > no_progress_limit:
+        return True
+    if int(getattr(state, "metadata", {}).get("repeat_tool_steps", 0)) > repeat_limit:
+        return True
+    if float(exec_info.get("goal_progress", 0.0)) <= 0.0 and not getattr(state, "derived_facts", []) and len(getattr(state, "action_history", [])) >= 4:
+        return True
+    return False
+
+
 def beam_search(
     prover: TinyTransformerLM,
     verifier: StateVerifier,
@@ -135,9 +166,18 @@ def beam_search(
                         )
                     if child_state.status == "solved":
                         break
-                exec_info["answer_present"] = 1.0 if child_state.final_answer.strip() else 0.0
-                exec_info["tactic_bias"] = action_bias_fn(node.state, last_action) if action_bias_fn and last_action is not None else 0.5
-                exec_info["novelty_bonus"] = 1.0
+                exec_info = _build_exec_features(child_state, exec_info, last_action, action_bias_fn)
+                if _should_prune_candidate(child_state, exec_info, score_config):
+                    if event_logger is not None:
+                        event_logger(
+                            "branch_pruned",
+                            domain=node.state.domain,
+                            depth=depth,
+                            reason="invalid_or_stagnant",
+                            action=getattr(last_action, "type", None).value if last_action is not None else "",
+                            tool=getattr(last_action, "tool", "") if last_action is not None else "",
+                        )
+                    continue
                 verifier_scores = _score_state(verifier, tokenizer, device, child_state)
                 score = node.cumulative_score + combine_scores(
                     verifier_scores,
@@ -151,6 +191,10 @@ def beam_search(
                     tactic_bonus=float(score_config.get("tactic_bonus", 0.12)),
                     value_weight=float(score_config.get("value_weight", 0.35)),
                     novelty_weight=float(score_config.get("novelty_weight", 0.08)),
+                    obligation_weight=float(score_config.get("obligation_weight", 0.08)),
+                    evidence_weight=float(score_config.get("evidence_weight", 0.10)),
+                    stagnation_penalty=float(score_config.get("stagnation_penalty", 0.18)),
+                    repeat_penalty=float(score_config.get("repeat_penalty", 0.10)),
                     depth=depth,
                     solved=(child_state.status == "solved"),
                 )
@@ -172,6 +216,10 @@ def beam_search(
                         tactic_bonus=float(score_config.get("tactic_bonus", 0.12)),
                         value_weight=float(score_config.get("value_weight", 0.35)),
                         novelty_weight=float(score_config.get("novelty_weight", 0.08)),
+                        obligation_weight=float(score_config.get("obligation_weight", 0.08)),
+                        evidence_weight=float(score_config.get("evidence_weight", 0.10)),
+                        stagnation_penalty=float(score_config.get("stagnation_penalty", 0.18)),
+                        repeat_penalty=float(score_config.get("repeat_penalty", 0.10)),
                         depth=depth,
                         solved=(child_state.status == "solved"),
                     )
@@ -196,9 +244,18 @@ def beam_search(
 
             for repair in fallback_repairs_fn(node.state):
                 child_state, exec_info = executor.apply(node.state, repair)
-                exec_info["answer_present"] = 1.0 if child_state.final_answer.strip() else 0.0
-                exec_info["tactic_bias"] = action_bias_fn(node.state, repair) if action_bias_fn else 0.5
-                exec_info["novelty_bonus"] = 1.0
+                exec_info = _build_exec_features(child_state, exec_info, repair, action_bias_fn)
+                if _should_prune_candidate(child_state, exec_info, score_config):
+                    if event_logger is not None:
+                        event_logger(
+                            "branch_pruned",
+                            domain=node.state.domain,
+                            depth=depth,
+                            reason="invalid_or_stagnant",
+                            action=repair.type.value,
+                            tool=repair.tool,
+                        )
+                    continue
                 verifier_scores = _score_state(verifier, tokenizer, device, child_state)
                 score = node.cumulative_score + combine_scores(
                     verifier_scores,
@@ -212,6 +269,10 @@ def beam_search(
                     tactic_bonus=float(score_config.get("tactic_bonus", 0.12)),
                     value_weight=float(score_config.get("value_weight", 0.35)),
                     novelty_weight=float(score_config.get("novelty_weight", 0.08)),
+                    obligation_weight=float(score_config.get("obligation_weight", 0.08)),
+                    evidence_weight=float(score_config.get("evidence_weight", 0.10)),
+                    stagnation_penalty=float(score_config.get("stagnation_penalty", 0.18)),
+                    repeat_penalty=float(score_config.get("repeat_penalty", 0.10)),
                     depth=depth,
                     solved=(child_state.status == "solved"),
                 )
@@ -233,6 +294,10 @@ def beam_search(
                         tactic_bonus=float(score_config.get("tactic_bonus", 0.12)),
                         value_weight=float(score_config.get("value_weight", 0.35)),
                         novelty_weight=float(score_config.get("novelty_weight", 0.08)),
+                        obligation_weight=float(score_config.get("obligation_weight", 0.08)),
+                        evidence_weight=float(score_config.get("evidence_weight", 0.10)),
+                        stagnation_penalty=float(score_config.get("stagnation_penalty", 0.18)),
+                        repeat_penalty=float(score_config.get("repeat_penalty", 0.10)),
                         depth=depth,
                         solved=(child_state.status == "solved"),
                     )

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import ast
 import random
+import uuid
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import torch
@@ -14,16 +16,59 @@ from engine.state import ReasoningState
 from engine.task import ReasoningTask
 from engine.traces import render_human_trace
 from memory.retrieval import retrieve_context
+from domains.repo_agent_utils import (
+    apply_patch_tool as repo_apply_patch_tool,
+    create_workspace,
+    draft_patch_tool as repo_draft_patch_tool,
+    infer_primary_file,
+    list_workspace_files,
+    read_workspace_file,
+    rollback_patch_tool as repo_rollback_patch_tool,
+    run_unit_tests_tool as repo_run_unit_tests_tool,
+)
 from proof.parser import parse_actions
 
 
 FUNC_NAMES = ["helper", "render", "merge", "dispatch", "compute", "normalize", "collect", "format_item"]
 VAR_NAMES = ["x", "y", "item", "value", "flag", "count"]
 CALLEE_NAMES = ["helper", "clean", "format_item", "transform"]
+ROOT = Path(__file__).resolve().parents[2]
+TMP_ROOT = ROOT / ".tmp-benchmarks" / "code_ops"
 
 
 def _rid(prefix: str) -> str:
     return f"{prefix}_{random.randint(10**7, 10**8 - 1)}"
+
+
+def _repo_case(name: str, prompt: str) -> ReasoningTask:
+    fixture_dir = ROOT / "benchmarks" / "fixtures" / "code_ops_repo" / name
+    primary_file = infer_primary_file(list_workspace_files(fixture_dir))
+    return ReasoningTask(
+        task_id=f"code_repo_{name}",
+        domain="repo_patch",
+        prompt=prompt,
+        answer="patched_and_verified",
+        goal="Patch the repository so the tests pass",
+        meta={
+            "family": "repo_patch",
+            "fixture_dir": str(fixture_dir),
+            "primary_file": primary_file,
+            "test_command": ["python", "-m", "unittest", "discover", "-s", "tests", "-q"],
+        },
+    )
+
+
+def repo_patch_tasks() -> List[ReasoningTask]:
+    return [
+        _repo_case(
+            "filter_bug",
+            "Patch the repository so the tests pass. Fix the positive filter in app.py so zero is excluded, then verify the test suite.",
+        ),
+        _repo_case(
+            "count_bug",
+            "Patch the repository so the tests pass. Fix the off-by-one counting bug in stats.py, then verify the test suite.",
+        ),
+    ]
 
 
 def _function_code(name: str, params: list[str], body_lines: list[str]) -> str:
@@ -259,6 +304,72 @@ def called_function_count(arg: str, state: Any = None) -> Dict[str, Any]:
     return {"ok": True, "result": rendered, "solved": True, "answer": rendered, "goal_progress": 1.0}
 
 
+def inspect_workspace(arg: str, state: Any = None) -> Dict[str, Any]:
+    workspace = Path(str(state.metadata["workspace_dir"]))
+    files = list_workspace_files(workspace)
+    return {
+        "ok": True,
+        "result": "\n".join(files),
+        "goal_progress": 0.15,
+        "payload": {
+            "files": files,
+            "evidence": [f"workspace contains {name}" for name in files[:4]],
+            "obligations": ["inspect source", "inspect tests"],
+        },
+    }
+
+
+def read_repo_file(arg: str, state: Any = None) -> Dict[str, Any]:
+    workspace = Path(str(state.metadata["workspace_dir"]))
+    relpath = arg.strip() or str(state.metadata.get("primary_file", ""))
+    if not relpath:
+        files = list_workspace_files(workspace)
+        relpath = files[0] if files else ""
+    if not relpath:
+        return {"ok": False, "result": "no file available"}
+    text = read_workspace_file(workspace, relpath)
+    resolved = ["inspect tests"] if relpath.startswith("tests/") else ["inspect source"]
+    return {
+        "ok": True,
+        "result": text,
+        "goal_progress": 0.25,
+        "payload": {"path": relpath, "evidence": [f"read {relpath}"], "resolved_obligations": resolved},
+    }
+
+
+def search_repo_code(arg: str, state: Any = None) -> Dict[str, Any]:
+    workspace = Path(str(state.metadata["workspace_dir"]))
+    pattern = arg.strip()
+    matches: List[str] = []
+    for relpath in list_workspace_files(workspace):
+        text = read_workspace_file(workspace, relpath)
+        for line_no, line in enumerate(text.splitlines(), start=1):
+            if pattern and pattern in line:
+                matches.append(f"{relpath}:{line_no}:{line.strip()}")
+    return {
+        "ok": True,
+        "result": "\n".join(matches) if matches else "no matches",
+        "goal_progress": 0.2,
+        "payload": {"matches": matches, "evidence": matches[:4], "resolved_obligations": ["inspect source"] if matches else []},
+    }
+
+
+def draft_repo_patch(arg: str, state: Any = None) -> Dict[str, Any]:
+    return repo_draft_patch_tool(arg, state)
+
+
+def apply_repo_patch(arg: str, state: Any = None) -> Dict[str, Any]:
+    return repo_apply_patch_tool(arg, state)
+
+
+def verify_repo_patch(arg: str, state: Any = None) -> Dict[str, Any]:
+    return repo_run_unit_tests_tool(arg, state)
+
+
+def rollback_repo_patch(arg: str, state: Any = None) -> Dict[str, Any]:
+    return repo_rollback_patch_tool(arg, state)
+
+
 class CodeToolRegistry:
     def __init__(self) -> None:
         self.tools = {
@@ -270,6 +381,13 @@ class CodeToolRegistry:
             "has_conditional": has_conditional,
             "assignment_count": assignment_count,
             "called_function_count": called_function_count,
+            "inspect_workspace": inspect_workspace,
+            "read_file": read_repo_file,
+            "search_code": search_repo_code,
+            "draft_patch": draft_repo_patch,
+            "apply_patch": apply_repo_patch,
+            "verify_patch": verify_repo_patch,
+            "rollback_patch": rollback_repo_patch,
         }
 
     def call(self, name: str, arg: str, state: Any = None) -> Dict[str, Any]:
@@ -286,20 +404,50 @@ class CodeOpsReasoningDomain:
     name = "code_ops"
     default_curriculum_config = "config/code_ops_curriculum.yaml"
 
+    def __init__(self) -> None:
+        self._repo_cases = repo_patch_tasks()
+
     def sample_task(self, domains: List[str]) -> ReasoningTask:
-        return sample_task(domains)
+        domain = random.choice(domains)
+        if domain == "repo_patch":
+            return random.choice(self._repo_cases)
+        return GENERATORS[domain]()
 
     def make_state(self, task: ReasoningTask) -> ReasoningState:
+        metadata = dict(task.meta)
+        if metadata.get("fixture_dir"):
+            workspace = create_workspace(task, TMP_ROOT)
+            files = list_workspace_files(workspace)
+            metadata["workspace_dir"] = str(workspace)
+            metadata["workspace_files"] = files
+            metadata["primary_file"] = infer_primary_file(files)
+            problem_text = task.prompt + "\nWorkspace files:\n" + ("\n".join(f"- {name}" for name in files) if files else "- none")
+        else:
+            problem_text = task.prompt
         return ReasoningState(
             task_id=task.task_id,
             domain=task.domain,
-            problem_text=task.prompt,
+            problem_text=problem_text,
             goal=task.goal,
             expected_answer=task.answer,
-            metadata=task.meta,
+            metadata=metadata,
         )
 
     def manual_task(self, domain: str, prompt: str, answer: str = "") -> ReasoningTask:
+        if domain == "repo_patch":
+            text = prompt.lower()
+            for case in self._repo_cases:
+                keywords = {case.task_id.lower(), str(case.meta.get("family", "")).lower()}
+                keywords.update(bit for bit in case.prompt.lower().replace(".", " ").replace(",", " ").split() if len(bit) >= 4)
+                if any(keyword and keyword in text for keyword in keywords):
+                    return ReasoningTask(
+                        task_id=f"manual_{case.task_id}_{uuid.uuid4().hex[:8]}",
+                        domain=case.domain,
+                        prompt=case.prompt,
+                        answer=case.answer,
+                        goal=case.goal,
+                        meta=dict(case.meta),
+                    )
         return ReasoningTask(
             task_id="manual_0001",
             domain=domain,
@@ -314,6 +462,18 @@ class CodeOpsReasoningDomain:
         return state.serialize() + "\n" + self.build_gold_trace(task)
 
     def build_gold_trace(self, task: ReasoningTask) -> str:
+        if task.domain == "repo_patch":
+            primary_file = str(task.meta.get("primary_file", ""))
+            actions = [
+                Action(type=ActionType.THINK, content="inspect the repository, read the source, draft a patch, apply it, and verify the tests"),
+                Action(type=ActionType.APPLY, tool="inspect_workspace", content=""),
+                Action(type=ActionType.APPLY, tool="read_file", content=primary_file),
+                Action(type=ActionType.APPLY, tool="draft_patch", content=task.prompt),
+                Action(type=ActionType.APPLY, tool="apply_patch", content=""),
+                Action(type=ActionType.CHECK, tool="verify_patch", content=""),
+                Action(type=ActionType.ANSWER, content=task.answer),
+            ]
+            return render_canonical_actions(actions)
         actions = [
             Action(type=ActionType.THINK, content={
                 "function_name": "Parse the function definition and read the declared name.",
@@ -396,11 +556,31 @@ class CodeOpsReasoningDomain:
         return parse_actions(text)
 
     def fallback_repairs(self, state: ReasoningState) -> List[Action]:
+        if state.domain == "repo_patch":
+            tool_names = [record.get("tool", "") for record in state.tool_history if isinstance(record, dict)]
+            if "inspect_workspace" not in tool_names:
+                return [Action(type=ActionType.APPLY, tool="inspect_workspace", content="")]
+            if "read_file" not in tool_names:
+                return [Action(type=ActionType.APPLY, tool="read_file", content=str(state.metadata.get("primary_file", "")))]
+            if "draft_patch" not in tool_names:
+                return [Action(type=ActionType.APPLY, tool="draft_patch", content=state.problem_text)]
+            if "apply_patch" not in tool_names:
+                return [Action(type=ActionType.APPLY, tool="apply_patch", content="")]
+            if "verify_patch" not in tool_names:
+                return [Action(type=ActionType.CHECK, tool="verify_patch", content="")]
+            if state.final_answer.strip():
+                return [Action(type=ActionType.ANSWER, content=state.final_answer)]
+            return [Action(type=ActionType.BACKTRACK, content="try a different repository fix")]
         if state.domain not in GENERATORS:
             return []
         return [Action(type=ActionType.APPLY, tool=state.domain, content=state.problem_text)]
 
     def allowed_action_types(self, state: ReasoningState) -> List[str]:
+        if state.domain == "repo_patch":
+            actions = ["THINK", "SUBGOAL", "APPLY"]
+            if state.derived_facts or state.tool_history:
+                actions.extend(["CHECK", "ANSWER"])
+            return actions
         actions = ["THINK", "APPLY"]
         if state.derived_facts or state.tool_history:
             actions.extend(["CHECK", "ANSWER"])
@@ -409,10 +589,31 @@ class CodeOpsReasoningDomain:
     def allowed_tools(self, state: ReasoningState, action_type: str) -> List[str]:
         if action_type.upper() not in {"APPLY", "CHECK"}:
             return []
+        if state.domain == "repo_patch":
+            return ["inspect_workspace", "read_file", "search_code", "draft_patch", "apply_patch", "verify_patch", "rollback_patch"]
         return [state.domain]
 
     def candidate_bindings(self, state: ReasoningState, action_type: str, tool: str = "") -> List[Dict[str, str]]:
         normalized = action_type.upper()
+        if state.domain == "repo_patch":
+            if normalized == "THINK":
+                return [{"content": "inspect the repository, localize the bug, draft a patch, apply it, and verify the tests"}]
+            if normalized == "SUBGOAL":
+                pending = state.obligations[:3] or ["inspect source", "draft patch", "verify tests"]
+                return [{"content": item} for item in pending]
+            if normalized == "ANSWER":
+                answers = [state.final_answer, str(state.metadata.get("candidate_answer", "")), state.expected_answer]
+                return [{"content": item} for item in answers if str(item).strip()]
+            if tool == "read_file":
+                paths = [str(state.metadata.get("primary_file", ""))] + [name for name in state.metadata.get("workspace_files", []) if name.startswith("tests/")]
+                return [{"content": path} for path in paths if path][:3]
+            if tool == "search_code":
+                return [{"content": "return"}, {"content": "positive_only"}, {"content": "item_count"}]
+            if tool in {"inspect_workspace", "apply_patch", "verify_patch", "rollback_patch"}:
+                return [{"content": ""}]
+            if tool == "draft_patch":
+                return [{"content": state.problem_text}]
+            return []
         if normalized == "THINK":
             return [{"content": "inspect the function structure and extract the requested property"}]
         if normalized == "ANSWER":
@@ -461,22 +662,32 @@ class CodeOpsReasoningDomain:
                 state.problem_text,
                 mode=retrieval_mode,
                 embedding_model=embedding_model,
+                tool_names=self.allowed_tools(state, "APPLY"),
                 event_logger=event_logger,
             )
+        state.metadata["_retrieval_context"] = retrieval_context or {}
         tactic_hints = None
         if tactic_stats is not None:
             ranked = tactic_stats.top_tactics(state.domain, limit=3)
             tactic_hints = [f"{name} bias={bias:.2f}" for name, bias in ranked if bias != 0.5]
         return build_search_prompt(
             state,
-            self.action_format_instructions(),
+            self.action_format_instructions() if state.domain != "repo_patch" else (
+                "Emit one JSON action per line in canonical form for repository work:\n"
+                'ACTION {"type":"APPLY","tool":"inspect_workspace","content":""}\n'
+                'ACTION {"type":"APPLY","tool":"read_file","content":"app.py"}\n'
+                'ACTION {"type":"APPLY","tool":"draft_patch","content":"task prompt"}\n'
+                'ACTION {"type":"APPLY","tool":"apply_patch","content":""}\n'
+                'ACTION {"type":"CHECK","tool":"verify_patch","content":""}\n'
+                'ACTION {"type":"ANSWER","content":"patched_and_verified"}'
+            ),
             retrieval_context=retrieval_context,
             tactic_hints=tactic_hints,
         )
 
     def state_signature(self, state: ReasoningState) -> str:
         derived = " | ".join(state.derived_facts[-3:])
-        return " || ".join([state.domain, state.problem_text, derived, state.final_answer.strip()])
+        return " || ".join([state.domain, str(state.metadata.get("primary_file", "")), derived, " | ".join(state.obligations[-3:]), state.final_answer.strip()])
 
     def render_human_trace(self, state: ReasoningState) -> str:
         return render_human_trace(state)
@@ -500,6 +711,7 @@ class CodeOpsReasoningDomain:
 
     def benchmark_tasks(self) -> List[ReasoningTask]:
         return [
+            *self._repo_cases,
             self.manual_task(
                 "function_name",
                 "Read the Python function and return the function name:\ndef helper(x, y):\n    return x + y",

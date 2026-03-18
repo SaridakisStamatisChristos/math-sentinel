@@ -39,6 +39,14 @@ def build_search_prompt(
         sections.append(_render_lemmas(retrieval_context.get("lemmas", [])))
         sections.append("[SIMILAR_HARD_CASES]")
         sections.append(_render_hard_cases(retrieval_context.get("hard_cases", [])))
+        tool_priors = retrieval_context.get("tool_priors", {})
+        if tool_priors:
+            sections.append("[RETRIEVAL_TOOL_HINTS]")
+            sections.append("\n".join(f"- {tool}: {score:.2f}" for tool, score in sorted(tool_priors.items(), key=lambda item: item[1], reverse=True)))
+        failure_avoidance = retrieval_context.get("failure_avoidance", [])
+        if failure_avoidance:
+            sections.append("[FAILURE_AVOIDANCE]")
+            sections.append("\n".join(f"- {item}" for item in failure_avoidance))
     if tactic_hints:
         sections.append("[TACTIC_HINTS]")
         sections.append("\n".join(f"- {hint}" for hint in tactic_hints))
