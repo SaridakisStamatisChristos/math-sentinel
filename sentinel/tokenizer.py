@@ -11,6 +11,7 @@ STATE_MARKERS = [
     "[SUBGOALS]", "[LEMMAS]", "[TOOL_HISTORY]", "[ACTION_HISTORY]",
     "[STATUS]", "[FINAL_ANSWER]", "[METADATA]", "[END_STATE]",
     "[RETRIEVED_LEMMAS]", "[SIMILAR_HARD_CASES]", "[TACTIC_HINTS]",
+    "[PROVENANCE]", "[OBLIGATIONS]", "[DEPENDENCIES]", "[TERMINAL_CONFIDENCE]",
 ]
 
 LEGACY_ACTION_MARKERS = [
@@ -74,6 +75,10 @@ def _build_vocab() -> List[str]:
             deduped.append(token)
             seen.add(token)
     return deduped
+
+
+def get_structured_special_tokens() -> List[str]:
+    return list(dict.fromkeys(SPECIAL_TOKENS + STATE_MARKERS + LEGACY_ACTION_MARKERS + CANONICAL_ACTION_TOKENS + ACTION_TYPES))
 
 
 WORD_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")

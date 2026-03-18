@@ -17,6 +17,7 @@ from .beam import _build_prompt, _default_state_signature, _score_state
 from .nodes import SearchNode
 from .repair import fallback_repairs
 from .scoring import combine_scores
+from .transposition import TranspositionTable
 
 
 @dataclass
@@ -63,8 +64,10 @@ def _expand_node(
     prompt_builder: Callable[[ProofState], str],
     state_signature_fn: Callable[[ProofState], str],
     action_bias_fn: Optional[Callable[[ProofState, Any], float]],
-    seen_signatures: set[str],
+    schema_provider: Any | None,
+    transpositions: TranspositionTable,
     explored: List[SearchNode],
+    event_logger: Optional[Callable[..., Any]],
 ) -> List[MCTSNode]:
     if node.expanded or node.state.status == "solved":
         return node.children
@@ -82,12 +85,15 @@ def _expand_node(
         state=node.state,
         available_tools=_available_tools(executor),
         decoder_mode=str(score_config.get("decoder_mode", "hybrid")),
+        schema_provider=schema_provider,
     )
 
     candidates: List[MCTSNode] = []
     for txt in texts:
         actions, confidence = parse_actions_fn(txt)
         if not actions:
+            if event_logger is not None:
+                event_logger("invalid_schema_emission", domain=node.state.domain, depth=node.depth + 1, text=txt[:200])
             continue
         child_state = node.state
         exec_info: Dict[str, float] = {"goal_progress": 0.0, "valid_step": confidence}
@@ -97,10 +103,20 @@ def _expand_node(
             exec_info["goal_progress"] = exec_info.get("goal_progress", 0.0) + float(local.get("goal_progress", 0.0))
             exec_info["valid_step"] = min(exec_info.get("valid_step", 1.0), float(local.get("valid_step", 1.0)))
             last_action = action
+            if float(local.get("valid_step", 1.0)) <= 0.0 and event_logger is not None:
+                event_logger(
+                    "tool_failure",
+                    domain=node.state.domain,
+                    depth=node.depth + 1,
+                    action=action.type.value,
+                    tool=action.tool,
+                    note=str(local.get("note", ""))[:200],
+                )
             if child_state.status == "solved":
                 break
         exec_info["answer_present"] = 1.0 if child_state.final_answer.strip() else 0.0
         exec_info["tactic_bias"] = action_bias_fn(node.state, last_action) if action_bias_fn and last_action is not None else 0.5
+        exec_info["novelty_bonus"] = 1.0
         verifier_scores = _score_state(verifier, tokenizer, device, child_state)
         delta = combine_scores(
             verifier_scores,
@@ -112,14 +128,42 @@ def _expand_node(
             completion_bonus=float(score_config.get("completion_bonus", 0.15)),
             incomplete_penalty=float(score_config.get("incomplete_penalty", 0.35)),
             tactic_bonus=float(score_config.get("tactic_bonus", 0.12)),
+            value_weight=float(score_config.get("value_weight", 0.35)),
+            novelty_weight=float(score_config.get("novelty_weight", 0.08)),
             depth=node.depth + 1,
             solved=(child_state.status == "solved"),
         )
         total = node.cumulative_score + delta
         signature = state_signature_fn(child_state)
-        if signature in seen_signatures:
+        accepted, novelty = transpositions.register(signature, total, node.depth + 1)
+        if not accepted:
             continue
-        seen_signatures.add(signature)
+        if novelty != 1.0:
+            exec_info["novelty_bonus"] = novelty
+            delta = combine_scores(
+                verifier_scores,
+                exec_info,
+                simplicity_penalty=float(score_config.get("simplicity_penalty", 0.02)),
+                invalid_penalty=float(score_config.get("invalid_penalty", 1.0)),
+                goal_bonus=float(score_config.get("goal_bonus", 0.4)),
+                solved_bonus=float(score_config.get("solved_bonus", 1.0)),
+                completion_bonus=float(score_config.get("completion_bonus", 0.15)),
+                incomplete_penalty=float(score_config.get("incomplete_penalty", 0.35)),
+                tactic_bonus=float(score_config.get("tactic_bonus", 0.12)),
+                value_weight=float(score_config.get("value_weight", 0.35)),
+                novelty_weight=float(score_config.get("novelty_weight", 0.08)),
+                depth=node.depth + 1,
+                solved=(child_state.status == "solved"),
+            )
+            total = node.cumulative_score + delta
+        if event_logger is not None and abs(float(verifier_scores.get("branch_priority", 0.0)) - float(verifier_scores.get("value_estimate", 0.0))) > 0.4:
+            event_logger(
+                "verifier_value_disagreement",
+                domain=node.state.domain,
+                depth=node.depth + 1,
+                branch_priority=float(verifier_scores.get("branch_priority", 0.0)),
+                value_estimate=float(verifier_scores.get("value_estimate", 0.0)),
+            )
         child = MCTSNode(
             state=child_state,
             cumulative_score=total,
@@ -145,6 +189,7 @@ def _expand_node(
         child_state, exec_info = executor.apply(node.state, repair)
         exec_info["answer_present"] = 1.0 if child_state.final_answer.strip() else 0.0
         exec_info["tactic_bias"] = action_bias_fn(node.state, repair) if action_bias_fn else 0.5
+        exec_info["novelty_bonus"] = 1.0
         verifier_scores = _score_state(verifier, tokenizer, device, child_state)
         delta = combine_scores(
             verifier_scores,
@@ -156,14 +201,34 @@ def _expand_node(
             completion_bonus=float(score_config.get("completion_bonus", 0.15)),
             incomplete_penalty=float(score_config.get("incomplete_penalty", 0.35)),
             tactic_bonus=float(score_config.get("tactic_bonus", 0.12)),
+            value_weight=float(score_config.get("value_weight", 0.35)),
+            novelty_weight=float(score_config.get("novelty_weight", 0.08)),
             depth=node.depth + 1,
             solved=(child_state.status == "solved"),
         )
         total = node.cumulative_score + delta
         signature = state_signature_fn(child_state)
-        if signature in seen_signatures:
+        accepted, novelty = transpositions.register(signature, total, node.depth + 1)
+        if not accepted:
             continue
-        seen_signatures.add(signature)
+        if novelty != 1.0:
+            exec_info["novelty_bonus"] = novelty
+            delta = combine_scores(
+                verifier_scores,
+                exec_info,
+                simplicity_penalty=float(score_config.get("simplicity_penalty", 0.02)),
+                invalid_penalty=float(score_config.get("invalid_penalty", 1.0)),
+                goal_bonus=float(score_config.get("goal_bonus", 0.4)),
+                solved_bonus=float(score_config.get("solved_bonus", 1.0)),
+                completion_bonus=float(score_config.get("completion_bonus", 0.15)),
+                incomplete_penalty=float(score_config.get("incomplete_penalty", 0.35)),
+                tactic_bonus=float(score_config.get("tactic_bonus", 0.12)),
+                value_weight=float(score_config.get("value_weight", 0.35)),
+                novelty_weight=float(score_config.get("novelty_weight", 0.08)),
+                depth=node.depth + 1,
+                solved=(child_state.status == "solved"),
+            )
+            total = node.cumulative_score + delta
         child = MCTSNode(
             state=child_state,
             cumulative_score=total,
@@ -231,6 +296,8 @@ def mcts_search(
     prompt_builder: Callable[[ProofState], str] = _build_prompt,
     state_signature_fn: Callable[[ProofState], str] = _default_state_signature,
     action_bias_fn: Optional[Callable[[ProofState, Any], float]] = None,
+    schema_provider: Any | None = None,
+    event_logger: Optional[Callable[..., Any]] = None,
 ) -> Tuple[ProofState, List[SearchNode]]:
     score_config = score_config or {}
     simulations = int(score_config.get("mcts_simulations", beam_width * max_depth * 2))
@@ -239,7 +306,8 @@ def mcts_search(
     root = MCTSNode(state=initial_state.clone(), cumulative_score=0.0, depth=0, prior=1.0)
     explored: List[SearchNode] = [SearchNode(state=root.state, cumulative_score=0.0, depth=0)]
     best = root
-    seen_signatures = {state_signature_fn(root.state)}
+    transpositions = TranspositionTable(capacity=int(score_config.get("transposition_capacity", 4096)))
+    transpositions.register(state_signature_fn(root.state), 0.0, 0)
 
     for _ in range(simulations):
         node = root
@@ -267,8 +335,10 @@ def mcts_search(
                 prompt_builder=prompt_builder,
                 state_signature_fn=state_signature_fn,
                 action_bias_fn=action_bias_fn,
-                seen_signatures=seen_signatures,
+                schema_provider=schema_provider,
+                transpositions=transpositions,
                 explored=explored,
+                event_logger=event_logger,
             )
             if children:
                 node = children[0]
@@ -287,4 +357,12 @@ def mcts_search(
         candidate = root.children[0]
         if candidate.state.status == "solved" or best.state.status != "solved":
             best = candidate if candidate.cumulative_score >= best.cumulative_score or candidate.state.status == "solved" else best
+    if event_logger is not None and best.state.status != "solved":
+        event_logger(
+            "search_budget_exhausted",
+            domain=initial_state.domain,
+            max_depth=max_depth,
+            simulations=simulations,
+            explored=len(explored),
+        )
     return best.state, explored

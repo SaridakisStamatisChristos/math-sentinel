@@ -373,6 +373,7 @@ class CodeOpsReasoningDomain:
         proof_completion = 1.0 if correct and solved else (0.2 if has_answer else min(0.2, goal_progress * 0.5))
         risk = float(local_scores.get("risk_score", 0.05 if correct else (0.8 if has_answer else 0.45)))
         branch_priority = max(0.05, min(0.98, 0.56 * goal_progress + 0.24 * valid_step + 0.20 * proof_completion))
+        value_estimate = max(0.01, min(0.99, 0.45 * goal_progress + 0.30 * proof_completion + 0.20 * branch_priority + 0.10 * valid_step - 0.15 * risk))
         return torch.tensor(
             [
                 max(0.02, min(0.99, valid_step)),
@@ -380,6 +381,7 @@ class CodeOpsReasoningDomain:
                 max(0.0, min(0.99, proof_completion)),
                 max(0.01, min(0.99, risk)),
                 branch_priority,
+                value_estimate,
             ],
             dtype=torch.float32,
         )
@@ -398,6 +400,39 @@ class CodeOpsReasoningDomain:
             return []
         return [Action(type=ActionType.APPLY, tool=state.domain, content=state.problem_text)]
 
+    def allowed_action_types(self, state: ReasoningState) -> List[str]:
+        actions = ["THINK", "APPLY"]
+        if state.derived_facts or state.tool_history:
+            actions.extend(["CHECK", "ANSWER"])
+        return actions
+
+    def allowed_tools(self, state: ReasoningState, action_type: str) -> List[str]:
+        if action_type.upper() not in {"APPLY", "CHECK"}:
+            return []
+        return [state.domain]
+
+    def candidate_bindings(self, state: ReasoningState, action_type: str, tool: str = "") -> List[Dict[str, str]]:
+        normalized = action_type.upper()
+        if normalized == "THINK":
+            return [{"content": "inspect the function structure and extract the requested property"}]
+        if normalized == "ANSWER":
+            return [{"content": fact} for fact in state.derived_facts[-3:]]
+        if normalized in {"APPLY", "CHECK"}:
+            return [{"content": state.problem_text}]
+        return []
+
+    def action_schema(self, state: ReasoningState) -> Dict[str, Any]:
+        return {
+            "strict": True,
+            "action_types": {
+                action_type: {
+                    "tools": self.allowed_tools(state, action_type),
+                    "bindings": self.candidate_bindings(state, action_type),
+                }
+                for action_type in self.allowed_action_types(state)
+            },
+        }
+
     def action_format_instructions(self) -> str:
         return (
             "Emit one JSON action per line in canonical form:\n"
@@ -413,10 +448,21 @@ class CodeOpsReasoningDomain:
         lemma_store: Any | None = None,
         hard_case_store: Any | None = None,
         tactic_stats: Any | None = None,
+        retrieval_mode: str = "hybrid",
+        embedding_model: str = "hashing",
+        event_logger: Any | None = None,
     ) -> str:
         retrieval_context = None
         if lemma_store is not None and hard_case_store is not None:
-            retrieval_context = retrieve_context(lemma_store, hard_case_store, state.domain, state.problem_text)
+            retrieval_context = retrieve_context(
+                lemma_store,
+                hard_case_store,
+                state.domain,
+                state.problem_text,
+                mode=retrieval_mode,
+                embedding_model=embedding_model,
+                event_logger=event_logger,
+            )
         tactic_hints = None
         if tactic_stats is not None:
             ranked = tactic_stats.top_tactics(state.domain, limit=3)

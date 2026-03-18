@@ -2,3 +2,7 @@ torch
 numpy
 pyyaml
 sympy
+transformers
+peft
+accelerate
+safetensors

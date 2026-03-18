@@ -116,6 +116,7 @@ class MathReasoningDomain:
         proof_completion = 1.0 if correct and solved else (0.25 if has_answer else min(0.2, goal_progress * 0.5))
         risk = float(local_scores.get("risk_score", 0.05 if correct else (0.85 if has_answer else 0.45)))
         branch_priority = max(0.05, min(0.98, 0.55 * goal_progress + 0.25 * valid_step + 0.20 * proof_completion))
+        value_estimate = max(0.01, min(0.99, 0.45 * goal_progress + 0.30 * proof_completion + 0.20 * branch_priority + 0.10 * valid_step - 0.15 * risk))
 
         values = [
             max(0.02, min(0.99, valid_step)),
@@ -123,6 +124,7 @@ class MathReasoningDomain:
             max(0.0, min(0.99, proof_completion)),
             max(0.01, min(0.99, risk)),
             branch_priority,
+            value_estimate,
         ]
         return torch.tensor(values, dtype=torch.float32)
 
@@ -134,6 +136,64 @@ class MathReasoningDomain:
 
     def fallback_repairs(self, state: ProofState) -> List[Any]:
         return fallback_repairs(state)
+
+    def allowed_action_types(self, state: ProofState) -> List[str]:
+        actions = ["THINK", "APPLY", "SUBGOAL"]
+        if state.subgoals:
+            actions.append("RESOLVE_SUBGOAL")
+        if state.derived_facts or state.tool_history:
+            actions.extend(["CHECK", "SIMPLIFY", "ANSWER"])
+        return actions
+
+    def allowed_tools(self, state: ProofState, action_type: str) -> List[str]:
+        normalized = action_type.upper()
+        if normalized not in {"APPLY", "CHECK", "SIMPLIFY"}:
+            return []
+        tools = [action.tool for action in fallback_repairs(state) if action.tool]
+        if normalized in {"CHECK", "SIMPLIFY"}:
+            tools.extend(["normalize_expression", "sympy_simplify"])
+        return list(dict.fromkeys(tool for tool in tools if tool))
+
+    def candidate_bindings(self, state: ProofState, action_type: str, tool: str = "") -> List[Dict[str, str]]:
+        normalized = action_type.upper()
+        if normalized == "THINK":
+            return [{"content": "derive the next symbolic step"}, {"content": f"work toward {state.goal}"}]
+        if normalized == "SUBGOAL":
+            return [{"content": subgoal} for subgoal in state.subgoals] or [{"content": state.goal}]
+        if normalized == "RESOLVE_SUBGOAL":
+            return [{"content": subgoal} for subgoal in state.subgoals]
+        if normalized == "ANSWER":
+            derived = [{"content": fact} for fact in state.derived_facts[-3:]]
+            tool_answers = [
+                {"content": str(record.get("result", {}).get("answer", "")).strip()}
+                for record in state.tool_history[-3:]
+                if str(record.get("result", {}).get("answer", "")).strip()
+            ]
+            return tool_answers + derived
+        if normalized in {"APPLY", "CHECK", "SIMPLIFY"}:
+            repairs = fallback_repairs(state)
+            matches = [
+                {"content": action.content}
+                for action in repairs
+                if action.tool == tool and action.content.strip()
+            ]
+            if matches:
+                return matches
+            candidates = [state.problem_text] + list(state.derived_facts[-2:])
+            return [{"content": text} for text in candidates if text.strip()]
+        return []
+
+    def action_schema(self, state: ProofState) -> Dict[str, Any]:
+        return {
+            "strict": True,
+            "action_types": {
+                action_type: {
+                    "tools": self.allowed_tools(state, action_type),
+                    "bindings": self.candidate_bindings(state, action_type),
+                }
+                for action_type in self.allowed_action_types(state)
+            },
+        }
 
     def action_format_instructions(self) -> str:
         return (
@@ -150,10 +210,21 @@ class MathReasoningDomain:
         lemma_store: Any | None = None,
         hard_case_store: Any | None = None,
         tactic_stats: Any | None = None,
+        retrieval_mode: str = "hybrid",
+        embedding_model: str = "hashing",
+        event_logger: Any | None = None,
     ) -> str:
         retrieval_context = None
         if lemma_store is not None and hard_case_store is not None:
-            retrieval_context = retrieve_context(lemma_store, hard_case_store, state.domain, state.problem_text)
+            retrieval_context = retrieve_context(
+                lemma_store,
+                hard_case_store,
+                state.domain,
+                state.problem_text,
+                mode=retrieval_mode,
+                embedding_model=embedding_model,
+                event_logger=event_logger,
+            )
         tactic_hints = None
         if tactic_stats is not None:
             ranked = tactic_stats.top_tactics(state.domain, limit=3)

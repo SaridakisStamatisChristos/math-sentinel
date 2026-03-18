@@ -54,8 +54,9 @@ class StateVerifier(nn.Module):
             nn.Dropout(dropout),
         )
         self.head = nn.Linear(hidden_size * 2, 5)
+        self.value_head = nn.Linear(hidden_size * 2, 1)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def _features(self, x: torch.Tensor) -> torch.Tensor:
         bsz, timesteps = x.shape
         pos_ids = torch.arange(timesteps, device=x.device)
         pos_ids = torch.clamp(pos_ids, max=self.max_seq_len - 1)
@@ -68,9 +69,11 @@ class StateVerifier(nn.Module):
         q = self.pool_query.expand(bsz, 1, -1)
         pooled, _ = self.pool_attn(q, h, h)
         pooled = pooled.squeeze(1)
+        return self.mlp(self.drop(pooled))
 
-        feats = self.mlp(self.drop(pooled))
-        return self.head(feats)
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        feats = self._features(x)
+        return torch.cat([self.head(feats), self.value_head(feats)], dim=-1)
 
     def predict_scores(self, x: torch.Tensor) -> Dict[str, torch.Tensor]:
         logits = self(x)
@@ -81,4 +84,5 @@ class StateVerifier(nn.Module):
             "proof_completion_score": probs[:, 2],
             "risk_score": probs[:, 3],
             "branch_priority": probs[:, 4],
+            "value_estimate": probs[:, 5],
         }

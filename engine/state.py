@@ -16,10 +16,15 @@ class ReasoningState:
     derived_facts: List[str] = field(default_factory=list)
     subgoals: List[str] = field(default_factory=list)
     lemma_refs: List[str] = field(default_factory=list)
+    fact_provenance: List[Dict[str, Any]] = field(default_factory=list)
+    obligations: List[str] = field(default_factory=list)
+    dependency_refs: List[str] = field(default_factory=list)
+    tool_payloads: List[Dict[str, Any]] = field(default_factory=list)
     tool_history: List[Dict[str, Any]] = field(default_factory=list)
     action_history: List[Dict[str, Any]] = field(default_factory=list)
     status: str = "open"
     final_answer: str = ""
+    terminal_confidence: float = 0.0
     metadata: Dict[str, Any] = field(default_factory=dict)
 
     def clone(self) -> "ReasoningState":
@@ -34,10 +39,14 @@ class ReasoningState:
             f"[DERIVED] {' | '.join(self.derived_facts) if self.derived_facts else 'none'}",
             f"[SUBGOALS] {' | '.join(self.subgoals) if self.subgoals else 'none'}",
             f"[LEMMAS] {' | '.join(self.lemma_refs) if self.lemma_refs else 'none'}",
+            f"[PROVENANCE] {self._stringify(self.fact_provenance)}",
+            f"[OBLIGATIONS] {' | '.join(self.obligations) if self.obligations else 'none'}",
+            f"[DEPENDENCIES] {' | '.join(self.dependency_refs) if self.dependency_refs else 'none'}",
             f"[TOOL_HISTORY] {self._stringify(self.tool_history)}",
             f"[ACTION_HISTORY] {self._stringify(self.action_history)}",
             f"[STATUS] {self.status}",
             f"[FINAL_ANSWER] {self.final_answer if self.final_answer else 'none'}",
+            f"[TERMINAL_CONFIDENCE] {self.terminal_confidence:.3f}",
             f"[METADATA] {self.metadata if self.metadata else {}}",
             "[END_STATE]",
         ]

@@ -50,13 +50,14 @@ def verifier_pairwise_loss(
     pos_probs = torch.sigmoid(pos_logits)
     neg_probs = torch.sigmoid(neg_logits)
 
-    pos_quality = pos_logits[:, 0] + pos_logits[:, 1] + pos_logits[:, 2] + 0.5 * pos_logits[:, 4] - pos_logits[:, 3]
-    neg_quality = neg_logits[:, 0] + neg_logits[:, 1] + neg_logits[:, 2] + 0.5 * neg_logits[:, 4] - neg_logits[:, 3]
+    pos_quality = pos_logits[:, 0] + pos_logits[:, 1] + pos_logits[:, 2] + 0.5 * pos_logits[:, 4] + 0.75 * pos_logits[:, 5] - pos_logits[:, 3]
+    neg_quality = neg_logits[:, 0] + neg_logits[:, 1] + neg_logits[:, 2] + 0.5 * neg_logits[:, 4] + 0.75 * neg_logits[:, 5] - neg_logits[:, 3]
 
     rank = ranking_margin_loss(pos_quality, neg_quality, margin=margin)
     rank = rank + 0.5 * ranking_margin_loss(pos_logits[:, 0], neg_logits[:, 0], margin=margin * 0.5)
     rank = rank + 0.5 * ranking_margin_loss(pos_logits[:, 2], neg_logits[:, 2], margin=margin * 0.5)
     rank = rank + 0.5 * ranking_margin_loss(-pos_logits[:, 3], -neg_logits[:, 3], margin=margin * 0.5)
+    rank = rank + 0.5 * ranking_margin_loss(pos_logits[:, 5], neg_logits[:, 5], margin=margin * 0.5)
 
     total = bce + rank_weight * rank
     return total, bce.detach(), rank.detach()

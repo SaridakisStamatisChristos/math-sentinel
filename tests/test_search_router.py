@@ -26,6 +26,7 @@ class DummyVerifier:
             "proof_completion_score": torch.full((batch,), 0.4),
             "risk_score": torch.full((batch,), 0.1),
             "branch_priority": torch.full((batch,), 0.7),
+            "value_estimate": torch.full((batch,), 0.7),
         }
 
 
@@ -95,6 +96,35 @@ class SearchRouterTests(unittest.TestCase):
         self.assertEqual(final_state.status, "solved")
         self.assertEqual(final_state.final_answer, "design -> build -> test")
         self.assertGreaterEqual(len(explored), 2)
+
+    def test_transposition_table_skips_duplicate_states(self) -> None:
+        backend = PlanningOpsReasoningDomain()
+        state = ProofState(
+            task_id="plan_4",
+            domain="project_plan",
+            problem_text="Create a valid project plan.\nTasks:\n- design (duration=1, priority=3, deps=none)\n- build (duration=2, priority=4, deps=design)\n- test (duration=1, priority=2, deps=build)\nReturn the ordered task plan.",
+            goal="Return the ordered task plan",
+            expected_answer="design -> build -> test",
+            metadata={"family": "project_plan"},
+        )
+        repeated = 'ACTION {"type":"APPLY","tool":"project_plan","content":"Create a valid project plan.\\nTasks:\\n- design (duration=1, priority=3, deps=none)\\n- build (duration=2, priority=4, deps=design)\\n- test (duration=1, priority=2, deps=build)\\nReturn the ordered task plan."}'
+
+        with patch("search.beam.propose_actions", return_value=[repeated, repeated]):
+            final_state, explored = run_search(
+                prover=object(),
+                verifier=DummyVerifier(),
+                tokenizer=DummyTokenizer(),
+                executor=backend.create_executor(),
+                initial_state=state,
+                device="cpu",
+                beam_width=2,
+                max_depth=2,
+                proposal_count=2,
+                score_config={"mode": "beam", "decoder_mode": "strict", "transposition_capacity": 8},
+            )
+
+        self.assertEqual(final_state.status, "solved")
+        self.assertLessEqual(len(explored), 2)
 
 
 if __name__ == "__main__":

@@ -11,9 +11,10 @@ from domains import create_reasoning_domain, default_curriculum_config
 from search.router import run_search
 from sentinel.checkpointing import load_checkpoint
 from sentinel.config import load_runtime_config, load_yaml
-from sentinel.model import TinyTransformerLM
+from sentinel.model_backends import create_prover_and_tokenizer
+from sentinel.runtime import configure_runtime
+from sentinel.runtime_events import build_runtime_event_logger
 from sentinel.search_runtime import build_action_bias_fn, build_prompt_builder, load_search_memory
-from sentinel.tokenizer import build_default_tokenizer
 from sentinel.verifier import StateVerifier
 
 
@@ -34,35 +35,42 @@ def main() -> None:
     ap.add_argument("--config", default="config/default.yaml")
     ap.add_argument("--curriculum-config", default="")
     ap.add_argument("--checkpoint", default="")
+    ap.add_argument("--model-provider", default=None)
+    ap.add_argument("--backbone", default=None)
+    ap.add_argument("--local-files-only", action="store_true")
+    ap.add_argument("--deterministic", action="store_true")
+    ap.add_argument("--safe-runtime", action="store_true")
     ap.add_argument("--domain", default="")
     ap.add_argument("--problem", default="")
     ap.add_argument("--checker-plugin", default="")
     args = ap.parse_args()
 
     cfg = load_runtime_config(args.config)
+    if args.model_provider is not None:
+        cfg["model"]["provider"] = args.model_provider
+    if args.backbone is not None:
+        cfg["model"]["backbone"] = args.backbone
+    if args.local_files_only:
+        cfg["model"]["local_files_only"] = True
+    device = configure_runtime(cfg, deterministic_override=(True if args.deterministic else None), safe_override=(True if args.safe_runtime else None))
     curriculum_path = args.curriculum_config or default_curriculum_config(args.backend)
     curriculum_cfg = load_yaml(curriculum_path)
     scheduler = PhaseScheduler.from_dict(curriculum_cfg)
     reasoning_domain = create_reasoning_domain(args.backend, checker_plugin=args.checker_plugin)
+    event_logger = build_runtime_event_logger(cfg)
     lemma_store, hard_cases, tactic_stats = load_search_memory(cfg)
     prompt_builder = build_prompt_builder(
         reasoning_domain,
         lemma_store=lemma_store,
         hard_case_store=hard_cases,
         tactic_stats=tactic_stats,
+        retrieval_mode=str(cfg["memory"].get("retrieval_mode", "hybrid")),
+        embedding_model=str(cfg["memory"].get("embedding_model", "hashing")),
+        event_logger=event_logger,
     )
     action_bias_fn = build_action_bias_fn(tactic_stats)
-    device = "cuda" if torch.cuda.is_available() and cfg["device"] in {"auto", "cuda"} else "cpu"
 
-    tokenizer = build_default_tokenizer()
-    prover = TinyTransformerLM(
-        vocab_size=tokenizer.vocab_size,
-        seq_len=int(cfg["model"]["seq_len"]),
-        d_model=int(cfg["model"]["d_model"]),
-        n_heads=int(cfg["model"]["n_heads"]),
-        n_layers=int(cfg["model"]["n_layers"]),
-        dropout=float(cfg["model"]["dropout"]),
-    ).to(device)
+    prover, tokenizer = create_prover_and_tokenizer(cfg, device, for_training=False)
     verifier = StateVerifier(
         vocab_size=tokenizer.vocab_size,
         **verifier_init_kwargs(cfg),
@@ -99,6 +107,8 @@ def main() -> None:
         prompt_builder=prompt_builder,
         state_signature_fn=reasoning_domain.state_signature,
         action_bias_fn=action_bias_fn,
+        schema_provider=reasoning_domain,
+        event_logger=event_logger,
     )
 
     print("=== INPUT TASK ===")

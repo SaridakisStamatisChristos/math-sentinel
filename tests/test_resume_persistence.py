@@ -11,7 +11,7 @@ from memory.lemma_store import LemmaStore
 from memory.replay import ReplayBuffer
 from memory.tactic_stats import TacticStats
 from proof.lemmas import Lemma
-from sentinel.checkpointing import load_checkpoint, save_checkpoint
+from sentinel.checkpointing import load_checkpoint, load_checkpoint_metadata, save_checkpoint
 
 
 TEST_TMP_ROOT = Path(__file__).resolve().parents[1] / ".tmp-tests"
@@ -100,6 +100,17 @@ class ResumePersistenceTests(unittest.TestCase):
         self.assertEqual(payload["step"], 7)
         self.assertEqual(payload["extra_state"]["phase"], "smoke")
         self.assertEqual(loaded_scaler.state_dict(), scaler.state_dict())
+        self.assertEqual(load_checkpoint_metadata(path)["provider"], "legacy_tiny")
+
+    def test_legacy_checkpoint_metadata_defaults_when_missing(self) -> None:
+        root = self._fresh_dir("resume-legacy-metadata")
+        path = str(root / "legacy.pt")
+        torch.save({"step": 1, "prover": {}, "verifier": {}}, path)
+
+        metadata = load_checkpoint_metadata(path)
+
+        self.assertEqual(metadata["provider"], "legacy_tiny")
+        self.assertEqual(metadata["backbone"], "legacy_tiny")
 
 
 if __name__ == "__main__":

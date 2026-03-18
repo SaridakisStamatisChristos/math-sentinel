@@ -7,6 +7,24 @@ from typing import Any, Dict, Optional
 import torch
 
 
+def _default_runtime_metadata() -> Dict[str, Any]:
+    return {
+        "provider": "legacy_tiny",
+        "backbone": "legacy_tiny",
+        "adapter_mode": "none",
+        "quantization": "none",
+        "dtype": "float32",
+        "special_tokens_version": 1,
+    }
+
+
+def load_checkpoint_metadata(path: str, map_location: str = "cpu") -> Dict[str, Any]:
+    payload = torch.load(path, map_location=map_location)
+    metadata = dict(_default_runtime_metadata())
+    metadata.update(payload.get("model_runtime") or payload.get("extra_state", {}).get("model_runtime", {}))
+    return metadata
+
+
 def save_checkpoint(
     path: str,
     prover: torch.nn.Module,
@@ -19,8 +37,10 @@ def save_checkpoint(
     extra_state: Optional[Dict[str, Any]] = None,
 ) -> None:
     payload = {
+        "checkpoint_version": 2,
         "step": step,
         "config": config,
+        "model_runtime": (extra_state or {}).get("model_runtime", {}),
         "prover": prover.state_dict(),
         "verifier": verifier.state_dict(),
         "prover_optim": prover_optim.state_dict() if prover_optim is not None else None,
@@ -42,7 +62,16 @@ def load_checkpoint(
     map_location: str = "cpu",
 ) -> Dict[str, Any]:
     payload = torch.load(path, map_location=map_location)
-    prover.load_state_dict(payload["prover"])
+    try:
+        prover.load_state_dict(payload["prover"])
+    except RuntimeError as exc:
+        metadata = dict(_default_runtime_metadata())
+        metadata.update(payload.get("model_runtime") or payload.get("extra_state", {}).get("model_runtime", {}))
+        raise RuntimeError(
+            f"checkpoint prover state is incompatible with the current runtime; "
+            f"checkpoint provider={metadata.get('provider')} backbone={metadata.get('backbone')} "
+            f"current_module={type(prover).__name__}: {exc}"
+        ) from exc
     verifier.load_state_dict(payload["verifier"])
     if prover_optim is not None and payload.get("prover_optim") is not None:
         prover_optim.load_state_dict(payload["prover_optim"])

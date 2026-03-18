@@ -7,7 +7,6 @@ import random
 from pathlib import Path
 from typing import Any, Dict, List, Optional, cast
 
-import numpy as np
 import torch
 
 from curriculum.generators import GeneratedTask
@@ -24,25 +23,14 @@ from sentinel.checkpointing import load_checkpoint, save_checkpoint
 from sentinel.config import load_runtime_config, load_yaml
 from sentinel.logging_utils import compact_metrics, log_jsonl, now_ts
 from sentinel.losses import masked_ce, verifier_pairwise_loss
-from sentinel.model import TinyTransformerLM
+from sentinel.model_backends import build_model_runtime_info, create_prover_and_tokenizer
+from sentinel.runtime import configure_runtime
+from sentinel.runtime_events import build_runtime_event_logger
 from sentinel.search_runtime import build_action_bias_fn, build_prompt_builder
-from sentinel.tokenizer import build_default_tokenizer
 from sentinel.verifier import StateVerifier
 
 
 DEFAULT_DOMAIN = create_reasoning_domain("math")
-
-
-def set_seed(seed: int) -> None:
-    random.seed(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-
-
-def device_from_cfg(name: str) -> str:
-    if name == "auto":
-        return "cuda" if torch.cuda.is_available() else "cpu"
-    return name
 
 
 def make_state(task: GeneratedTask) -> ProofState:
@@ -121,7 +109,7 @@ def pick_best_mined_pair(
 
 
 def sample_mined_verifier_pairs(replay: ReplayBuffer, limit: int) -> List[Dict[str, Any]]:
-    pairs = [item for item in replay.sample(max(limit * 4, limit)) if item.get("kind") == "verifier_pair"]
+    pairs = [item for item in replay.sample_weighted(max(limit * 4, limit)) if item.get("kind") == "verifier_pair"]
     if len(pairs) < limit:
         extra = [item for item in replay.items if item.get("kind") == "verifier_pair"]
         if extra:
@@ -129,9 +117,32 @@ def sample_mined_verifier_pairs(replay: ReplayBuffer, limit: int) -> List[Dict[s
     return pairs[:limit]
 
 
+def _normalize_verifier_target(values: Any) -> torch.Tensor:
+    tensor = torch.tensor(values, dtype=torch.float32)
+    if tensor.numel() >= 6:
+        return tensor[:6]
+    if tensor.numel() == 5:
+        valid_step, goal_progress, proof_completion, risk, branch_priority = [float(v) for v in tensor.tolist()]
+        value_estimate = max(
+            0.01,
+            min(
+                0.99,
+                0.45 * goal_progress
+                + 0.30 * proof_completion
+                + 0.20 * branch_priority
+                + 0.10 * valid_step
+                - 0.15 * risk,
+            ),
+        )
+        return torch.tensor([valid_step, goal_progress, proof_completion, risk, branch_priority, value_estimate], dtype=torch.float32)
+    padded = torch.zeros(6, dtype=torch.float32)
+    padded[: tensor.numel()] = tensor
+    return padded
+
+
 @torch.no_grad()
 def mine_online_verifier_pairs(
-    prover: TinyTransformerLM,
+    prover: torch.nn.Module,
     verifier: StateVerifier,
     tokenizer: Any,
     executor: ProofExecutor,
@@ -151,6 +162,7 @@ def mine_online_verifier_pairs(
     prompt_builder: Optional[Any] = None,
     state_signature_fn: Optional[Any] = None,
     action_bias_fn: Optional[Any] = None,
+    event_logger: Optional[Any] = None,
 ) -> List[Dict[str, Any]]:
     mined: List[Dict[str, Any]] = []
     if count <= 0:
@@ -184,6 +196,8 @@ def mine_online_verifier_pairs(
                 prompt_builder=prompt_builder or reasoning_domain.build_search_prompt,
                 state_signature_fn=state_signature_fn or reasoning_domain.state_signature,
                 action_bias_fn=action_bias_fn,
+                schema_provider=reasoning_domain,
+                event_logger=event_logger,
             )
             pair = pick_best_mined_pair(task, explored, final_state, reasoning_domain=reasoning_domain)
             if pair is not None:
@@ -243,7 +257,7 @@ def phase_search_value(cfg: Dict[str, Any], phase_name: str, key: str, fallback:
 
 @torch.no_grad()
 def run_eval(
-    prover: TinyTransformerLM,
+    prover: torch.nn.Module,
     verifier: StateVerifier,
     tokenizer: Any,
     executor: ProofExecutor,
@@ -262,6 +276,7 @@ def run_eval(
     prompt_builder: Optional[Any] = None,
     state_signature_fn: Optional[Any] = None,
     action_bias_fn: Optional[Any] = None,
+    event_logger: Optional[Any] = None,
 ) -> Dict[str, float]:
     phase = scheduler.phase_for_step(step)
     solved = 0
@@ -289,6 +304,8 @@ def run_eval(
             prompt_builder=prompt_builder or reasoning_domain.build_search_prompt,
             state_signature_fn=state_signature_fn or reasoning_domain.state_signature,
             action_bias_fn=action_bias_fn,
+            schema_provider=reasoning_domain,
+            event_logger=event_logger,
         )
         ok = final_state.status == "solved" and reasoning_domain.evaluate_answer(task, final_state.final_answer)
         solved += int(ok)
@@ -312,6 +329,12 @@ def main() -> None:
     ap.add_argument("--micro-batch-size", type=int, default=None)
     ap.add_argument("--lr", type=float, default=None)
     ap.add_argument("--device", default=None)
+    ap.add_argument("--model-provider", default=None)
+    ap.add_argument("--backbone", default=None)
+    ap.add_argument("--adapter-mode", default=None)
+    ap.add_argument("--local-files-only", action="store_true")
+    ap.add_argument("--deterministic", action="store_true")
+    ap.add_argument("--safe-runtime", action="store_true")
     ap.add_argument("--compile", action="store_true")
     ap.add_argument("--resume", default="")
     ap.add_argument("--checker-plugin", default="")
@@ -335,6 +358,14 @@ def main() -> None:
         cfg["training"]["lr"] = args.lr
     if args.device is not None:
         cfg["device"] = args.device
+    if args.model_provider is not None:
+        cfg["model"]["provider"] = args.model_provider
+    if args.backbone is not None:
+        cfg["model"]["backbone"] = args.backbone
+    if args.adapter_mode is not None:
+        cfg["model"]["adapter_mode"] = args.adapter_mode
+    if args.local_files_only:
+        cfg["model"]["local_files_only"] = True
     if args.eval_every is not None:
         cfg["training"]["eval_every"] = args.eval_every
     if args.save_every is not None:
@@ -344,20 +375,12 @@ def main() -> None:
     if args.compile:
         cfg["compile"] = True
 
-    set_seed(int(cfg["seed"]))
-    device = device_from_cfg(cfg["device"])
+    device = configure_runtime(cfg, deterministic_override=(True if args.deterministic else None), safe_override=(True if args.safe_runtime else None))
     Path(cfg["paths"]["checkpoints_dir"]).mkdir(parents=True, exist_ok=True)
     Path(cfg["paths"]["logs_dir"]).mkdir(parents=True, exist_ok=True)
+    event_logger = build_runtime_event_logger(cfg)
 
-    tokenizer = build_default_tokenizer()
-    prover = TinyTransformerLM(
-        vocab_size=tokenizer.vocab_size,
-        seq_len=int(cfg["model"]["seq_len"]),
-        d_model=int(cfg["model"]["d_model"]),
-        n_heads=int(cfg["model"]["n_heads"]),
-        n_layers=int(cfg["model"]["n_layers"]),
-        dropout=float(cfg["model"]["dropout"]),
-    ).to(device)
+    prover, tokenizer = create_prover_and_tokenizer(cfg, device, for_training=True)
     training_prover: torch.nn.Module = prover
     verifier = StateVerifier(
         vocab_size=tokenizer.vocab_size,
@@ -391,6 +414,9 @@ def main() -> None:
         lemma_store=lemma_store,
         hard_case_store=hard_cases,
         tactic_stats=tactic_stats,
+        retrieval_mode=str(cfg["memory"].get("retrieval_mode", "hybrid")),
+        embedding_model=str(cfg["memory"].get("embedding_model", "hashing")),
+        event_logger=event_logger,
     )
     action_bias_fn = build_action_bias_fn(tactic_stats)
 
@@ -448,19 +474,20 @@ def main() -> None:
                 prompt_builder=prompt_builder,
                 state_signature_fn=reasoning_domain.state_signature,
                 action_bias_fn=action_bias_fn,
+                event_logger=event_logger,
             )
             for pair in online_pairs:
                 pos_texts.append(str(pair["pos_text"]))
                 neg_texts.append(str(pair["neg_text"]))
-                pos_targets.append(torch.tensor(pair["pos_target"], dtype=torch.float32))
-                neg_targets.append(torch.tensor(pair["neg_target"], dtype=torch.float32))
+                pos_targets.append(_normalize_verifier_target(pair["pos_target"]))
+                neg_targets.append(_normalize_verifier_target(pair["neg_target"]))
 
         mined_pairs = sample_mined_verifier_pairs(replay, int(cfg["verifier"].get("mined_pairs_per_step", 0)))
         for pair in mined_pairs:
             pos_texts.append(str(pair["pos_text"]))
             neg_texts.append(str(pair["neg_text"]))
-            pos_targets.append(torch.tensor(pair["pos_target"], dtype=torch.float32))
-            neg_targets.append(torch.tensor(pair["neg_target"], dtype=torch.float32))
+            pos_targets.append(_normalize_verifier_target(pair["pos_target"]))
+            neg_targets.append(_normalize_verifier_target(pair["neg_target"]))
 
         training_prover.train()
         verifier.train()
@@ -571,6 +598,7 @@ def main() -> None:
                 prompt_builder=prompt_builder,
                 state_signature_fn=reasoning_domain.state_signature,
                 action_bias_fn=action_bias_fn,
+                event_logger=event_logger,
             )
             metrics.update(eval_metrics)
             print(f"[{now_ts()}] eval | {compact_metrics(eval_metrics)}")
@@ -599,11 +627,14 @@ def main() -> None:
                     prompt_builder=prompt_builder,
                     state_signature_fn=reasoning_domain.state_signature,
                     action_bias_fn=action_bias_fn,
+                    schema_provider=reasoning_domain,
+                    event_logger=event_logger,
                 )
                 ok = final_state.status == "solved" and reasoning_domain.evaluate_answer(task, final_state.final_answer)
                 replay.add({"task": task.prompt, "answer": final_state.final_answer or "<no_answer>", "ok": ok, "domain": task.domain})
                 mined_pair = pick_best_mined_pair(task, explored, final_state, reasoning_domain=reasoning_domain)
                 if mined_pair is not None:
+                    mined_pair["weight"] = 1.5 if ok else 2.0
                     replay.add(mined_pair)
                 if not ok:
                     hard_cases.add(
@@ -634,7 +665,7 @@ def main() -> None:
                 scaler=scaler,
                 step=step,
                 config=cfg,
-                extra_state={"phase": phase.name},
+                extra_state={"phase": phase.name, "model_runtime": build_model_runtime_info(cfg, prover)},
             )
             replay.save_jsonl(cfg["memory"]["replay_path"])
             hard_cases.save(cfg["memory"]["hard_cases_path"])

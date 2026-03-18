@@ -23,6 +23,9 @@ def build_prompt_builder(
     lemma_store: LemmaStore | None = None,
     hard_case_store: HardCaseStore | None = None,
     tactic_stats: TacticStats | None = None,
+    retrieval_mode: str = "hybrid",
+    embedding_model: str = "hashing",
+    event_logger: Callable[..., Any] | None = None,
 ) -> Callable[[Any], str]:
     def _builder(state: Any) -> str:
         return reasoning_domain.build_search_prompt(
@@ -30,6 +33,9 @@ def build_prompt_builder(
             lemma_store=lemma_store,
             hard_case_store=hard_case_store,
             tactic_stats=tactic_stats,
+            retrieval_mode=retrieval_mode,
+            embedding_model=embedding_model,
+            event_logger=event_logger,
         )
 
     return _builder

@@ -13,3 +13,6 @@ decoder_mode: hybrid
 mcts_simulations: 12
 mcts_branching: 4
 mcts_exploration: 1.25
+transposition_capacity: 4096
+value_weight: 0.35
+novelty_weight: 0.08

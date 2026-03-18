@@ -10,9 +10,10 @@ from domains import available_backends, create_reasoning_domain
 from search.router import run_search
 from sentinel.checkpointing import load_checkpoint
 from sentinel.config import load_runtime_config
-from sentinel.model import TinyTransformerLM
+from sentinel.model_backends import create_prover_and_tokenizer
+from sentinel.runtime import configure_runtime
+from sentinel.runtime_events import build_runtime_event_logger
 from sentinel.search_runtime import build_action_bias_fn, build_prompt_builder, load_search_memory
-from sentinel.tokenizer import build_default_tokenizer
 from sentinel.verifier import StateVerifier
 
 
@@ -37,11 +38,12 @@ def resolve_backends(spec: str) -> List[str]:
 def run_backend_benchmark(
     backend_name: str,
     cfg: Dict[str, Any],
-    prover: TinyTransformerLM,
+    prover: torch.nn.Module,
     verifier: StateVerifier,
     tokenizer: Any,
     device: str,
     checker_plugin: str,
+    event_logger: Any,
 ) -> Dict[str, Any]:
     reasoning_domain = create_reasoning_domain(backend_name, checker_plugin=checker_plugin)
     executor = reasoning_domain.create_executor()
@@ -51,6 +53,9 @@ def run_backend_benchmark(
         lemma_store=lemma_store,
         hard_case_store=hard_cases,
         tactic_stats=tactic_stats,
+        retrieval_mode=str(cfg["memory"].get("retrieval_mode", "hybrid")),
+        embedding_model=str(cfg["memory"].get("embedding_model", "hashing")),
+        event_logger=event_logger,
     )
     action_bias_fn = build_action_bias_fn(tactic_stats)
 
@@ -79,6 +84,8 @@ def run_backend_benchmark(
             prompt_builder=prompt_builder,
             state_signature_fn=reasoning_domain.state_signature,
             action_bias_fn=action_bias_fn,
+            schema_provider=reasoning_domain,
+            event_logger=event_logger,
         )
         solved += int(final_state.status == "solved")
         equivalent += int(reasoning_domain.evaluate_answer(task, final_state.final_answer) if final_state.final_answer else False)
@@ -97,21 +104,25 @@ def main() -> None:
     ap = argparse.ArgumentParser(description="Benchmark Math Sentinel V7 backends")
     ap.add_argument("--config", default="config/default.yaml")
     ap.add_argument("--checkpoint", default="")
+    ap.add_argument("--model-provider", default=None)
+    ap.add_argument("--backbone", default=None)
+    ap.add_argument("--local-files-only", action="store_true")
+    ap.add_argument("--deterministic", action="store_true")
+    ap.add_argument("--safe-runtime", action="store_true")
     ap.add_argument("--backends", default="all")
     ap.add_argument("--checker-plugin", default="")
     args = ap.parse_args()
 
     cfg = load_runtime_config(args.config)
-    device = "cuda" if torch.cuda.is_available() and cfg["device"] in {"auto", "cuda"} else "cpu"
-    tokenizer = build_default_tokenizer()
-    prover = TinyTransformerLM(
-        vocab_size=tokenizer.vocab_size,
-        seq_len=int(cfg["model"]["seq_len"]),
-        d_model=int(cfg["model"]["d_model"]),
-        n_heads=int(cfg["model"]["n_heads"]),
-        n_layers=int(cfg["model"]["n_layers"]),
-        dropout=float(cfg["model"]["dropout"]),
-    ).to(device)
+    if args.model_provider is not None:
+        cfg["model"]["provider"] = args.model_provider
+    if args.backbone is not None:
+        cfg["model"]["backbone"] = args.backbone
+    if args.local_files_only:
+        cfg["model"]["local_files_only"] = True
+    device = configure_runtime(cfg, deterministic_override=(True if args.deterministic else None), safe_override=(True if args.safe_runtime else None))
+    event_logger = build_runtime_event_logger(cfg)
+    prover, tokenizer = create_prover_and_tokenizer(cfg, device, for_training=False)
     verifier = StateVerifier(vocab_size=tokenizer.vocab_size, **verifier_init_kwargs(cfg)).to(device)
     if args.checkpoint:
         load_checkpoint(args.checkpoint, prover, verifier, map_location=device)
@@ -119,7 +130,7 @@ def main() -> None:
     verifier.eval()
 
     for backend_name in resolve_backends(args.backends):
-        print(run_backend_benchmark(backend_name, cfg, prover, verifier, tokenizer, device, args.checker_plugin))
+        print(run_backend_benchmark(backend_name, cfg, prover, verifier, tokenizer, device, args.checker_plugin, event_logger))
 
 
 if __name__ == "__main__":

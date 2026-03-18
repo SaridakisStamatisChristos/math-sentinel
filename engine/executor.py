@@ -5,6 +5,7 @@ from typing import Any, Callable, Dict, Optional, Tuple
 from .actions import Action, ActionType
 from .goals import add_subgoal, resolve_subgoal
 from .state import ReasoningState
+from .tool_results import normalize_tool_result
 
 
 AnswerJudge = Callable[[ReasoningState, str], bool]
@@ -46,19 +47,27 @@ class StateExecutor:
                 child.assumptions.append(action.content)
                 info["goal_progress"] = 0.02
             elif action.type in {ActionType.APPLY, ActionType.CALL_PLUGIN, ActionType.CHECK, ActionType.REWRITE, ActionType.SIMPLIFY}:
-                result = self.tool_registry.call(action.tool, action.content, child)
+                result = normalize_tool_result(self.tool_registry.call(action.tool, action.content, child))
                 child.tool_history.append({"tool": action.tool, "input": action.content, "result": result})
                 if result.get("ok"):
-                    rendered = result.get("result", "")
+                    rendered = result.get("result_text", "")
                     if rendered:
                         child.derived_facts.append(str(rendered))
+                        child.fact_provenance.append({"fact": str(rendered), "tool": action.tool, "input": action.content})
+                    payload = result.get("result_payload", {})
+                    if payload:
+                        child.tool_payloads.append({"tool": action.tool, "payload": payload})
+                        child.dependency_refs.extend(str(dep) for dep in payload.get("dependencies", []))
+                        child.obligations.extend(str(item) for item in payload.get("obligations", []))
                     info["goal_progress"] = float(result.get("goal_progress", 0.2))
+                    info["risk"] = float(result.get("risk", 0.0))
                     if result.get("solved"):
                         child.final_answer = str(result.get("answer", rendered))
                         child.status = "solved"
+                        child.terminal_confidence = max(child.terminal_confidence, 1.0 - info["risk"])
                 else:
                     info["valid_step"] = 0.0
-                    info["risk"] = 1.0
+                    info["risk"] = max(1.0, float(result.get("risk", 1.0)))
             elif action.type == ActionType.ANSWER:
                 child.final_answer = action.content.strip()
                 if not child.final_answer:
@@ -71,6 +80,7 @@ class StateExecutor:
                     child.status = "solved"
                     info["goal_progress"] = 1.0
                     info["proof_completion"] = 1.0
+                    child.terminal_confidence = max(child.terminal_confidence, 1.0)
                 else:
                     info["goal_progress"] = 0.0
                     info["proof_completion"] = 0.0
@@ -91,4 +101,5 @@ class StateExecutor:
 
         if child.status == "solved":
             info["proof_completion"] = 1.0
+            child.terminal_confidence = max(child.terminal_confidence, 1.0 - float(info.get("risk", 0.0)))
         return child, info

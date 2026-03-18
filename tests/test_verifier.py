@@ -12,6 +12,6 @@ def test_state_verifier_forward_and_scores_shape() -> None:
     logits = verifier(x)
     scores = verifier.predict_scores(x)
 
-    assert logits.shape == (3, 5)
-    assert all(k in scores for k in ["valid_step_prob", "goal_progress_score", "proof_completion_score", "risk_score", "branch_priority"])
+    assert logits.shape == (3, 6)
+    assert all(k in scores for k in ["valid_step_prob", "goal_progress_score", "proof_completion_score", "risk_score", "branch_priority", "value_estimate"])
     assert scores["valid_step_prob"].shape == (3,)

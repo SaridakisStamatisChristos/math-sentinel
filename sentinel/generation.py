@@ -125,10 +125,44 @@ def _rank_tools(state: Any | None, available_tools: Sequence[str] | None) -> Lis
     return ranked[:8]
 
 
+def _schema_candidates(state: Any | None, schema_provider: Any | None) -> List[str]:
+    if state is None or schema_provider is None:
+        return []
+    required = ("allowed_action_types", "allowed_tools", "candidate_bindings")
+    if not all(hasattr(schema_provider, name) for name in required):
+        return []
+
+    candidates: List[str] = []
+    for raw_action_type in schema_provider.allowed_action_types(state):
+        action_name = str(raw_action_type).upper()
+        try:
+            action_type = ActionType(action_name)
+        except Exception:
+            continue
+        if action_type in {ActionType.APPLY, ActionType.CHECK, ActionType.REWRITE, ActionType.SIMPLIFY, ActionType.CALL_PLUGIN}:
+            for tool in schema_provider.allowed_tools(state, action_type.value):
+                for binding in schema_provider.candidate_bindings(state, action_type.value, tool):
+                    content = str(binding.get("content", "")).strip()
+                    action = Action(type=action_type, tool=str(tool), content=content)
+                    if action.validate():
+                        candidates.append(render_canonical_action(action))
+        else:
+            for binding in schema_provider.candidate_bindings(state, action_type.value, ""):
+                content = str(binding.get("content", "")).strip()
+                action = Action(type=action_type, content=content)
+                if action.validate():
+                    candidates.append(render_canonical_action(action))
+    return _unique_texts(candidates)
+
+
 def build_structured_action_candidates(
     state: Any | None,
     available_tools: Sequence[str] | None = None,
+    schema_provider: Any | None = None,
 ) -> List[str]:
+    schema_first = _schema_candidates(state, schema_provider)
+    if schema_first:
+        return schema_first
     candidates: List[str] = []
     ranked_tools = _rank_tools(state, available_tools)
     for action_type in _candidate_action_types(state):
@@ -206,11 +240,12 @@ def propose_structured_actions(
     available_tools: Sequence[str] | None = None,
     proposal_count: int = 4,
     temperature: float = 0.8,
+    schema_provider: Any | None = None,
 ) -> List[str]:
     if not hasattr(tokenizer, "encode_unpadded") or not hasattr(tokenizer, "tokenize"):
         return []
 
-    candidates = build_structured_action_candidates(state, available_tools=available_tools)
+    candidates = build_structured_action_candidates(state, available_tools=available_tools, schema_provider=schema_provider)
     if not candidates:
         return []
 
@@ -248,11 +283,16 @@ def propose_actions(
     state: Any | None = None,
     available_tools: Sequence[str] | None = None,
     decoder_mode: str = "hybrid",
+    schema_provider: Any | None = None,
 ) -> List[str]:
     proposals: List[str] = []
     mode = (decoder_mode or "hybrid").lower()
-    structured_target = proposal_count if mode == "structured" else max(1, proposal_count // 2)
-    if mode in {"structured", "hybrid"}:
+    if mode == "legacy_text":
+        mode = "free"
+    if mode == "relaxed":
+        mode = "hybrid"
+    structured_target = proposal_count if mode in {"strict", "structured"} else max(1, proposal_count // 2)
+    if mode in {"strict", "structured", "hybrid"}:
         proposals.extend(
             propose_structured_actions(
                 model=model,
@@ -263,6 +303,7 @@ def propose_actions(
                 available_tools=available_tools,
                 proposal_count=structured_target,
                 temperature=temperature,
+                schema_provider=schema_provider,
             )
         )
 

@@ -46,6 +46,10 @@ class ConfigLoadingTests(unittest.TestCase):
         self.assertEqual(cfg["search"]["max_depth"], 6)
         self.assertEqual(cfg["search"]["goal_bonus"], 0.9)
         self.assertEqual(cfg["training"]["max_new_tokens"], 64)
+        self.assertEqual(cfg["model"]["provider"], "legacy_tiny")
+        self.assertEqual(cfg["model"]["backbone"], "Qwen/Qwen2.5-1.5B-Instruct")
+        self.assertFalse(cfg["runtime"]["safe_mode"])
+        self.assertTrue(cfg["runtime"]["structured_logs"])
 
 
 if __name__ == "__main__":

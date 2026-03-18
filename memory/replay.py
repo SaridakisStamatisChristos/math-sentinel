@@ -20,6 +20,25 @@ class ReplayBuffer:
         k = min(k, len(self.items))
         return random.sample(list(self.items), k) if k > 0 else []
 
+    def sample_weighted(self, k: int) -> List[Dict[str, Any]]:
+        items = list(self.items)
+        k = min(k, len(items))
+        if k <= 0:
+            return []
+        weights = [float(item.get("weight", item.get("score", 1.0) or 1.0)) for item in items]
+        total = sum(max(weight, 0.01) for weight in weights)
+        normalized = [max(weight, 0.01) / total for weight in weights]
+        chosen: List[Dict[str, Any]] = []
+        available_items = items[:]
+        available_weights = normalized[:]
+        for _ in range(k):
+            index = random.choices(range(len(available_items)), weights=available_weights, k=1)[0]
+            chosen.append(available_items.pop(index))
+            available_weights.pop(index)
+            if not available_items:
+                break
+        return chosen
+
     def save_jsonl(self, path: str) -> None:
         Path(path).parent.mkdir(parents=True, exist_ok=True)
         with open(path, "w", encoding="utf-8") as f:

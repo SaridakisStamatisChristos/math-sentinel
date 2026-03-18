@@ -18,6 +18,11 @@ V7 combines:
 
 This repo is meant to be a real runnable starting point, not a stub architecture dump.
 
+It now supports two prover runtimes:
+
+- `legacy_tiny`: the original in-repo tiny transformer for fast smoke tests
+- `hf_causal_lm`: a local open-weight Hugging Face runtime, with LoRA as the default fine-tuning path
+
 ## Backends
 
 The repo now has four wired backends:
@@ -129,6 +134,15 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
+The `hf_causal_lm` runtime uses:
+
+- `transformers`
+- `peft`
+- `accelerate`
+- `safetensors`
+
+`bitsandbytes` is optional and not required for Windows-safe inference.
+
 On Windows PowerShell:
 
 ```powershell
@@ -161,6 +175,14 @@ python train_v7.py --backend code_ops --steps 200
 python train_v7.py --backend planning_ops --steps 200
 ```
 
+Open-weight runtime example:
+
+```bash
+python train_v7.py --config config/product_openweights.yaml --model-provider hf_causal_lm --backbone Qwen/Qwen2.5-1.5B-Instruct
+```
+
+Once a backbone is cached locally, add `--local-files-only` to force fully local model loads.
+
 You can also scale the model in `config/default.yaml` once CUDA is confirmed working.
 
 Resume:
@@ -181,6 +203,12 @@ Evaluate the non-math backends:
 python eval_v7.py --backend string_ops --count 64
 python eval_v7.py --backend code_ops --count 64
 python eval_v7.py --backend planning_ops --count 64
+```
+
+Deterministic product-mode evaluation:
+
+```bash
+python eval_v7.py --config config/product_openweights.yaml --safe-runtime --deterministic
 ```
 
 ## Sampling / solving
@@ -205,6 +233,18 @@ python sample_v7.py --backend code_ops --domain function_name --problem "Read th
 python sample_v7.py --backend planning_ops --domain project_plan --problem "Create a valid project plan.\nTasks:\n- design (duration=1, priority=3, deps=none)\n- build (duration=2, priority=4, deps=design)\n- test (duration=1, priority=2, deps=build)\nReturn the ordered task plan."
 ```
 
+Local serving wrapper:
+
+```bash
+python serve_v7.py --backend math --domain arithmetic --problem "Compute: 12 + 30"
+```
+
+Or JSONL stdin/stdout mode:
+
+```bash
+python serve_v7.py --backend planning_ops --stdin-jsonl
+```
+
 ## Plugin usage
 
 Reference plugin:
@@ -226,6 +266,13 @@ The repo currently exposes:
 - structured proposal scoring over canonical `ACTION {...}` candidates
 
 Runtime search parameters are loaded from `config/default.yaml` and then overridden by `config/search.yaml` when that file is present.
+
+The search stack now also includes:
+
+- semantic transposition pruning with bounded capacity
+- value-aware scoring
+- deterministic strict-decoder product mode
+- runtime event logs for retrieval hits, schema failures, tool failures, search budget exhaustion, and verifier/value disagreement
 
 Curriculum phases are backend-specific:
 
@@ -250,6 +297,7 @@ Memory currently includes:
 - hard-case store
 - persistent lemma store
 - tactic success statistics
+- retrieval-mode selection via config (`hybrid`, `lexical`, `embedding`)
 
 This is the first durable memory layer, not the final one.
 
@@ -282,6 +330,8 @@ The strongest next steps after this repo are:
 ## Practical note
 
 This codebase is intended to be a **working V7 skeleton with real logic**. It is not the final mathematical sentinel, but it is the first repo in the line that genuinely reasons over mathematical state rather than only text, while also beginning to separate a reusable reasoning engine from the math-specific backend.
+
+For the open-weight profile, see [config/product_openweights.yaml](/C:/Users/scsar/Desktop/math_sentinel_v7/config/product_openweights.yaml). That profile turns on deterministic safe runtime defaults and strict structured decoding.
 
 ## Quick Commands
 

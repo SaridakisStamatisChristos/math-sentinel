@@ -3,26 +3,22 @@ device: auto
 compile: false
 
 runtime:
-  deterministic: false
-  safe_mode: false
+  deterministic: true
+  safe_mode: true
   structured_logs: true
   event_log_path: logs/runtime_events.jsonl
   fail_on_checkpoint_mismatch: false
 
 model:
-  provider: legacy_tiny
+  provider: hf_causal_lm
   backbone: Qwen/Qwen2.5-1.5B-Instruct
-  adapter_mode: none
+  adapter_mode: lora
   quantization: none
   dtype: float32
   device_map: single
   trust_remote_code: false
   local_files_only: false
   special_tokens_version: 2
-  lora_r: 8
-  lora_alpha: 16
-  lora_dropout: 0.05
-  lora_target_modules: all-linear
   seq_len: 192
   d_model: 64
   n_heads: 4
@@ -44,54 +40,18 @@ verifier:
   loss_weight: 0.55
   mined_pairs_per_step: 4
   online_pairs_per_step: 2
-  online_pairs_by_phase:
-    basics: 2
-    number_theory: 3
-    algebra: 4
-    calculus: 4
-  online_mining_start_step: 1
-  online_beam_width: 6
-  online_beam_width_by_phase:
-    basics: 6
-    number_theory: 7
-    algebra: 8
-    calculus: 8
-  online_max_depth: 5
-  online_max_depth_by_phase:
-    basics: 5
-    number_theory: 6
-    algebra: 7
-    calculus: 7
-  online_proposal_count: 6
-  online_proposal_count_by_phase:
-    basics: 6
-    number_theory: 7
-    algebra: 8
-    calculus: 8
-  online_temperature: 1.0
-  online_temperature_by_phase:
-    basics: 1.0
-    number_theory: 1.05
-    algebra: 1.1
-    calculus: 1.1
-  online_top_k: 32
-  online_top_k_by_phase:
-    basics: 32
-    number_theory: 36
-    algebra: 40
-    calculus: 40
 
 training:
   steps: 1000
-  batch_size: 8
-  micro_batch_size: 4
-  lr: 0.0003
+  batch_size: 4
+  micro_batch_size: 2
+  lr: 0.0002
   weight_decay: 0.01
   grad_clip: 1.0
   eval_every: 100
   save_every: 50
   log_every: 10
-  memory_refresh_samples: 32
+  memory_refresh_samples: 16
   amp: true
   max_new_tokens: 64
 
@@ -100,10 +60,10 @@ search:
   beam_width: 8
   max_depth: 6
   proposal_count: 8
-  temperature: 0.8
-  top_k: 20
+  temperature: 0.0
+  top_k: 1
   tactic_bonus: 0.12
-  decoder_mode: hybrid
+  decoder_mode: strict
   mcts_simulations: 24
   mcts_branching: 8
   mcts_exploration: 1.25
