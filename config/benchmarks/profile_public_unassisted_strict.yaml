@@ -1,0 +1,15 @@
+extends: public_smoke.yaml
+
+benchmark:
+  assistance_mode: unassisted
+  oracle_hints_enabled: false
+  fail_on_integrity_violation: true
+
+search:
+  beam_width: 6
+  max_depth: 8
+  mcts_simulations: 32
+  fallback_bonus: 0.9
+  deterministic_fallback_chain: true
+  fallback_chain_depth: 8
+  guided_fallback_rollout: false

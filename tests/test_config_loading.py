@@ -51,6 +51,7 @@ class ConfigLoadingTests(unittest.TestCase):
         self.assertFalse(cfg["runtime"]["safe_mode"])
         self.assertTrue(cfg["runtime"]["structured_logs"])
         self.assertEqual(cfg["benchmark"]["assistance_mode"], "unassisted")
+        self.assertTrue(cfg["benchmark"]["fail_on_integrity_violation"])
 
     def test_runtime_config_supports_extends_without_search_overlay(self) -> None:
         root = self._fresh_dir("config-extends")
@@ -88,6 +89,7 @@ class ConfigLoadingTests(unittest.TestCase):
         self.assertTrue(cfg["runtime"]["safe_mode"])
         self.assertEqual(cfg["model"]["backbone"], "fake/backbone")
         self.assertEqual(cfg["benchmark"]["assistance_mode"], "unassisted")
+        self.assertTrue(cfg["benchmark"]["fail_on_integrity_violation"])
 
 
 if __name__ == "__main__":

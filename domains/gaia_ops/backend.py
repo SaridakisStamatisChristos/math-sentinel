@@ -5,12 +5,14 @@ import json
 import random
 import shutil
 import uuid
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence
 
 import torch
 
-from benchmarks.public_catalog import gaia_smoke_suite
+from benchmarks.integrity import ensure_benchmark_audit, strip_oracle_metadata
+from benchmarks.public_catalog import gaia_medium_suite, gaia_smoke_suite
 from engine.action_format import render_canonical_actions
 from engine.actions import Action, ActionType
 from engine.executor import StateExecutor
@@ -26,23 +28,44 @@ ROOT = Path(__file__).resolve().parents[2]
 TMP_ROOT = ROOT / ".tmp-benchmarks" / "gaia"
 
 
-def _workspace_for(task: ReasoningTask) -> Path:
+def _workspace_for(task: ReasoningTask, *, deterministic: bool = False) -> Path:
     fixture_ref = str(task.meta.get("fixture_dir", "")).strip()
+    suffix = "det" if deterministic else uuid.uuid4().hex[:8]
     if not fixture_ref:
-        workspace = TMP_ROOT / f"{task.task_id}_{uuid.uuid4().hex[:8]}"
+        workspace = TMP_ROOT / f"{task.task_id}_{suffix}"
+        if deterministic and workspace.exists():
+            shutil.rmtree(workspace, ignore_errors=True)
         workspace.mkdir(parents=True, exist_ok=True)
         prompt = task.prompt.strip() or "No task prompt provided."
         (workspace / "TASK.md").write_text(prompt + "\n", encoding="utf-8")
         return workspace
     fixture_dir = Path(fixture_ref)
-    workspace = TMP_ROOT / f"{task.task_id}_{uuid.uuid4().hex[:8]}"
+    workspace = TMP_ROOT / f"{task.task_id}_{suffix}"
     workspace.parent.mkdir(parents=True, exist_ok=True)
+    if deterministic and workspace.exists():
+        shutil.rmtree(workspace, ignore_errors=True)
     shutil.copytree(fixture_dir, workspace)
     return workspace
 
 
 def _list_workspace_files(workspace: Path) -> List[str]:
     return sorted(str(path.relative_to(workspace)).replace("\\", "/") for path in workspace.rglob("*") if path.is_file())
+
+
+MONTH_LOOKUP = {
+    "january": 1,
+    "february": 2,
+    "march": 3,
+    "april": 4,
+    "may": 5,
+    "june": 6,
+    "july": 7,
+    "august": 8,
+    "september": 9,
+    "october": 10,
+    "november": 11,
+    "december": 12,
+}
 
 
 def _tokenize(text: str) -> List[str]:
@@ -68,8 +91,34 @@ def _infer_target_file(prompt: str, files: Sequence[str]) -> str:
     return best or (files[0] if files else "")
 
 
+def _resolve_target_files(prompt: str, files: Sequence[str], preferred_file: str = "") -> List[str]:
+    mentioned = [name for name in files if name.lower() in prompt.lower()]
+    if mentioned:
+        return mentioned
+    if preferred_file and preferred_file in files:
+        return [preferred_file]
+    prompt_tokens = set(_tokenize(prompt))
+    ranked: List[tuple[int, str]] = []
+    for name in files:
+        score = sum(1 for token in _tokenize(name) if token in prompt_tokens)
+        if score > 0:
+            ranked.append((score, name))
+    if ranked:
+        ranked.sort(key=lambda item: (-item[0], item[1]))
+        return [name for _, name in ranked]
+    if any(name.endswith(".csv") for name in files) and {"csv", "sales", "amount", "total"} & prompt_tokens:
+        return [name for name in files if name.endswith(".csv")]
+    if any(name.endswith(".json") for name in files) and {"json", "task", "release", "schedule"} & prompt_tokens:
+        return [name for name in files if name.endswith(".json")]
+    return [files[0]] if files else []
+
+
 def _infer_question_intent(prompt: str) -> str:
     tokens = set(_tokenize(prompt))
+    if {"highest", "largest", "top", "most"} & tokens:
+        return "grouped_max"
+    if {"earliest", "latest"} & tokens and {"date", "due", "deadline", "task"} & tokens:
+        return "date_rank"
     if {"total", "sum"} & tokens:
         return "aggregate_sum"
     if {"earliest", "latest"} & tokens and {"available", "slot", "meeting"} & tokens:
@@ -111,49 +160,221 @@ def _score_scalar_path(prompt: str, path: str, value: Any) -> float:
     return score
 
 
-def _infer_csv_answer(prompt: str, csv_text: str) -> tuple[str, List[str]]:
-    rows = list(csv.DictReader(csv_text.splitlines()))
+def _parse_float(value: Any) -> float | None:
+    text = str(value).strip()
+    if not text:
+        return None
+    try:
+        return float(text)
+    except Exception:
+        return None
+
+
+def _parse_date(value: Any) -> datetime | None:
+    text = str(value).strip()
+    if not text:
+        return None
+    for fmt in ("%Y-%m-%d", "%Y/%m/%d", "%d-%m-%Y", "%Y-%m", "%Y/%m"):
+        try:
+            parsed = datetime.strptime(text, fmt)
+            if fmt in {"%Y-%m", "%Y/%m"}:
+                return parsed.replace(day=1)
+            return parsed
+        except Exception:
+            continue
+    try:
+        return datetime.fromisoformat(text)
+    except Exception:
+        return None
+
+
+def _extract_prompt_month_year(prompt: str) -> tuple[int | None, int | None]:
+    tokens = _tokenize(prompt)
+    month = next((MONTH_LOOKUP[token] for token in tokens if token in MONTH_LOOKUP), None)
+    year = next((int(token) for token in tokens if token.isdigit() and len(token) == 4), None)
+    return month, year
+
+
+def _csv_rows_with_context(csv_files: Sequence[tuple[str, str]]) -> tuple[List[Dict[str, str]], List[str]]:
+    merged_rows: List[Dict[str, str]] = []
+    headers: List[str] = []
+    for filename, text in csv_files:
+        rows = list(csv.DictReader(text.splitlines()))
+        if rows and not headers:
+            headers = list(rows[0].keys())
+        for row in rows:
+            contextual = {str(key): str(value) for key, value in row.items()}
+            contextual["__file__"] = filename
+            merged_rows.append(contextual)
+    return merged_rows, headers
+
+
+def _pick_numeric_header(prompt_tokens: set[str], headers: Sequence[str], rows: Sequence[Dict[str, str]]) -> str:
+    numeric_headers: List[str] = []
+    for header in headers:
+        values = [_parse_float(row.get(header, "")) for row in rows]
+        if values and all(value is not None for value in values):
+            numeric_headers.append(header)
+    if not numeric_headers:
+        return headers[-1] if headers else ""
+    for header in numeric_headers:
+        lowered = header.lower()
+        if any(token in lowered for token in prompt_tokens):
+            return header
+    for header in numeric_headers:
+        lowered = header.lower()
+        if any(token in lowered for token in ["amount", "total", "sales", "revenue", "count"]):
+            return header
+    return numeric_headers[0]
+
+
+def _pick_group_header(prompt_tokens: set[str], headers: Sequence[str], numeric_header: str, date_headers: Sequence[str]) -> str:
+    categorical = [header for header in headers if header not in {numeric_header, *date_headers}]
+    for header in categorical:
+        lowered = header.lower()
+        if any(token in lowered for token in prompt_tokens):
+            return header
+    for preferred in ["city", "region", "project", "owner", "name", "title"]:
+        for header in categorical:
+            if preferred in header.lower():
+                return header
+    return categorical[0] if categorical else numeric_header
+
+
+def _pick_answer_header(prompt_tokens: set[str], headers: Sequence[str], date_headers: Sequence[str], numeric_header: str = "") -> str:
+    for preferred in ["title", "task", "name", "version", "city", "project"]:
+        for header in headers:
+            if preferred in header.lower():
+                return header
+    for header in headers:
+        if header not in date_headers and header != numeric_header:
+            return header
+    return headers[0] if headers else ""
+
+
+def _infer_csv_answer(prompt: str, csv_files: Sequence[tuple[str, str]]) -> tuple[str, List[str]]:
+    rows, headers = _csv_rows_with_context(csv_files)
     if not rows:
         return "", []
-    headers = list(rows[0].keys())
     prompt_tokens = set(_tokenize(prompt))
     value_map: Dict[str, List[str]] = {}
+    date_headers = [header for header in headers if any(_parse_date(row.get(header, "")) is not None for row in rows)]
     for header in headers:
         for row in rows:
             value = str(row.get(header, "")).strip()
             if value:
                 value_map.setdefault(value.lower(), []).append(header)
-    filter_value = ""
-    filter_col = ""
+    filters: List[tuple[str, str]] = []
     for value, columns in value_map.items():
         if value in prompt_tokens:
-            filter_value = value
-            filter_col = columns[0]
-            break
-    numeric_headers = []
-    for header in headers:
-        try:
-            [float(str(row.get(header, "0"))) for row in rows]
-            numeric_headers.append(header)
-        except Exception:
-            continue
-    target_header = numeric_headers[0] if numeric_headers else headers[-1]
-    for header in numeric_headers:
-        if any(token in header.lower() for token in prompt_tokens):
-            target_header = header
-            break
+            filters.append((columns[0], value))
     filtered_rows = rows
-    if filter_col and filter_value:
-        filtered_rows = [row for row in rows if str(row.get(filter_col, "")).strip().lower() == filter_value]
-    total = sum(float(str(row.get(target_header, "0") or 0)) for row in filtered_rows)
+    for filter_col, filter_value in filters:
+        filtered_rows = [row for row in filtered_rows if str(row.get(filter_col, "")).strip().lower() == filter_value]
+    month, year = _extract_prompt_month_year(prompt)
+    if month is not None or year is not None:
+        narrowed: List[Dict[str, str]] = []
+        for row in filtered_rows:
+            for header in date_headers:
+                parsed = _parse_date(row.get(header, ""))
+                if parsed is None:
+                    continue
+                if month is not None and parsed.month != month:
+                    continue
+                if year is not None and parsed.year != year:
+                    continue
+                narrowed.append(row)
+                break
+        if narrowed:
+            filtered_rows = narrowed
+
+    target_header = _pick_numeric_header(prompt_tokens, headers, filtered_rows or rows)
+    evidence = [f"rows considered: {len(filtered_rows)} across {len(csv_files)} file(s)"]
+    if filters:
+        evidence.insert(0, ", ".join(f"{column}={value}" for column, value in filters))
+
+    if {"highest", "largest", "top", "most"} & prompt_tokens:
+        group_header = _pick_group_header(prompt_tokens, headers, target_header, date_headers)
+        totals: Dict[str, float] = {}
+        for row in filtered_rows:
+            key = str(row.get(group_header, "")).strip()
+            value = _parse_float(row.get(target_header, "")) or 0.0
+            if key:
+                totals[key] = totals.get(key, 0.0) + value
+        if not totals:
+            return "", evidence
+        best_key, best_value = max(totals.items(), key=lambda item: (item[1], item[0]))
+        evidence.append(f"grouped by {group_header}, max {target_header} -> {best_key} ({best_value:g})")
+        return best_key, evidence
+
+    if {"earliest", "latest"} & prompt_tokens and date_headers:
+        date_header = next((header for header in date_headers if any(token in header.lower() for token in ["date", "due", "deadline"])), date_headers[0])
+        answer_header = _pick_answer_header(prompt_tokens, headers, date_headers, target_header)
+        dated_rows = [(row, _parse_date(row.get(date_header, ""))) for row in filtered_rows]
+        dated_rows = [(row, parsed) for row, parsed in dated_rows if parsed is not None]
+        if not dated_rows:
+            return "", evidence
+        chooser = min if "earliest" in prompt_tokens else max
+        best_row, best_date = chooser(dated_rows, key=lambda item: item[1])
+        candidate = str(best_row.get(answer_header, "")).strip()
+        evidence.append(f"{answer_header} selected from {date_header}={best_date.date().isoformat()}")
+        return candidate, evidence
+
+    total = sum((_parse_float(row.get(target_header, "")) or 0.0) for row in filtered_rows)
     rendered = str(int(total)) if float(total).is_integer() else str(total)
-    evidence = [f"sum({target_header}) over {len(filtered_rows)} matching rows -> {rendered}"]
-    if filter_col and filter_value:
-        evidence.insert(0, f"filtered {filter_col}={filter_value}")
+    evidence.append(f"sum({target_header}) -> {rendered}")
     return rendered, evidence
 
 
+def _collect_json_records(payload: Any) -> List[Dict[str, Any]]:
+    records: List[Dict[str, Any]] = []
+    if isinstance(payload, dict):
+        scalar_fields = {str(key): value for key, value in payload.items() if not isinstance(value, (dict, list))}
+        if scalar_fields:
+            records.append(scalar_fields)
+        for value in payload.values():
+            records.extend(_collect_json_records(value))
+    elif isinstance(payload, list):
+        for value in payload:
+            records.extend(_collect_json_records(value))
+    return records
+
+
+def _infer_json_record_answer(prompt: str, payload: Any) -> tuple[str, List[str]]:
+    records = _collect_json_records(payload)
+    if not records:
+        return "", []
+    prompt_tokens = set(_tokenize(prompt))
+    filtered_records = records
+    for token in sorted(prompt_tokens):
+        narrowed = [
+            record for record in filtered_records
+            if any(str(value).strip().lower() == token for value in record.values())
+        ]
+        if narrowed:
+            filtered_records = narrowed
+    if {"earliest", "latest"} & prompt_tokens:
+        dated_candidates: List[tuple[Dict[str, Any], str, datetime]] = []
+        for record in filtered_records:
+            for key, value in record.items():
+                parsed = _parse_date(value)
+                if parsed is None:
+                    continue
+                if not any(marker in key.lower() for marker in ["date", "due", "deadline", "release"]):
+                    continue
+                dated_candidates.append((record, str(key), parsed))
+        if dated_candidates:
+            chooser = min if "earliest" in prompt_tokens else max
+            best_record, best_key, best_date = chooser(dated_candidates, key=lambda item: item[2])
+            answer_key = next((key for key in best_record if any(marker in key.lower() for marker in ["title", "task", "name", "version"])), next(iter(best_record.keys())))
+            return str(best_record.get(answer_key, "")), [f"{answer_key} chosen from {best_key}={best_date.date().isoformat()}"]
+    return "", []
+
+
 def _infer_json_answer(prompt: str, payload: Any) -> tuple[str, List[str]]:
+    record_answer, record_evidence = _infer_json_record_answer(prompt, payload)
+    if record_answer:
+        return record_answer, record_evidence
     prompt_tokens = set(_tokenize(prompt))
     if isinstance(payload, dict):
         lower_keys = {str(key).lower(): key for key in payload.keys()}
@@ -194,11 +415,13 @@ def list_files(arg: str, state: Any = None) -> Dict[str, Any]:
 
 
 def plan_question(arg: str, state: Any = None) -> Dict[str, Any]:
-    prompt = str(getattr(state, "problem_text", "")).strip()
+    prompt = str(getattr(state, "problem_text", "")).split("\nWorkspace files:\n", 1)[0].strip()
     files = list(state.metadata.get("workspace_files", []))
     target_file = _infer_target_file(prompt, files)
+    candidate_files = _resolve_target_files(prompt, files, target_file)
     intent = _infer_question_intent(prompt)
-    plan = f"inspect {target_file or 'the most relevant file'} then solve intent={intent}"
+    target_label = ", ".join(candidate_files[:3]) if candidate_files else (target_file or "the most relevant file")
+    plan = f"inspect {target_label} then solve intent={intent}"
     if str(state.metadata.get("benchmark_assistance_mode", "unassisted")) == "assisted" and bool(state.metadata.get("oracle_hints_enabled", False)):
         oracle_file = str(state.metadata.get("oracle_evidence_file", "")).strip()
         if oracle_file:
@@ -212,7 +435,7 @@ def plan_question(arg: str, state: Any = None) -> Dict[str, Any]:
             "evidence": [plan],
             "suggested_tools": ["list_files", "inspect_file", "solve_question"],
             "obligations": ["inspect evidence file", "solve from evidence"],
-            "state_metadata": {"target_file": target_file, "question_intent": intent},
+            "state_metadata": {"target_file": target_file, "candidate_files": candidate_files, "question_intent": intent},
         },
     }
 
@@ -256,25 +479,35 @@ def inspect_file(arg: str, state: Any = None) -> Dict[str, Any]:
 
 def solve_question(arg: str, state: Any = None) -> Dict[str, Any]:
     workspace = Path(str(state.metadata["workspace_dir"]))
-    prompt = arg.strip() or str(getattr(state, "problem_text", ""))
+    prompt = (arg.strip() or str(getattr(state, "problem_text", ""))).split("\nWorkspace files:\n", 1)[0].strip()
     files = list(state.metadata.get("workspace_files", []))
-    target_file = str(state.metadata.get("target_file", "")) or _infer_target_file(prompt, files)
+    target_file = str(state.metadata.get("target_file", ""))
+    candidate_files = list(state.metadata.get("candidate_files", [])) or _resolve_target_files(prompt, files, target_file)
     if str(state.metadata.get("benchmark_assistance_mode", "unassisted")) == "assisted" and bool(state.metadata.get("oracle_hints_enabled", False)):
         target_file = str(state.metadata.get("oracle_evidence_file", "") or target_file)
-    if not target_file:
+        candidate_files = [target_file] if target_file else candidate_files
+    if not candidate_files and target_file:
+        candidate_files = [target_file]
+    if not candidate_files:
         return {"ok": False, "result": "no target file inferred", "risk": 0.7}
-    path = workspace / target_file
-    if not path.exists():
-        return {"ok": False, "result": f"file not found: {target_file}", "risk": 0.7}
-    text = path.read_text(encoding="utf-8")
-    suffix = path.suffix.lower()
-    if suffix == ".csv":
-        candidate, evidence = _infer_csv_answer(prompt, text)
-    elif suffix == ".json":
-        candidate, evidence = _infer_json_answer(prompt, json.loads(text))
+    existing_paths = [(name, workspace / name) for name in candidate_files if (workspace / name).exists()]
+    if not existing_paths:
+        return {"ok": False, "result": f"file not found: {candidate_files[0]}", "risk": 0.7}
+    suffixes = {path.suffix.lower() for _, path in existing_paths}
+    candidate = ""
+    evidence: List[str] = []
+    resolved_target = existing_paths[0][0]
+    if suffixes == {".csv"}:
+        csv_files = [(name, path.read_text(encoding="utf-8")) for name, path in existing_paths]
+        candidate, evidence = _infer_csv_answer(prompt, csv_files)
+    elif suffixes == {".json"} and len(existing_paths) == 1:
+        resolved_target, path = existing_paths[0]
+        candidate, evidence = _infer_json_answer(prompt, json.loads(path.read_text(encoding="utf-8")))
     else:
+        resolved_target, path = existing_paths[0]
+        text = path.read_text(encoding="utf-8")
         candidate = text.strip().splitlines()[0] if text.strip() else ""
-        evidence = [f"used first non-empty line from {target_file}"]
+        evidence = [f"used first non-empty line from {resolved_target}"]
     if not candidate:
         return {"ok": False, "result": "could not infer answer from evidence", "risk": 0.75}
     return {
@@ -285,7 +518,7 @@ def solve_question(arg: str, state: Any = None) -> Dict[str, Any]:
             "candidate_answer": candidate,
             "evidence": evidence,
             "resolved_obligations": ["solve from evidence"],
-            "state_metadata": {"candidate_answer": candidate, "target_file": target_file},
+            "state_metadata": {"candidate_answer": candidate, "target_file": resolved_target, "candidate_files": [name for name, _ in existing_paths]},
         },
     }
 
@@ -314,8 +547,10 @@ class GaiaOpsReasoningDomain:
     default_curriculum_config = "config/gaia_ops_curriculum.yaml"
 
     def __init__(self, runtime_config: Dict[str, Any] | None = None) -> None:
-        self._cases = list(gaia_smoke_suite().cases)
+        self._cases = list(gaia_smoke_suite().cases) + list(gaia_medium_suite().cases)
+        runtime_cfg = dict((runtime_config or {}).get("runtime", {}))
         benchmark_cfg = dict((runtime_config or {}).get("benchmark", {}))
+        self.deterministic_runtime = bool(runtime_cfg.get("deterministic", False))
         self.assistance_mode = str(benchmark_cfg.get("assistance_mode", "unassisted")).lower()
         self.oracle_hints_enabled = bool(benchmark_cfg.get("oracle_hints_enabled", False))
 
@@ -346,18 +581,22 @@ class GaiaOpsReasoningDomain:
         return random.choice(eligible)
 
     def make_state(self, task: ReasoningTask) -> ReasoningState:
-        workspace = _workspace_for(task)
+        workspace = _workspace_for(task, deterministic=self.deterministic_runtime)
         files = _list_workspace_files(workspace)
-        metadata = dict(task.meta)
+        raw_metadata = dict(task.meta)
+        metadata = dict(raw_metadata if self.assistance_mode == "assisted" and self.oracle_hints_enabled else strip_oracle_metadata(raw_metadata))
         metadata["workspace_dir"] = str(workspace)
         metadata["workspace_files"] = files
         metadata["benchmark_assistance_mode"] = self.assistance_mode
         metadata["oracle_hints_enabled"] = self.oracle_hints_enabled
         metadata["target_file"] = _infer_target_file(task.prompt, files)
+        metadata["candidate_files"] = _resolve_target_files(task.prompt, files, str(metadata.get("target_file", "")))
+        ensure_benchmark_audit(metadata, assistance_mode=self.assistance_mode)
         if self.assistance_mode == "assisted" and self.oracle_hints_enabled:
-            oracle_file = str(metadata.get("oracle_evidence_file", "")).strip()
+            oracle_file = str(raw_metadata.get("oracle_evidence_file", "")).strip()
             if oracle_file:
                 metadata["target_file"] = oracle_file
+                metadata["candidate_files"] = [oracle_file]
         problem_text = task.prompt + "\nWorkspace files:\n" + ("\n".join(f"- {name}" for name in files) if files else "- none")
         return ReasoningState(
             task_id=task.task_id,
@@ -482,7 +721,10 @@ class GaiaOpsReasoningDomain:
         if tool == "list_files":
             return [{"content": ""}]
         if tool == "inspect_file":
-            return [{"content": str(state.metadata.get("target_file", ""))}]
+            candidates = [str(state.metadata.get("target_file", ""))]
+            candidates.extend(str(name) for name in state.metadata.get("candidate_files", []))
+            deduped = [name for idx, name in enumerate(candidates) if name and name not in candidates[:idx]]
+            return [{"content": name} for name in deduped[:3]]
         if tool == "solve_question":
             return [{"content": state.problem_text}]
         return []

@@ -1,4 +1,20 @@
 profiles:
+  public_unassisted_strict:
+    description: Headline public-claim profile with strict unassisted benchmark rules and no guided fallback rollout.
+    config: profile_public_unassisted_strict.yaml
+    suites: [public_smoke, public_medium]
+    tags: [public, strict, unassisted, claim]
+    metadata:
+      scale: tiny
+      purpose: public_claim
+  public_search_assisted:
+    description: Development-only public benchmark profile that keeps guided fallback rollout enabled for search-assisted baselines.
+    config: profile_public_search_assisted.yaml
+    suites: [public_smoke, public_medium]
+    tags: [public, dev, search_assisted]
+    metadata:
+      scale: tiny
+      purpose: public_dev_baseline
   smoke_tiny:
     description: Deterministic legacy-tiny smoke profile for CI, fast regressions, and ablation sanity checks.
     config: profile_smoke_tiny.yaml

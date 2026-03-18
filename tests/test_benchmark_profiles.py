@@ -12,6 +12,7 @@ class BenchmarkProfileTests(unittest.TestCase):
         profiles = set(available_benchmark_profiles())
 
         self.assertIn("smoke_tiny", profiles)
+        self.assertIn("public_unassisted_strict", profiles)
         self.assertIn("qwen_coder_flagship_32b", profiles)
 
     def test_profile_config_extends_public_smoke_snapshot(self) -> None:
@@ -33,6 +34,16 @@ class BenchmarkProfileTests(unittest.TestCase):
         self.assertEqual(cfg["search"]["beam_width"], 4)
         self.assertTrue(cfg["runtime"]["safe_mode"])
         self.assertEqual(cfg["benchmark"]["assistance_mode"], "unassisted")
+        self.assertFalse(cfg["search"]["guided_fallback_rollout"])
+
+    def test_strict_and_search_assisted_public_profiles_diverge_on_guided_rollout(self) -> None:
+        strict_cfg = load_runtime_config("config/benchmarks/profile_public_unassisted_strict.yaml", search_config_path="")
+        assisted_cfg = load_runtime_config("config/benchmarks/profile_public_search_assisted.yaml", search_config_path="")
+
+        self.assertEqual(strict_cfg["benchmark"]["assistance_mode"], "unassisted")
+        self.assertFalse(strict_cfg["search"]["guided_fallback_rollout"])
+        self.assertTrue(strict_cfg["benchmark"]["fail_on_integrity_violation"])
+        self.assertTrue(assisted_cfg["search"]["guided_fallback_rollout"])
 
     def test_ablation_catalog_lists_expected_entries(self) -> None:
         ablations = set(available_benchmark_ablations())

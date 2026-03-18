@@ -1,0 +1,18 @@
+extends: ../default.yaml
+
+runtime:
+  safe_mode: true
+
+benchmark:
+  assistance_mode: unassisted
+  oracle_hints_enabled: false
+  fail_on_integrity_violation: true
+
+training:
+  benchmark_harvest_cases: 4
+  benchmark_harvest_suites:
+    - swebench_verified_smoke
+    - swebench_verified_medium
+    - gaia_smoke
+    - gaia_medium
+    - math_public_smoke

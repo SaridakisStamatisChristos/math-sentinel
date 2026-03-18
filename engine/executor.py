@@ -55,21 +55,22 @@ class StateExecutor:
             elif action.type in {ActionType.APPLY, ActionType.CALL_PLUGIN, ActionType.CHECK, ActionType.REWRITE, ActionType.SIMPLIFY}:
                 result = normalize_tool_result(self.tool_registry.call(action.tool, action.content, child))
                 child.tool_history.append({"tool": action.tool, "input": action.content, "result": result})
+                payload = result.get("result_payload", {})
+                if payload:
+                    child.tool_payloads.append({"tool": action.tool, "payload": payload, "ok": bool(result.get("ok"))})
+                    state_metadata = payload.get("state_metadata", {})
+                    if isinstance(state_metadata, dict):
+                        child.metadata.update({str(key): value for key, value in state_metadata.items()})
                 if result.get("ok"):
                     rendered = result.get("result_text", "")
                     if rendered:
                         child.derived_facts.append(str(rendered))
                         child.fact_provenance.append({"fact": str(rendered), "tool": action.tool, "input": action.content})
-                    payload = result.get("result_payload", {})
                     if payload:
-                        child.tool_payloads.append({"tool": action.tool, "payload": payload})
                         self._extend_unique(child.dependency_refs, (str(dep) for dep in payload.get("dependencies", [])))
                         self._extend_unique(child.obligations, (str(item) for item in payload.get("obligations", [])))
                         self._extend_unique(child.evidence_refs, (str(item) for item in payload.get("evidence", [])))
                         self._resolve_obligations(child, (str(item) for item in payload.get("resolved_obligations", [])))
-                        state_metadata = payload.get("state_metadata", {})
-                        if isinstance(state_metadata, dict):
-                            child.metadata.update({str(key): value for key, value in state_metadata.items()})
                         suggested_tools = [str(item) for item in payload.get("suggested_tools", []) if str(item).strip()]
                         if suggested_tools:
                             child.metadata["suggested_tools"] = suggested_tools

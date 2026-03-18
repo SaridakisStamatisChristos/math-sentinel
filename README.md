@@ -135,6 +135,7 @@ It can also execute typed proof actions such as:
 math_sentinel_v7/
 ├── README.md
 ├── requirements.txt
+├── requirements-lock.txt
 ├── train_v7.py
 ├── eval_v7.py
 ├── sample_v7.py
@@ -160,6 +161,12 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
+For pinned benchmark and CI reproduction, use:
+
+```bash
+pip install -r requirements-lock.txt
+```
+
 The `hf_causal_lm` runtime uses:
 
 - `transformers`
@@ -175,6 +182,12 @@ On Windows PowerShell:
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
+```
+
+For pinned benchmark and CI reproduction on Windows:
+
+```powershell
+pip install -r requirements-lock.txt
 ```
 
 If `python` is not available in your shell after activation, use the interpreter path documented in [runbook.md](/C:/Users/scsar/Desktop/math_sentinel_v7/runbook.md).
@@ -300,13 +313,17 @@ The search stack now also includes:
 - semantic transposition pruning with bounded capacity
 - value-aware scoring
 - deterministic strict-decoder product mode
-- guided fallback rollouts for multi-step benchmark agents
+- explicit fallback-action scoring inside search
+- deterministic fallback-chain mode for strict benchmark profiles
 - runtime event logs for retrieval hits, schema failures, tool failures, search budget exhaustion, and verifier/value disagreement
 
-For the benchmark configs, the default public baseline is now unassisted:
+For the benchmark configs, the headline public-claim baseline is now strict and unassisted:
 
 - `benchmark.assistance_mode: unassisted`
+- `benchmark.oracle_hints_enabled: false`
+- `search.guided_fallback_rollout: false`
 - oracle-style metadata remains available for gold traces and optional analysis, but the default runtime path does not rely on it
+- benchmark outputs now record whether guided rollout fired, whether fallback repairs fired, whether a deterministic fallback chain fired, and whether any oracle fields were touched
 
 Curriculum phases are backend-specific:
 
@@ -328,10 +345,18 @@ python benchmark_v7.py --backends all
 Run the public-style smoke suites:
 
 ```bash
-python benchmark_v7.py --suite public_smoke --config config/benchmarks/public_smoke.yaml --deterministic --safe-runtime
+python benchmark_v7.py --suite public_smoke --config config/benchmarks/public_smoke.yaml --profile public_unassisted_strict --deterministic --safe-runtime
 python benchmark_v7.py --suite swebench_verified_smoke --config config/benchmarks/public_smoke.yaml --deterministic --safe-runtime
 python benchmark_v7.py --suite gaia_smoke --config config/benchmarks/public_smoke.yaml --deterministic --safe-runtime
 python benchmark_v7.py --suite math_public_smoke --config config/benchmarks/public_smoke.yaml --deterministic --safe-runtime
+```
+
+Run the harder public-style medium suites:
+
+```bash
+python benchmark_v7.py --suite public_medium --config config/benchmarks/public_smoke.yaml --profile public_unassisted_strict --deterministic --safe-runtime
+python benchmark_v7.py --suite swebench_verified_medium --config config/benchmarks/public_smoke.yaml --deterministic --safe-runtime
+python benchmark_v7.py --suite gaia_medium --config config/benchmarks/public_smoke.yaml --deterministic --safe-runtime
 ```
 
 List the named benchmark profiles and ablations:
@@ -355,6 +380,12 @@ python benchmark_v7.py \
   --safe-runtime
 ```
 
+Important benchmark profiles now include:
+
+- `public_unassisted_strict`: the default claim profile
+- `public_search_assisted`: a development baseline with guided rollout enabled
+- `smoke_tiny`: a fast regression profile
+
 There are also focused runner entrypoints:
 
 ```bash
@@ -373,6 +404,8 @@ Campaign runs additionally write:
 - campaign markdown report
 - append-only entries in `results/benchmark_ledger.jsonl`
 
+The strict benchmark smoke campaign now has a pinned CI workflow in `.github/workflows/benchmark-strict.yml`.
+
 ## Memory modes
 
 Memory currently includes:
@@ -382,6 +415,7 @@ Memory currently includes:
 - persistent lemma store
 - tactic success statistics
 - retrieval-mode selection via config (`hybrid`, `lexical`, `embedding`)
+- benchmark-failure harvesting into replay and hard-case memory during training when the benchmark harvest configs are enabled
 
 This is the first durable memory layer, not the final one.
 
@@ -399,6 +433,7 @@ It still has important limits:
 - decoding now uses a structured tokenizer plus scored canonical action candidates, but it is not yet a full parser-level constrained decoder
 - MCTS is real now, but still lightweight and value-guided rather than AlphaZero-scale
 - public benchmark adapters are real, but the fixture suites are still local smoke proxies rather than full official benchmark runs
+- the strict claim profile is now honest and auditable, but it still leans on deterministic fallback-chain behavior in the tiny-model regime
 
 ## Best next upgrades
 
@@ -422,6 +457,9 @@ For benchmark profile snapshots and the ablation matrix, see:
 
 - [config/benchmarks/profiles.yaml](/C:/Users/scsar/Desktop/math_sentinel_v7/config/benchmarks/profiles.yaml)
 - [config/benchmarks/ablation_matrix.yaml](/C:/Users/scsar/Desktop/math_sentinel_v7/config/benchmarks/ablation_matrix.yaml)
+- [config/benchmarks/profile_public_unassisted_strict.yaml](/C:/Users/scsar/Desktop/math_sentinel_v7/config/benchmarks/profile_public_unassisted_strict.yaml)
+- [config/benchmarks/profile_public_search_assisted.yaml](/C:/Users/scsar/Desktop/math_sentinel_v7/config/benchmarks/profile_public_search_assisted.yaml)
+- [config/benchmarks/train_public_benchmark_harvest.yaml](/C:/Users/scsar/Desktop/math_sentinel_v7/config/benchmarks/train_public_benchmark_harvest.yaml)
 
 ## Quick Commands
 

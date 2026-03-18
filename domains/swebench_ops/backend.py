@@ -7,7 +7,8 @@ from typing import Any, Dict, List, Optional
 
 import torch
 
-from benchmarks.public_catalog import swebench_verified_smoke_suite
+from benchmarks.integrity import ensure_benchmark_audit, strip_oracle_metadata
+from benchmarks.public_catalog import swebench_verified_medium_suite, swebench_verified_smoke_suite
 from domains.repo_agent_utils import (
     apply_patch_tool as repo_apply_patch_tool,
     create_workspace,
@@ -35,8 +36,8 @@ ROOT = Path(__file__).resolve().parents[2]
 TMP_ROOT = ROOT / ".tmp-benchmarks" / "swebench"
 
 
-def _workspace_for(task: ReasoningTask) -> Path:
-    return create_workspace(task, TMP_ROOT)
+def _workspace_for(task: ReasoningTask, *, deterministic: bool = False) -> Path:
+    return create_workspace(task, TMP_ROOT, deterministic=deterministic)
 
 
 def _list_workspace_files(workspace: Path) -> List[str]:
@@ -165,8 +166,10 @@ class SwebenchOpsReasoningDomain:
     default_curriculum_config = "config/swebench_ops_curriculum.yaml"
 
     def __init__(self, runtime_config: Dict[str, Any] | None = None) -> None:
-        self._cases = list(swebench_verified_smoke_suite().cases)
+        self._cases = list(swebench_verified_smoke_suite().cases) + list(swebench_verified_medium_suite().cases)
+        runtime_cfg = dict((runtime_config or {}).get("runtime", {}))
         benchmark_cfg = dict((runtime_config or {}).get("benchmark", {}))
+        self.deterministic_runtime = bool(runtime_cfg.get("deterministic", False))
         self.assistance_mode = str(benchmark_cfg.get("assistance_mode", "unassisted")).lower()
         self.oracle_hints_enabled = bool(benchmark_cfg.get("oracle_hints_enabled", False))
 
@@ -196,15 +199,18 @@ class SwebenchOpsReasoningDomain:
         return random.choice(self._cases)
 
     def make_state(self, task: ReasoningTask) -> ReasoningState:
-        workspace = _workspace_for(task)
+        workspace = _workspace_for(task, deterministic=self.deterministic_runtime)
         files = _list_workspace_files(workspace)
-        metadata = dict(task.meta)
+        raw_metadata = dict(task.meta)
+        metadata = dict(raw_metadata if self.assistance_mode == "assisted" and self.oracle_hints_enabled else strip_oracle_metadata(raw_metadata))
         metadata["workspace_dir"] = str(workspace)
         metadata["workspace_files"] = files
         metadata["primary_file"] = infer_primary_file(files)
         metadata["benchmark_assistance_mode"] = self.assistance_mode
+        metadata["oracle_hints_enabled"] = self.oracle_hints_enabled
+        ensure_benchmark_audit(metadata, assistance_mode=self.assistance_mode)
         if self.assistance_mode == "assisted" and self.oracle_hints_enabled:
-            oracle_primary = str(metadata.get("oracle_primary_file", ""))
+            oracle_primary = str(raw_metadata.get("oracle_primary_file", ""))
             if oracle_primary:
                 metadata["primary_file"] = oracle_primary
         problem_text = task.prompt + "\nWorkspace files:\n" + ("\n".join(f"- {name}" for name in files) if files else "- none")

@@ -245,6 +245,11 @@ def beam_search(
             for repair in fallback_repairs_fn(node.state):
                 child_state, exec_info = executor.apply(node.state, repair)
                 exec_info = _build_exec_features(child_state, exec_info, repair, action_bias_fn)
+                exec_info["fallback_repair_used"] = 1.0
+                exec_info["tactic_bias"] = max(float(exec_info.get("tactic_bias", 0.5)), 1.0)
+                exec_info["tool_bias"] = max(float(exec_info.get("tool_bias", 0.5)), 1.0)
+                if event_logger is not None:
+                    event_logger("fallback_repair_used", domain=node.state.domain, depth=depth, action=repair.type.value, tool=repair.tool)
                 if _should_prune_candidate(child_state, exec_info, score_config):
                     if event_logger is not None:
                         event_logger(
@@ -276,6 +281,7 @@ def beam_search(
                     depth=depth,
                     solved=(child_state.status == "solved"),
                 )
+                score += float(score_config.get("fallback_bonus", 0.0))
                 signature = state_signature_fn(child_state)
                 accepted, novelty = transpositions.register(signature, score, depth)
                 if not accepted:
@@ -301,6 +307,7 @@ def beam_search(
                         depth=depth,
                         solved=(child_state.status == "solved"),
                     )
+                    score += float(score_config.get("fallback_bonus", 0.0))
                 child = SearchNode(
                     state=child_state,
                     cumulative_score=score,

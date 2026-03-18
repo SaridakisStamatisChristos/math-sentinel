@@ -129,7 +129,8 @@ class BeamFallbackTests(unittest.TestCase):
             )
 
         self.assertEqual(final_state.final_answer, "5")
-        self.assertEqual(len(explored), 2)
+        non_fallback_children = [node for node in explored[1:] if float(node.local_scores.get("fallback_repair_used", 0.0)) == 0.0]
+        self.assertEqual(len(non_fallback_children), 1)
 
     def test_invalid_generation_uses_terminal_tool_repair_for_derivative(self) -> None:
         initial_state = ProofState(

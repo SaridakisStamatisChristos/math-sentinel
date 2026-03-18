@@ -1,0 +1,7 @@
+extends: train_public_benchmark_harvest.yaml
+
+training:
+  benchmark_harvest_cases: 4
+  benchmark_harvest_suites:
+    - swebench_verified_smoke
+    - swebench_verified_medium

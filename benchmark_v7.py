@@ -16,6 +16,13 @@ from sentinel.runtime import configure_runtime
 from sentinel.runtime_events import build_runtime_event_logger
 
 
+def default_campaign_profile_for_suite(suite_spec: str) -> str:
+    normalized = (suite_spec or "").strip().lower()
+    if normalized.startswith("public"):
+        return "public_unassisted_strict"
+    return "smoke_tiny"
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description="Benchmark Math Sentinel V7 backends")
     ap.add_argument("--config", default="config/default.yaml")
@@ -60,7 +67,7 @@ def main() -> None:
 
     campaign_mode = bool(args.profile or args.ablations or args.repeat > 1 or args.campaign_name)
     if campaign_mode:
-        profiles = resolve_benchmark_profiles(args.profile or "smoke_tiny", args.profiles_config)
+        profiles = resolve_benchmark_profiles(args.profile or default_campaign_profile_for_suite(args.suite), args.profiles_config)
         ablations = resolve_benchmark_ablations(args.ablations or "baseline", args.ablation_config)
         summary = run_benchmark_campaign(
             base_cfg=cfg,

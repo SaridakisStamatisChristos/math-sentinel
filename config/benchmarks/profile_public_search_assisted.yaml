@@ -1,0 +1,5 @@
+extends: profile_public_unassisted_strict.yaml
+
+search:
+  deterministic_fallback_chain: false
+  guided_fallback_rollout: true

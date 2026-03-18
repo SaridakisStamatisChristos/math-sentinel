@@ -78,7 +78,7 @@ search:
   transposition_capacity: 4096
   value_weight: 0.35
   novelty_weight: 0.08
-  guided_fallback_rollout: true
+  guided_fallback_rollout: false
   guided_rollout_depth: 8
 
 memory:

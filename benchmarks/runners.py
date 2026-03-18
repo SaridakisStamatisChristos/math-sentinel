@@ -4,6 +4,7 @@ from typing import Any, Dict, Iterable, List, Tuple
 
 import torch
 
+from benchmarks.integrity import collect_state_audit, ensure_benchmark_audit, is_runtime_oracle_field
 from domains import available_backends, create_reasoning_domain
 from engine.task import ReasoningTask
 from search.router import run_search
@@ -13,7 +14,7 @@ from sentinel.search_runtime import build_action_bias_fn, build_prompt_builder, 
 from sentinel.verifier import StateVerifier
 
 from .base import BenchmarkCaseResult, BenchmarkSuite, BenchmarkSuiteResult
-from .public_catalog import available_public_suites, load_public_suite
+from .public_catalog import available_public_suites, available_public_suite_groups, load_public_suite
 
 
 def verifier_init_kwargs(cfg: Dict[str, Any]) -> Dict[str, Any]:
@@ -38,18 +39,95 @@ def resolve_suite_targets(suite_spec: str, backends_spec: str) -> List[Tuple[str
     targets: List[Tuple[str, str]] = []
     normalized_suite = (suite_spec or "internal").strip().lower()
     public_suites = set(available_public_suites())
+    public_groups = available_public_suite_groups()
 
     if normalized_suite in {"internal", "all"}:
         for backend_name in resolve_backends(backends_spec):
             targets.append(("internal", backend_name))
 
-    if normalized_suite in {"public_smoke", "all"}:
-        for suite_name in available_public_suites():
+    if normalized_suite in {"all", "public_all"}:
+        for suite_name in public_groups["public_all"]:
+            targets.append(("public", suite_name))
+    elif normalized_suite in public_groups:
+        for suite_name in public_groups[normalized_suite]:
             targets.append(("public", suite_name))
     elif normalized_suite in public_suites:
         targets.append(("public", normalized_suite))
 
     return targets
+
+
+def _case_audit_from_search(cfg: Dict[str, Any], task: ReasoningTask, final_state: Any, explored: List[Any]) -> Dict[str, Any]:
+    assistance_mode = str(cfg.get("benchmark", {}).get("assistance_mode", "unassisted")).lower()
+    audit = ensure_benchmark_audit({}, assistance_mode=assistance_mode)
+    touched_fields: List[str] = []
+    integrity_events: List[str] = []
+    runtime_oracle_fields: List[str] = []
+    guided_rollout_used = False
+    fallback_repair_used = False
+    fallback_repair_attempts = 0
+    guided_rollout_steps = 0
+    fallback_chain_used = False
+    fallback_chain_steps = 0
+
+    states = [getattr(node, "state", None) for node in explored] + [final_state]
+    for state in states:
+        metadata = getattr(state, "metadata", {}) if state is not None else {}
+        if not isinstance(metadata, dict):
+            continue
+        state_audit = collect_state_audit(metadata)
+        for field in state_audit.get("oracle_fields_touched", []):
+            text = str(field).strip()
+            if text and text not in touched_fields:
+                touched_fields.append(text)
+        for event in state_audit.get("integrity_events", []):
+            text = str(event).strip()
+            if text and text not in integrity_events:
+                integrity_events.append(text)
+        for key in metadata.keys():
+            key_text = str(key)
+            if is_runtime_oracle_field(key_text) and key_text not in runtime_oracle_fields:
+                runtime_oracle_fields.append(key_text)
+        search_audit = metadata.get("search_audit", {})
+        if isinstance(search_audit, dict):
+            guided_rollout_used = guided_rollout_used or bool(search_audit.get("guided_rollout_used", False))
+            fallback_repair_used = fallback_repair_used or bool(search_audit.get("fallback_repair_used", False))
+            fallback_repair_attempts = max(fallback_repair_attempts, int(search_audit.get("fallback_repair_attempts", 0)))
+            guided_rollout_steps = max(guided_rollout_steps, int(search_audit.get("guided_rollout_steps", 0)))
+            fallback_chain_used = fallback_chain_used or bool(search_audit.get("fallback_chain_used", False))
+            fallback_chain_steps = max(fallback_chain_steps, int(search_audit.get("fallback_chain_steps", 0)))
+
+    for node in explored:
+        local_scores = getattr(node, "local_scores", {}) or {}
+        if float(local_scores.get("guided_rollout_used", 0.0)) > 0.0:
+            guided_rollout_used = True
+            guided_rollout_steps += 1
+        if float(local_scores.get("fallback_repair_used", 0.0)) > 0.0:
+            fallback_repair_used = True
+            fallback_repair_attempts += 1
+        if float(local_scores.get("fallback_chain_used", 0.0)) > 0.0:
+            fallback_chain_used = True
+            fallback_chain_steps += 1
+
+    audit.update(
+        {
+            "guided_rollout_used": guided_rollout_used,
+            "guided_rollout_steps": guided_rollout_steps,
+            "fallback_repair_used": fallback_repair_used,
+            "fallback_repair_attempts": fallback_repair_attempts,
+            "fallback_chain_used": fallback_chain_used,
+            "fallback_chain_steps": fallback_chain_steps,
+            "oracle_fields_touched": touched_fields,
+            "oracle_fields_present_in_runtime": bool(runtime_oracle_fields),
+            "integrity_events": integrity_events,
+        }
+    )
+    integrity_passed = not runtime_oracle_fields and not touched_fields
+    if assistance_mode != "unassisted":
+        integrity_passed = True
+    audit["benchmark_integrity_passed"] = integrity_passed
+    audit["task_id"] = str(getattr(task, "task_id", ""))
+    return audit
 
 
 def load_benchmark_runtime(
@@ -125,6 +203,22 @@ def run_task_collection(
         )
         case_solved = final_state.status == "solved"
         case_equivalent = reasoning_domain.evaluate_answer(task, final_state.final_answer) if final_state.final_answer else False
+        case_audit = _case_audit_from_search(cfg, task, final_state, explored)
+        if not bool(case_audit.get("benchmark_integrity_passed", True)):
+            if event_logger is not None:
+                event_logger(
+                    "benchmark_integrity_violation",
+                    suite=suite_name,
+                    backend=backend_name,
+                    task_id=str(getattr(task, "task_id", "")),
+                    oracle_fields_touched="|".join(str(item) for item in case_audit.get("oracle_fields_touched", [])),
+                    runtime_oracle_fields=str(case_audit.get("oracle_fields_present_in_runtime", False)),
+                )
+            if bool(cfg.get("benchmark", {}).get("fail_on_integrity_violation", True)):
+                raise RuntimeError(
+                    f"benchmark integrity violation for suite={suite_name} task={getattr(task, 'task_id', '')}: "
+                    f"{case_audit.get('integrity_events', [])}"
+                )
         solved += int(case_solved)
         equivalent += int(case_equivalent)
         branches += len(explored)
@@ -140,6 +234,7 @@ def run_task_collection(
                 equivalent=case_equivalent,
                 explored_nodes=len(explored),
                 metadata=dict(getattr(task, "meta", {})),
+                audit=case_audit,
             )
         )
 
@@ -152,7 +247,21 @@ def run_task_collection(
         equivalence_rate=equivalent / max(1, len(task_list)),
         avg_branches=branches / max(1, len(task_list)),
         cases=case_results,
-        metadata={"task_count": len(task_list)},
+        metadata={
+            "task_count": len(task_list),
+            "benchmark_integrity_passed": all(bool(case.audit.get("benchmark_integrity_passed", True)) for case in case_results),
+            "guided_rollout_used": any(bool(case.audit.get("guided_rollout_used", False)) for case in case_results),
+            "fallback_repair_used": any(bool(case.audit.get("fallback_repair_used", False)) for case in case_results),
+            "fallback_chain_used": any(bool(case.audit.get("fallback_chain_used", False)) for case in case_results),
+            "oracle_fields_touched": sorted(
+                {
+                    str(field)
+                    for case in case_results
+                    for field in case.audit.get("oracle_fields_touched", [])
+                    if str(field).strip()
+                }
+            ),
+        },
     )
 
 

@@ -9,6 +9,7 @@ from typing import Any, Dict, List, Optional, cast
 
 import torch
 
+from benchmarks.public_catalog import available_public_suites, load_public_suite
 from curriculum.generators import GeneratedTask
 from curriculum.phases import PhaseScheduler
 from domains import create_reasoning_domain, default_curriculum_config
@@ -319,6 +320,94 @@ def run_eval(
     }
 
 
+def benchmark_tasks_for_backend(backend_name: str, suite_names: List[str]) -> List[tuple[str, Any]]:
+    tasks: List[tuple[str, Any]] = []
+    requested = suite_names or available_public_suites()
+    for suite_name in requested:
+        try:
+            suite = load_public_suite(suite_name)
+        except Exception:
+            continue
+        if suite.backend != backend_name:
+            continue
+        for task in suite.cases:
+            tasks.append((suite.name, task))
+    return tasks
+
+
+@torch.no_grad()
+def harvest_benchmark_failures(
+    *,
+    prover: torch.nn.Module,
+    verifier: StateVerifier,
+    tokenizer: Any,
+    executor: ProofExecutor,
+    reasoning_domain: Any,
+    cfg: Dict[str, Any],
+    replay: ReplayBuffer,
+    hard_cases: HardCaseStore,
+    device: str,
+    suite_names: List[str],
+    limit: int,
+    prompt_builder: Optional[Any] = None,
+    state_signature_fn: Optional[Any] = None,
+    action_bias_fn: Optional[Any] = None,
+    event_logger: Optional[Any] = None,
+) -> int:
+    if limit <= 0:
+        return 0
+    tasks = benchmark_tasks_for_backend(str(getattr(reasoning_domain, "name", "")), suite_names)
+    if not tasks:
+        return 0
+    sample_count = min(limit, len(tasks))
+    harvested = 0
+    for suite_name, task in random.sample(tasks, sample_count):
+        init = reasoning_domain.make_state(task)
+        final_state, explored = run_search(
+            prover=prover,
+            verifier=verifier,
+            tokenizer=tokenizer,
+            executor=executor,
+            initial_state=init,
+            device=device,
+            beam_width=int(cfg["search"]["beam_width"]),
+            max_depth=int(cfg["search"]["max_depth"]),
+            proposal_count=int(cfg["search"]["proposal_count"]),
+            max_new_tokens=int(cfg["training"]["max_new_tokens"]),
+            temperature=float(cfg["search"]["temperature"]),
+            top_k=int(cfg["search"]["top_k"]),
+            score_config=cfg["search"],
+            parse_actions_fn=reasoning_domain.parse_actions,
+            fallback_repairs_fn=reasoning_domain.fallback_repairs,
+            prompt_builder=prompt_builder or reasoning_domain.build_search_prompt,
+            state_signature_fn=state_signature_fn or reasoning_domain.state_signature,
+            action_bias_fn=action_bias_fn,
+            schema_provider=reasoning_domain,
+            event_logger=event_logger,
+        )
+        ok = final_state.status == "solved" and reasoning_domain.evaluate_answer(task, final_state.final_answer)
+        if ok:
+            continue
+        bundle = {
+            "kind": "benchmark_failure",
+            "suite": suite_name,
+            "domain": task.domain,
+            "task": task.prompt,
+            "expected": task.answer,
+            "answer": final_state.final_answer or "<no_answer>",
+            "status": final_state.status,
+            "score": len(explored),
+            "weight": 3.0,
+            "source": "benchmark",
+            "state": final_state.serialize(),
+            "search_audit": dict(final_state.metadata.get("search_audit", {})),
+        }
+        replay.add_failure_bundle(bundle, weight=3.0)
+        hard_cases.add_failure_bundle(bundle)
+        harvested += 1
+    return harvested
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description="Train Math Sentinel V7")
     ap.add_argument("--backend", default="math")
@@ -601,6 +690,24 @@ def main() -> None:
                 event_logger=event_logger,
             )
             metrics.update(eval_metrics)
+            benchmark_harvested = harvest_benchmark_failures(
+                prover=prover,
+                verifier=verifier,
+                tokenizer=tokenizer,
+                executor=executor,
+                reasoning_domain=reasoning_domain,
+                cfg=cfg,
+                replay=replay,
+                hard_cases=hard_cases,
+                device=device,
+                suite_names=[str(name) for name in cfg["training"].get("benchmark_harvest_suites", [])],
+                limit=int(cfg["training"].get("benchmark_harvest_cases", 0)),
+                prompt_builder=prompt_builder,
+                state_signature_fn=reasoning_domain.state_signature,
+                action_bias_fn=action_bias_fn,
+                event_logger=event_logger,
+            )
+            metrics["benchmark_failures_harvested"] = float(benchmark_harvested)
             print(f"[{now_ts()}] eval | {compact_metrics(eval_metrics)}")
             log_jsonl(log_path, metrics)
 

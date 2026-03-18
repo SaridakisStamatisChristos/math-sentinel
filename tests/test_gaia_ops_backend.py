@@ -49,3 +49,32 @@ class GaiaOpsBackendTests(unittest.TestCase):
         state = backend.make_state(task)
         self.assertIn("sales.csv", state.metadata["workspace_files"])
         self.assertEqual(state.metadata.get("target_file"), "sales.csv")
+
+    def test_unassisted_runtime_state_strips_oracle_metadata(self) -> None:
+        backend = GaiaOpsReasoningDomain()
+        task = backend.benchmark_tasks()[0]
+
+        state = backend.make_state(task)
+
+        self.assertNotIn("oracle_evidence_file", state.metadata)
+        self.assertNotIn("oracle_tool", state.metadata)
+        self.assertNotIn("oracle_input", state.metadata)
+        self.assertEqual(state.metadata.get("benchmark_audit", {}).get("assistance_mode"), "unassisted")
+
+    def test_medium_fixture_fallback_loop_solves_cross_file_sales_case(self) -> None:
+        backend = GaiaOpsReasoningDomain()
+        task = next(task for task in backend.benchmark_tasks() if task.task_id == "gaia_cross_file_sales")
+        state = backend.make_state(task)
+        executor = backend.create_executor()
+
+        for _ in range(6):
+            repair = backend.fallback_repairs(state)[0]
+            state, _ = executor.apply(state, repair)
+            if state.metadata.get("candidate_answer"):
+                answer_action = backend.fallback_repairs(state)[0]
+                state, _ = executor.apply(state, answer_action)
+            if state.status == "solved":
+                break
+
+        self.assertEqual(state.status, "solved")
+        self.assertEqual(state.final_answer, "41")

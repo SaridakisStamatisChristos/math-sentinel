@@ -20,6 +20,11 @@ class HardCaseStore:
         if len(self.cases) > self.capacity:
             self.cases = self.cases[-self.capacity :]
 
+    def add_failure_bundle(self, case: Dict) -> None:
+        bundle = dict(case)
+        bundle.setdefault("source", "benchmark")
+        self.add(bundle)
+
     def retrieve(self, domain: str, limit: int = 5) -> List[Dict]:
         items = [c for c in self.cases if c.get("domain") == domain]
         items.sort(key=lambda x: x.get("score", 0.0), reverse=True)

@@ -26,6 +26,7 @@ class BenchmarkCaseResult:
     equivalent: bool
     explored_nodes: int
     metadata: Dict[str, Any] = field(default_factory=dict)
+    audit: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)

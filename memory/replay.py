@@ -16,6 +16,12 @@ class ReplayBuffer:
     def add(self, item: Dict[str, Any]) -> None:
         self.items.append(item)
 
+    def add_failure_bundle(self, item: Dict[str, Any], *, weight: float = 2.5) -> None:
+        bundle = dict(item)
+        bundle.setdefault("kind", "benchmark_failure")
+        bundle.setdefault("weight", weight)
+        self.add(bundle)
+
     def sample(self, k: int) -> List[Dict[str, Any]]:
         k = min(k, len(self.items))
         return random.sample(list(self.items), k) if k > 0 else []

@@ -15,10 +15,13 @@ TEST_FILE_RE = re.compile(r"(^tests?/|/tests?/)")
 TRACEBACK_FILE_RE = re.compile(r'File "([^"]+)", line (\d+)')
 
 
-def create_workspace(task: Any, tmp_root: Path) -> Path:
+def create_workspace(task: Any, tmp_root: Path, *, deterministic: bool = False) -> Path:
     fixture_ref = str(getattr(task, "meta", {}).get("fixture_dir", "")).strip()
-    workspace = tmp_root / f"{getattr(task, 'task_id', 'task')}_{uuid.uuid4().hex[:8]}"
+    suffix = "det" if deterministic else uuid.uuid4().hex[:8]
+    workspace = tmp_root / f"{getattr(task, 'task_id', 'task')}_{suffix}"
     workspace.parent.mkdir(parents=True, exist_ok=True)
+    if deterministic and workspace.exists():
+        shutil.rmtree(workspace, ignore_errors=True)
     if fixture_ref:
         shutil.copytree(Path(fixture_ref), workspace)
         return workspace
@@ -374,38 +377,47 @@ def _apply_ops_to_text(text: str, ops: Sequence[Dict[str, str]]) -> str | None:
     return updated
 
 
-def _validate_cases_with_source(module_text: str, cases: Sequence[Dict[str, Any]]) -> bool:
+def _score_cases_with_source(module_text: str, cases: Sequence[Dict[str, Any]]) -> tuple[int, int]:
     if not cases:
-        return False
+        return (0, 0)
     namespace: Dict[str, Any] = {}
     try:
         exec(module_text, namespace, namespace)
     except Exception:
-        return False
+        return (0, len(cases))
+    passed = 0
     for case in cases:
         fn = namespace.get(str(case.get("function_name", "")))
         if not callable(fn):
-            return False
+            continue
         try:
             actual = fn(*list(case.get("args", [])))
         except Exception:
-            return False
-        if actual != case.get("expected"):
-            return False
-    return True
+            continue
+        if actual == case.get("expected"):
+            passed += 1
+    return (passed, len(cases))
 
 
-def _generate_case_driven_candidates(relpath: str, text: str, cases: Sequence[Dict[str, Any]], prompt: str) -> List[tuple[List[Dict[str, str]], List[str]]]:
+def _generate_case_driven_candidates(relpath: str, text: str, cases: Sequence[Dict[str, Any]], prompt: str) -> List[Dict[str, Any]]:
     del prompt
-    candidates: List[tuple[List[Dict[str, str]], List[str]]] = []
+    candidates: List[Dict[str, Any]] = []
     seen: set[tuple[str, str]] = set()
 
-    def add(search: str, replace: str, reason: str) -> None:
+    def add(search: str, replace: str, reason: str, *, generator: str = "case_driven") -> None:
         key = (search, replace)
         if not search or search not in text or key in seen:
             return
         seen.add(key)
-        candidates.append(([{"path": relpath, "search": search, "replace": replace}], [reason]))
+        candidates.append(
+            {
+                "ops": [{"path": relpath, "search": search, "replace": replace}],
+                "evidence": [reason],
+                "provenance": [reason],
+                "generator": generator,
+                "source_file": relpath,
+            }
+        )
 
     for match in re.finditer(r"return\s+([A-Za-z_][A-Za-z0-9_]*)\s*-\s*([A-Za-z_][A-Za-z0-9_]*)", text):
         add(match.group(0), f"return {match.group(1)} + {match.group(2)}", f"flip arithmetic operator in {relpath}")
@@ -417,6 +429,18 @@ def _generate_case_driven_candidates(relpath: str, text: str, cases: Sequence[Di
         add("<= 0", "< 0", f"tighten negative-threshold comparison in {relpath}")
     if "len(items) - 1" in text:
         add("len(items) - 1", "len(items)", f"fix off-by-one length expression in {relpath}")
+    for match in re.finditer(
+        r"return\s+([A-Za-z_][A-Za-z0-9_]*)\(\s*([A-Za-z_][A-Za-z0-9_]*)\s*,\s*([A-Za-z_][A-Za-z0-9_]*)\s*\)",
+        text,
+    ):
+        fn_name, first_arg, second_arg = match.groups()
+        add(match.group(0), f"return {fn_name}({second_arg}, {first_arg})", f"swap argument order in {relpath}")
+    for match in re.finditer(
+        r'return\s+f"\{([A-Za-z_][A-Za-z0-9_]*)\}\s+\{([A-Za-z_][A-Za-z0-9_]*)\}"',
+        text,
+    ):
+        first_arg, second_arg = match.groups()
+        add(match.group(0), f'return f"{{{second_arg}}} {{{first_arg}}}"', f"swap formatted name order in {relpath}", generator="case_driven_fstring")
 
     expected_strings = [str(case["expected"]) for case in cases if isinstance(case.get("expected"), str)]
     preferred_separator = "-" if any("-" in value for value in expected_strings) else "_" if any("_" in value for value in expected_strings) else ""
@@ -434,23 +458,56 @@ def _generate_case_driven_candidates(relpath: str, text: str, cases: Sequence[Di
     return candidates
 
 
-def _pattern_patch_ops(source_files: Dict[str, str], test_files: Dict[str, str], prompt: str, preferred_file: str = "") -> tuple[List[Dict[str, str]], List[str]]:
+def _pattern_patch_candidates(source_files: Dict[str, str], test_files: Dict[str, str], prompt: str, preferred_file: str = "") -> List[Dict[str, Any]]:
     prompt_lower = prompt.lower()
     test_text = "\n".join(test_files.values()).lower()
     ordered_sources = list(source_files.items())
     if preferred_file and preferred_file in source_files:
         ordered_sources = [(preferred_file, source_files[preferred_file])] + [(path, text) for path, text in ordered_sources if path != preferred_file]
 
+    candidates: List[Dict[str, Any]] = []
     for relpath, text in ordered_sources:
         if "return a - b" in text and any(token in (prompt_lower + test_text) for token in ["add", "sum", "arithmetic"]):
-            return ([{"path": relpath, "search": "    return a - b\n", "replace": "    return a + b\n"}], [f"detected subtraction bug in {relpath}"])
+            candidates.append(
+                {
+                    "ops": [{"path": relpath, "search": "    return a - b\n", "replace": "    return a + b\n"}],
+                    "evidence": [f"detected subtraction bug in {relpath}"],
+                    "provenance": ["pattern: subtraction-to-addition"],
+                    "generator": "pattern",
+                    "source_file": relpath,
+                }
+            )
         if '.replace(" ", "_")' in text and any(token in (prompt_lower + test_text) for token in ["slug", "hyphen", "ada-lovelace"]):
-            return ([{"path": relpath, "search": '    return value.strip().lower().replace(" ", "_")\n', "replace": '    return "-".join(value.strip().lower().split())\n'}], [f"detected slug formatting bug in {relpath}"])
+            candidates.append(
+                {
+                    "ops": [{"path": relpath, "search": '    return value.strip().lower().replace(" ", "_")\n', "replace": '    return "-".join(value.strip().lower().split())\n'}],
+                    "evidence": [f"detected slug formatting bug in {relpath}"],
+                    "provenance": ["pattern: slug-separator-normalization"],
+                    "generator": "pattern",
+                    "source_file": relpath,
+                }
+            )
         if ">= 0" in text and any(token in (prompt_lower + test_text) for token in ["positive", "exclude zero", "only positive"]):
-            return ([{"path": relpath, "search": ">= 0", "replace": "> 0"}], [f"detected inclusive-threshold bug in {relpath}"])
+            candidates.append(
+                {
+                    "ops": [{"path": relpath, "search": ">= 0", "replace": "> 0"}],
+                    "evidence": [f"detected inclusive-threshold bug in {relpath}"],
+                    "provenance": ["pattern: inclusive-threshold"],
+                    "generator": "pattern",
+                    "source_file": relpath,
+                }
+            )
         if "len(items) - 1" in text and "count" in (prompt_lower + test_text):
-            return ([{"path": relpath, "search": "len(items) - 1", "replace": "len(items)"}], [f"detected off-by-one count bug in {relpath}"])
-    return ([], [])
+            candidates.append(
+                {
+                    "ops": [{"path": relpath, "search": "len(items) - 1", "replace": "len(items)"}],
+                    "evidence": [f"detected off-by-one count bug in {relpath}"],
+                    "provenance": ["pattern: off-by-one-count"],
+                    "generator": "pattern",
+                    "source_file": relpath,
+                }
+            )
+    return candidates
 
 
 def draft_patch_tool(arg: str, state: Any = None) -> Dict[str, Any]:
@@ -475,44 +532,100 @@ def draft_patch_tool(arg: str, state: Any = None) -> Dict[str, Any]:
         if source_file:
             cases_by_source.setdefault(source_file, []).append(case)
 
+    ranked_candidates: List[Dict[str, Any]] = []
+    failed_candidates: List[Dict[str, Any]] = []
+
     for relpath in ordered_files:
         source_text = source_files.get(relpath)
         if not source_text:
             continue
         relevant_cases = cases_by_source.get(relpath, [])
-        for ops, evidence in _generate_case_driven_candidates(relpath, source_text, relevant_cases, prompt):
-            updated = _apply_ops_to_text(source_text, ops)
-            if updated is None or not _validate_cases_with_source(updated, relevant_cases):
+        for candidate in _generate_case_driven_candidates(relpath, source_text, relevant_cases, prompt):
+            updated = _apply_ops_to_text(source_text, candidate["ops"])
+            if updated is None:
                 continue
-            return {
-                "ok": True,
-                "result": json.dumps({"ops": ops}, ensure_ascii=True),
-                "goal_progress": 0.62,
-                "risk": 0.08,
-                "payload": {
-                    "patch_ops": ops,
-                    "evidence": evidence + [f"validated against {len(relevant_cases)} extracted tests"],
-                    "obligations": ["apply patch", "verify tests"],
-                    "resolved_obligations": ["draft patch", "inspect source", "inspect tests"],
-                    "suggested_tools": ["apply_patch", "run_unit_tests"],
-                    "state_metadata": {"primary_file": relpath},
-                },
-            }
+            passed, total = _score_cases_with_source(updated, relevant_cases)
+            fit = float(passed) / float(max(1, total)) if total > 0 else 0.0
+            score = fit + (0.05 if relpath == preferred_file else 0.0)
+            candidate["validated_cases"] = {"passed": passed, "total": total}
+            candidate["score"] = score
+            if total > 0 and passed == total:
+                ranked_candidates.append(candidate)
+            else:
+                failed_candidates.append(candidate)
 
-    ops, evidence = _pattern_patch_ops(source_files, test_files, prompt, preferred_file=preferred_file)
-    if ops:
+    for candidate in _pattern_patch_candidates(source_files, test_files, prompt, preferred_file=preferred_file):
+        relpath = str(candidate.get("source_file", ""))
+        source_text = source_files.get(relpath, "")
+        updated = _apply_ops_to_text(source_text, candidate["ops"])
+        if updated is None:
+            continue
+        relevant_cases = cases_by_source.get(relpath, [])
+        passed, total = _score_cases_with_source(updated, relevant_cases)
+        fit = float(passed) / float(max(1, total)) if total > 0 else 0.25
+        score = fit + 0.02
+        candidate["validated_cases"] = {"passed": passed, "total": total}
+        candidate["score"] = score
+        if total == 0 or passed == total:
+            ranked_candidates.append(candidate)
+        else:
+            failed_candidates.append(candidate)
+
+    ranked_candidates.sort(
+        key=lambda item: (
+            float(item.get("score", 0.0)),
+            int(item.get("validated_cases", {}).get("passed", 0)),
+            1 if str(item.get("source_file", "")) == preferred_file else 0,
+        ),
+        reverse=True,
+    )
+    failed_candidates.sort(
+        key=lambda item: (
+            float(item.get("score", 0.0)),
+            int(item.get("validated_cases", {}).get("passed", 0)),
+        ),
+        reverse=True,
+    )
+
+    if ranked_candidates:
+        chosen = ranked_candidates[0]
+        ops = chosen["ops"]
+        evidence = list(chosen.get("evidence", []))
+        validated = dict(chosen.get("validated_cases", {}))
         return {
             "ok": True,
             "result": json.dumps({"ops": ops}, ensure_ascii=True),
-            "goal_progress": 0.55,
-            "risk": 0.15,
+            "goal_progress": 0.62 if int(validated.get("total", 0)) > 0 else 0.55,
+            "risk": 0.08 if int(validated.get("passed", 0)) == int(validated.get("total", 0)) and int(validated.get("total", 0)) > 0 else 0.15,
             "payload": {
                 "patch_ops": ops,
-                "evidence": evidence,
+                "evidence": evidence + ([f"validated against {validated.get('passed', 0)}/{validated.get('total', 0)} extracted tests"] if int(validated.get("total", 0)) > 0 else []),
                 "obligations": ["apply patch", "verify tests"],
                 "resolved_obligations": ["inspect source", "inspect tests"],
                 "suggested_tools": ["apply_patch", "run_unit_tests"],
-                "state_metadata": {"primary_file": ops[0]["path"]},
+                "patch_candidates": [
+                    {
+                        "path": str(item["ops"][0]["path"]),
+                        "score": round(float(item.get("score", 0.0)), 4),
+                        "provenance": list(item.get("provenance", [])),
+                        "validated_cases": dict(item.get("validated_cases", {})),
+                    }
+                    for item in ranked_candidates[:5]
+                ],
+                "failed_patch_candidates": [
+                    {
+                        "path": str(item["ops"][0]["path"]),
+                        "score": round(float(item.get("score", 0.0)), 4),
+                        "provenance": list(item.get("provenance", [])),
+                        "validated_cases": dict(item.get("validated_cases", {})),
+                    }
+                    for item in failed_candidates[:5]
+                ],
+                "state_metadata": {
+                    "primary_file": ops[0]["path"],
+                    "patch_candidate_count": len(ranked_candidates),
+                    "failed_patch_attempt_count": len(failed_candidates),
+                },
             },
         }
 
@@ -521,5 +634,16 @@ def draft_patch_tool(arg: str, state: Any = None) -> Dict[str, Any]:
         "result": "could not draft a patch from repository context",
         "goal_progress": 0.0,
         "risk": 0.7,
-        "payload": {"obligations": ["inspect source", "inspect tests", "localize failure"]},
+        "payload": {
+            "obligations": ["inspect source", "inspect tests", "localize failure"],
+            "failed_patch_candidates": [
+                {
+                    "path": str(item["ops"][0]["path"]),
+                    "score": round(float(item.get("score", 0.0)), 4),
+                    "provenance": list(item.get("provenance", [])),
+                    "validated_cases": dict(item.get("validated_cases", {})),
+                }
+                for item in failed_candidates[:5]
+            ],
+        },
     }

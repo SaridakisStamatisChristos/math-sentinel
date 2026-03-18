@@ -1,0 +1,36 @@
+name: strict-benchmark-smoke
+
+on:
+  push:
+    branches:
+      - sota-strict-benchmark-hardening
+  pull_request:
+
+jobs:
+  benchmark-strict:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-lock.txt
+      - name: Run unit tests
+        run: python -m unittest discover -s tests -q
+      - name: Run strict public benchmark smoke
+        run: >
+          python benchmark_v7.py
+          --config config/benchmarks/public_smoke.yaml
+          --suite public_smoke
+          --profile public_unassisted_strict
+          --deterministic
+          --safe-runtime
+          --results-dir results/ci-benchmark
+      - name: Upload benchmark artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: strict-benchmark-artifacts
+          path: results/ci-benchmark

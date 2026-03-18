@@ -205,6 +205,11 @@ def _expand_node(
     for repair in fallback_repairs_fn(node.state):
         child_state, exec_info = executor.apply(node.state, repair)
         exec_info = _build_exec_features(child_state, exec_info, repair, action_bias_fn)
+        exec_info["fallback_repair_used"] = 1.0
+        exec_info["tactic_bias"] = max(float(exec_info.get("tactic_bias", 0.5)), 1.0)
+        exec_info["tool_bias"] = max(float(exec_info.get("tool_bias", 0.5)), 1.0)
+        if event_logger is not None:
+            event_logger("fallback_repair_used", domain=node.state.domain, depth=node.depth + 1, action=repair.type.value, tool=repair.tool)
         if _should_prune_candidate(child_state, exec_info, score_config):
             if event_logger is not None:
                 event_logger(
@@ -236,6 +241,7 @@ def _expand_node(
             depth=node.depth + 1,
             solved=(child_state.status == "solved"),
         )
+        delta += float(score_config.get("fallback_bonus", 0.0))
         total = node.cumulative_score + delta
         signature = state_signature_fn(child_state)
         accepted, novelty = transpositions.register(signature, total, node.depth + 1)
@@ -262,6 +268,7 @@ def _expand_node(
                 depth=node.depth + 1,
                 solved=(child_state.status == "solved"),
             )
+            delta += float(score_config.get("fallback_bonus", 0.0))
             total = node.cumulative_score + delta
         child = MCTSNode(
             state=child_state,

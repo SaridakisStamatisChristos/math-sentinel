@@ -1,0 +1,19 @@
+{
+  "projects": [
+    {
+      "name": "Helios",
+      "tasks": [
+        {"title": "Finalize budget", "owner": "Mira", "status": "pending", "due": "2025-04-11"},
+        {"title": "Approve vendors", "owner": "Mira", "status": "pending", "due": "2025-04-19"},
+        {"title": "Kickoff", "owner": "Mira", "status": "done", "due": "2025-03-28"}
+      ]
+    },
+    {
+      "name": "Lumen",
+      "tasks": [
+        {"title": "Draft launch brief", "owner": "Theo", "status": "pending", "due": "2025-04-03"},
+        {"title": "Collect assets", "owner": "Mira", "status": "pending", "due": "2025-04-22"}
+      ]
+    }
+  ]
+}
