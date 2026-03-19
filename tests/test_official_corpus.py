@@ -115,7 +115,20 @@ class OfficialCorpusWorkflowTests(unittest.TestCase):
         self.assertEqual(specs["swebench"].default_profile, "public_claim_coder_local_1p5b")
 
     def test_official_preflight_reports_missing_data(self) -> None:
-        report = official_corpus_preflight({})
+        temp_root = self._fresh_dir("official-corpus-missing")
+        cfg = {
+            "official_corpus": {
+                "gaia": {
+                    "input_path": str((temp_root / "gaia" / "records.jsonl").resolve()),
+                    "fixtures_root": str((temp_root / "gaia" / "attachments").resolve()),
+                },
+                "swebench": {
+                    "input_path": str((temp_root / "swebench" / "records.jsonl").resolve()),
+                    "fixtures_root": str((temp_root / "swebench" / "workspaces").resolve()),
+                },
+            }
+        }
+        report = official_corpus_preflight(cfg)
 
         self.assertEqual({item["name"] for item in report}, {"gaia", "swebench"})
         self.assertTrue(any(not bool(item["input_exists"]) for item in report))

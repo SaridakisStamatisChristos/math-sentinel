@@ -209,13 +209,17 @@ def lint_manifest_suite(path_like: str, *, strict_materialization: bool = True) 
     }
 
 
-def load_manifest_suite(path_like: str) -> BenchmarkSuite:
+def load_manifest_suite(path_like: str, *, max_cases: int | None = None) -> BenchmarkSuite:
     path = Path(path_like).resolve()
     lint = lint_manifest_suite(str(path), strict_materialization=True)
     if not lint["valid"]:
         raise ValueError("; ".join(str(item) for item in lint["errors"]))
     payload = _read_manifest_payload(path)
     raw_cases = payload.get("cases", payload.get("tasks", []))
+    if max_cases is not None:
+        raw_cases = raw_cases[: max(0, int(max_cases))]
+    if not raw_cases:
+        raise ValueError(f"manifest {path} does not contain any cases after applying max_cases")
     backend = str(payload.get("backend", "")).strip() or str(lint["backend"]).strip() or _infer_backend(raw_cases[0])
     name = str(payload.get("name", path.stem)).strip() or str(lint["name"]).strip() or path.stem
     description = str(payload.get("description", f"Manifest benchmark imported from {path.name}")).strip()

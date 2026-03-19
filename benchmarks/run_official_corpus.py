@@ -45,6 +45,7 @@ def main() -> None:
     ap.add_argument("--strict-materialization", action="store_true")
     ap.add_argument("--deterministic", action="store_true")
     ap.add_argument("--safe-runtime", action="store_true")
+    ap.add_argument("--max-cases", type=int, default=0)
     args = ap.parse_args()
 
     base_cfg = load_runtime_config(args.config, search_config_path=args.search_config)
@@ -96,6 +97,7 @@ def main() -> None:
             device,
             args.checker_plugin,
             event_logger,
+            max_cases=(int(args.max_cases) if int(args.max_cases) > 0 else None),
         )
         result_path = save_suite_result(str(results_root), result)
         summary = {

@@ -96,7 +96,14 @@ class HFTokenizerAdapter:
         return int(token_id)
 
     def encode_unpadded(self, text: str, add_bos: bool = True, add_eos: bool = False) -> List[int]:
-        ids = list(self.tokenizer.encode(text, add_special_tokens=False))
+        encoded = self.tokenizer(
+            text,
+            add_special_tokens=False,
+            truncation=False,
+            return_attention_mask=False,
+            verbose=False,
+        )
+        ids = list(encoded["input_ids"])
         if add_bos:
             ids = [self.bos_id] + ids
         if add_eos:

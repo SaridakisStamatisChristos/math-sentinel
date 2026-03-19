@@ -3,10 +3,12 @@ from __future__ import annotations
 import ast
 import hashlib
 import json
+import os
 import re
 import shutil
 import subprocess
 import sys
+import tarfile
 import uuid
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Sequence
@@ -14,13 +16,15 @@ from typing import Any, Dict, Iterable, List, Sequence
 
 TEST_FILE_RE = re.compile(r"(^tests?/|/tests?/)")
 TRACEBACK_FILE_RE = re.compile(r'File "([^"]+)", line (\d+)')
+HUNK_HEADER_RE = re.compile(r"^@@ -(?P<old_start>\d+)(?:,(?P<old_count>\d+))? \+(?P<new_start>\d+)(?:,(?P<new_count>\d+))? @@(?P<suffix>.*)$")
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_REPO_CACHE_ROOT = ROOT / "data" / "official_corpus" / "swebench" / "repo_cache"
 
 
 def _run_git(args: Sequence[str], *, cwd: Path | None = None) -> None:
+    command = ["git", "-c", "safe.directory=*"]
     completed = subprocess.run(
-        ["git", *args],
+        [*command, *args],
         cwd=str(cwd) if cwd is not None else None,
         capture_output=True,
         text=True,
@@ -32,44 +36,292 @@ def _run_git(args: Sequence[str], *, cwd: Path | None = None) -> None:
         raise RuntimeError(detail)
 
 
+def _remove_tree(path: Path) -> None:
+    def _onerror(func: Any, target: str, _: Any) -> None:
+        os.chmod(target, 0o777)
+        func(target)
+
+    shutil.rmtree(path, ignore_errors=False, onerror=_onerror)
+
+
+def _recount_unified_patch(patch_text: str) -> str:
+    lines = patch_text.splitlines()
+    rebuilt: List[str] = []
+    index = 0
+    while index < len(lines):
+        line = lines[index]
+        match = HUNK_HEADER_RE.match(line)
+        if not match:
+            rebuilt.append(line)
+            index += 1
+            continue
+        old_start = match.group("old_start")
+        new_start = match.group("new_start")
+        suffix = match.group("suffix") or ""
+        hunk_lines: List[str] = []
+        index += 1
+        while index < len(lines):
+            candidate = lines[index]
+            if candidate.startswith("diff --git ") or candidate.startswith("@@"):
+                break
+            hunk_lines.append(candidate)
+            index += 1
+        old_count = 0
+        new_count = 0
+        for hunk_line in hunk_lines:
+            if not hunk_line:
+                old_count += 1
+                new_count += 1
+                continue
+            prefix = hunk_line[0]
+            if prefix == "-":
+                old_count += 1
+            elif prefix == "+":
+                new_count += 1
+            elif prefix == " ":
+                old_count += 1
+                new_count += 1
+            elif prefix == "\\":
+                continue
+            else:
+                old_count += 1
+                new_count += 1
+        rebuilt.append(f"@@ -{old_start},{old_count} +{new_start},{new_count} @@{suffix}")
+        rebuilt.extend(hunk_lines)
+    return "\n".join(rebuilt)
+
+
+def _normalize_patch_path(path_text: str) -> str:
+    text = path_text.strip()
+    if text == "/dev/null":
+        return ""
+    if text.startswith(("a/", "b/")):
+        return text[2:]
+    return text
+
+
+def _parse_unified_patch_sections(patch_text: str) -> List[Dict[str, Any]]:
+    lines = patch_text.splitlines()
+    sections: List[Dict[str, Any]] = []
+    index = 0
+    while index < len(lines):
+        line = lines[index]
+        if not line.startswith("diff --git "):
+            index += 1
+            continue
+        index += 1
+        old_path = ""
+        new_path = ""
+        hunks: List[Dict[str, Any]] = []
+        while index < len(lines):
+            current = lines[index]
+            if current.startswith("diff --git "):
+                break
+            if current.startswith("--- "):
+                old_path = _normalize_patch_path(current[4:])
+                index += 1
+                continue
+            if current.startswith("+++ "):
+                new_path = _normalize_patch_path(current[4:])
+                index += 1
+                continue
+            match = HUNK_HEADER_RE.match(current)
+            if not match:
+                index += 1
+                continue
+            hunk_lines: List[str] = []
+            index += 1
+            while index < len(lines):
+                candidate = lines[index]
+                if candidate.startswith("diff --git ") or candidate.startswith("@@"):
+                    break
+                hunk_lines.append(candidate)
+                index += 1
+            hunks.append(
+                {
+                    "old_start": int(match.group("old_start")),
+                    "new_start": int(match.group("new_start")),
+                    "lines": hunk_lines,
+                }
+            )
+        sections.append({"old_path": old_path, "new_path": new_path, "hunks": hunks})
+    return sections
+
+
+def _apply_unified_patch_sections(workspace: Path, patch_text: str) -> List[str]:
+    touched: List[str] = []
+    for section in _parse_unified_patch_sections(patch_text):
+        relpath = str(section.get("new_path") or section.get("old_path") or "").strip()
+        if not relpath:
+            continue
+        target = workspace / relpath
+        original_text = target.read_text(encoding="utf-8") if target.exists() else ""
+        original_lines = original_text.splitlines(keepends=True)
+        result_lines: List[str] = []
+        cursor = 0
+        for hunk in section.get("hunks", []):
+            start = max(int(hunk.get("old_start", 1)) - 1, 0)
+            if start < cursor or start > len(original_lines):
+                raise RuntimeError(f"invalid hunk range for {relpath}")
+            result_lines.extend(original_lines[cursor:start])
+            source_index = start
+            for raw_line in hunk.get("lines", []):
+                if raw_line.startswith("\\"):
+                    continue
+                prefix = raw_line[:1]
+                content = raw_line[1:] if prefix in {" ", "+", "-"} else raw_line
+                current_text = original_lines[source_index].rstrip("\n") if source_index < len(original_lines) else None
+                if prefix == " ":
+                    if current_text != content:
+                        raise RuntimeError(f"context mismatch in {relpath}")
+                    result_lines.append(original_lines[source_index])
+                    source_index += 1
+                    continue
+                if prefix == "-":
+                    if current_text != content:
+                        raise RuntimeError(f"delete mismatch in {relpath}")
+                    source_index += 1
+                    continue
+                if prefix == "+":
+                    result_lines.append(content + "\n")
+                    continue
+                if current_text != raw_line:
+                    raise RuntimeError(f"unsupported patch line in {relpath}: {raw_line}")
+                result_lines.append(original_lines[source_index])
+                source_index += 1
+            cursor = source_index
+        result_lines.extend(original_lines[cursor:])
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("".join(result_lines), encoding="utf-8", newline="\n")
+        touched.append(relpath)
+    return touched
+
+
 def _repo_cache_path(repo_slug: str, repo_cache_root: Path) -> Path:
     return repo_cache_root / repo_slug.replace("/", "__")
 
 
-def _ensure_repo_cache(repo_slug: str, repo_cache_root: Path, *, clone_url: str = "") -> Path:
-    repo_cache_root.mkdir(parents=True, exist_ok=True)
-    target = _repo_cache_path(repo_slug, repo_cache_root)
+def _repo_cache_candidates(repo_slug: str, repo_cache_root: Path) -> List[Path]:
+    primary = _repo_cache_path(repo_slug, repo_cache_root)
+    return [primary.with_name(f"{primary.name}__full"), primary]
+
+
+def _git_has_commit(repo_path: Path, commit: str) -> bool:
+    if not commit.strip():
+        return False
+    completed = subprocess.run(
+        ["git", "-c", "safe.directory=*", "rev-parse", "--verify", commit],
+        cwd=str(repo_path),
+        capture_output=True,
+        text=True,
+    )
+    return completed.returncode == 0
+
+
+def _repo_is_partial_clone(repo_path: Path) -> bool:
+    completed = subprocess.run(
+        ["git", "-c", "safe.directory=*", "config", "--bool", "--get", "remote.origin.promisor"],
+        cwd=str(repo_path),
+        capture_output=True,
+        text=True,
+    )
+    return completed.returncode == 0 and completed.stdout.strip().lower() == "true"
+
+
+def _clone_repo_cache(target: Path, remote: str, *, remote_path: Path) -> None:
+    if remote_path.exists():
+        _run_git(["clone", str(remote_path), str(target)])
+    else:
+        _run_git(["clone", remote, str(target)])
+
+
+def _rebuild_repo_cache(repo_slug: str, repo_cache_root: Path, *, clone_url: str = "") -> Path:
     remote = clone_url.strip() or f"https://github.com/{repo_slug}.git"
     remote_path = Path(remote)
+    last_error = ""
+    for target in _repo_cache_candidates(repo_slug, repo_cache_root):
+        shutil.rmtree(target, ignore_errors=True)
+        if target.exists():
+            last_error = f"cache path still exists after cleanup: {target}"
+            continue
+        _clone_repo_cache(target, remote, remote_path=remote_path)
+        return target
+    raise RuntimeError(last_error or f"unable to rebuild cache for {repo_slug}")
+
+
+def _ensure_repo_cache(repo_slug: str, repo_cache_root: Path, *, clone_url: str = "", required_commit: str = "") -> Path:
+    repo_cache_root.mkdir(parents=True, exist_ok=True)
+    remote = clone_url.strip() or f"https://github.com/{repo_slug}.git"
+    remote_path = Path(remote)
+    target = next((candidate for candidate in _repo_cache_candidates(repo_slug, repo_cache_root) if candidate.exists()), _repo_cache_path(repo_slug, repo_cache_root))
     if not target.exists():
-        if remote_path.exists():
-            _run_git(["clone", str(remote_path), str(target)])
-        else:
-            _run_git(["clone", "--filter=blob:none", remote, str(target)])
+        _clone_repo_cache(target, remote, remote_path=remote_path)
     else:
-        _run_git(["fetch", "--all", "--tags", "--prune"], cwd=target)
+        if required_commit and _git_has_commit(target, required_commit):
+            return target
+        try:
+            _run_git(["fetch", "--all", "--tags", "--prune"], cwd=target)
+        except RuntimeError:
+            if not (required_commit and _git_has_commit(target, required_commit)):
+                raise
     return target
 
 
+def _export_repo_workspace(cache_repo: Path, base_commit: str, workspace: Path) -> None:
+    workspace.parent.mkdir(parents=True, exist_ok=True)
+    workspace.mkdir(parents=True, exist_ok=True)
+    archive_path = (workspace.parent / f".{workspace.name}-{base_commit[:12]}.tar").resolve()
+    try:
+        _run_git(["-C", str(cache_repo), "archive", "--format=tar", f"--output={archive_path}", base_commit])
+        with tarfile.open(archive_path, "r") as handle:
+            for member in handle.getmembers():
+                target = workspace / member.name
+                if member.isdir():
+                    target.mkdir(parents=True, exist_ok=True)
+                    continue
+                if member.issym() or member.islnk():
+                    continue
+                source = handle.extractfile(member)
+                if source is None:
+                    continue
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(source.read())
+    finally:
+        archive_path.unlink(missing_ok=True)
+
+
 def _materialize_repo_workspace(repo_slug: str, base_commit: str, workspace: Path, *, repo_cache_root: Path, clone_url: str = "") -> None:
-    cache_repo = _ensure_repo_cache(repo_slug, repo_cache_root, clone_url=clone_url)
-    _run_git(["clone", str(cache_repo), str(workspace)])
-    _run_git(["checkout", base_commit], cwd=workspace)
+    cache_repo = _ensure_repo_cache(repo_slug, repo_cache_root, clone_url=clone_url, required_commit=base_commit)
+    try:
+        _export_repo_workspace(cache_repo, base_commit, workspace)
+    except RuntimeError as exc:
+        detail = str(exc).lower()
+        if _repo_is_partial_clone(cache_repo) and ("promisor remote" in detail or "could not read from remote repository" in detail or "unable to access" in detail):
+            cache_repo = _rebuild_repo_cache(repo_slug, repo_cache_root, clone_url=clone_url)
+            _export_repo_workspace(cache_repo, base_commit, workspace)
+            return
+        raise
 
 
 def _apply_git_patch(workspace: Path, patch_text: str) -> None:
     if not patch_text.strip():
         return
     normalized = patch_text.replace("\r\n", "\n").replace("\r", "\n")
+    normalized = _recount_unified_patch(normalized)
     if not normalized.endswith("\n"):
         normalized += "\n"
-    patch_path = workspace / ".math_sentinel_patch.diff"
+    try:
+        _apply_unified_patch_sections(workspace, normalized)
+        return
+    except RuntimeError:
+        pass
+    patch_path = (workspace / ".math_sentinel_patch.diff").resolve()
     patch_path.write_text(normalized, encoding="utf-8", newline="\n")
     try:
         try:
-            _run_git(["apply", "--whitespace=nowarn", str(patch_path)], cwd=workspace)
+            _run_git(["apply", "-p1", "--whitespace=nowarn", str(patch_path)], cwd=workspace)
         except RuntimeError:
-            _run_git(["apply", "--whitespace=nowarn", "--recount", "--inaccurate-eof", str(patch_path)], cwd=workspace)
+            _run_git(["apply", "-p1", "--whitespace=nowarn", "--recount", "--inaccurate-eof", str(patch_path)], cwd=workspace)
     finally:
         if patch_path.exists():
             patch_path.unlink(missing_ok=True)
@@ -81,7 +333,10 @@ def create_workspace(task: Any, tmp_root: Path, *, deterministic: bool = False) 
     workspace = tmp_root / f"{getattr(task, 'task_id', 'task')}_{suffix}"
     workspace.parent.mkdir(parents=True, exist_ok=True)
     if deterministic and workspace.exists():
-        shutil.rmtree(workspace, ignore_errors=True)
+        try:
+            _remove_tree(workspace)
+        except Exception:
+            workspace = tmp_root / f"{getattr(task, 'task_id', 'task')}_det_{uuid.uuid4().hex[:8]}"
     if fixture_ref:
         shutil.copytree(Path(fixture_ref), workspace)
         return workspace

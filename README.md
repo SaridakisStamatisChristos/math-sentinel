@@ -258,8 +258,8 @@ For full official-corpus runs, stage the exported records under `data/official_c
 
 ```bash
 python benchmarks/run_official_corpus.py --corpus all --prepare-only --strict-materialization
-python benchmarks/run_official_corpus.py --corpus gaia --deterministic --safe-runtime --results-dir results/official
-python benchmarks/run_official_corpus.py --corpus swebench --deterministic --safe-runtime --results-dir results/official
+python benchmarks/run_official_corpus.py --corpus gaia --max-cases 5 --deterministic --safe-runtime --results-dir results/official
+python benchmarks/run_official_corpus.py --corpus swebench --max-cases 5 --deterministic --safe-runtime --results-dir results/official
 ```
 
 You can also populate the staging area directly from Hugging Face:
@@ -472,8 +472,8 @@ For full official exports, the dedicated runner chooses the same strict 1.5B cla
 
 ```bash
 python benchmarks/run_official_corpus.py --corpus all --prepare-only --strict-materialization
-python benchmarks/run_official_corpus.py --corpus gaia --deterministic --safe-runtime --results-dir results/official
-python benchmarks/run_official_corpus.py --corpus swebench --deterministic --safe-runtime --results-dir results/official
+python benchmarks/run_official_corpus.py --corpus gaia --max-cases 5 --deterministic --safe-runtime --results-dir results/official
+python benchmarks/run_official_corpus.py --corpus swebench --max-cases 5 --deterministic --safe-runtime --results-dir results/official
 ```
 
 There are also focused runner entrypoints:

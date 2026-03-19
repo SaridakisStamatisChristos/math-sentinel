@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 from typing import Any, Dict
 
 from benchmarks.ablations import resolve_benchmark_ablations
@@ -62,6 +63,7 @@ def main() -> None:
     ap.add_argument("--list-ablations", action="store_true")
     ap.add_argument("--repeat", type=int, default=1)
     ap.add_argument("--campaign-name", default="")
+    ap.add_argument("--max-cases", type=int, default=0)
     args = ap.parse_args()
 
     if args.list_profiles:
@@ -80,7 +82,7 @@ def main() -> None:
     targets = resolve_suite_targets(args.suite, args.backends)
     campaign_mode = bool(args.profile or args.ablations or args.repeat > 1 or args.campaign_name)
     auto_profile = ""
-    if not campaign_mode and any(kind in {"public", "manifest"} for kind, _ in targets):
+    if not campaign_mode and any(kind in {"public", "manifest", "official"} for kind, _ in targets):
         auto_profile = default_campaign_profile_for_suite(args.suite)
     if auto_profile:
         cfg = apply_benchmark_profile(cfg, resolve_benchmark_profiles(auto_profile, args.profiles_config)[0])
@@ -106,7 +108,7 @@ def main() -> None:
             repeat=max(1, int(args.repeat)),
             campaign_name=args.campaign_name,
         )
-        print(summary.to_dict())
+        print(json.dumps(summary.to_dict(), ensure_ascii=True))
         return
 
     device = configure_runtime(cfg, deterministic_override=(True if args.deterministic else None), safe_override=(True if args.safe_runtime else None))
@@ -118,9 +120,23 @@ def main() -> None:
         if target_kind == "official" and "official_corpus" in benchmark_source_cfg:
             target_cfg = dict(cfg)
             target_cfg["official_corpus"] = benchmark_source_cfg.get("official_corpus", {})
-        result = run_suite_target(target_kind, target_name, target_cfg, prover, verifier, tokenizer, device, args.checker_plugin, event_logger)
+        if target_kind in {"manifest", "official"}:
+            result = run_suite_target(
+                target_kind,
+                target_name,
+                target_cfg,
+                prover,
+                verifier,
+                tokenizer,
+                device,
+                args.checker_plugin,
+                event_logger,
+                max_cases=(int(args.max_cases) if int(args.max_cases) > 0 else None),
+            )
+        else:
+            result = run_suite_target(target_kind, target_name, target_cfg, prover, verifier, tokenizer, device, args.checker_plugin, event_logger)
         save_suite_result(args.results_dir, result)
-        print(result.to_dict())
+        print(json.dumps(result.to_dict(), ensure_ascii=True))
 
 
 if __name__ == "__main__":

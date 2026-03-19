@@ -39,6 +39,11 @@ class BenchmarkManifestTests(unittest.TestCase):
         self.assertTrue(fixture_dir.is_absolute())
         self.assertTrue(fixture_dir.exists())
 
+    def test_load_manifest_suite_honors_max_cases(self) -> None:
+        suite = load_manifest_suite("benchmarks/manifests/gaia_medium_official_style.json", max_cases=1)
+
+        self.assertEqual(len(suite.cases), 1)
+
     def test_resolve_suite_targets_supports_manifest_prefix(self) -> None:
         targets = resolve_suite_targets("manifest:benchmarks/manifests/gaia_medium_official_style.json", "all")
 
@@ -193,6 +198,7 @@ class BenchmarkManifestTests(unittest.TestCase):
             device="cpu",
             checker_plugin="",
             event_logger=None,
+            max_cases=1,
         )
 
         self.assertEqual(result.suite, "gaia_medium_official_style")

@@ -353,16 +353,17 @@ def run_suite_target(
     device: str,
     checker_plugin: str,
     event_logger: Any,
+    max_cases: int | None = None,
 ) -> BenchmarkSuiteResult:
     if target_kind == "internal":
         return run_backend_benchmark(target_name, cfg, prover, verifier, tokenizer, device, checker_plugin, event_logger)
     if target_kind == "public":
         return run_public_suite(target_name, cfg, prover, verifier, tokenizer, device, checker_plugin, event_logger)
     if target_kind == "manifest":
-        return run_manifest_suite(target_name, cfg, prover, verifier, tokenizer, device, checker_plugin, event_logger)
+        return run_manifest_suite(target_name, cfg, prover, verifier, tokenizer, device, checker_plugin, event_logger, max_cases=max_cases)
     if target_kind == "official":
         manifest_path = ensure_official_manifest(target_name, cfg, strict_materialization=True)
-        return run_manifest_suite(manifest_path, cfg, prover, verifier, tokenizer, device, checker_plugin, event_logger)
+        return run_manifest_suite(manifest_path, cfg, prover, verifier, tokenizer, device, checker_plugin, event_logger, max_cases=max_cases)
     raise ValueError(f"unknown benchmark target kind: {target_kind}")
 
 
@@ -402,8 +403,9 @@ def run_manifest_suite(
     device: str,
     checker_plugin: str,
     event_logger: Any,
+    max_cases: int | None = None,
 ) -> BenchmarkSuiteResult:
-    suite: BenchmarkSuite = load_manifest_suite(manifest_path)
+    suite: BenchmarkSuite = load_manifest_suite(manifest_path, max_cases=max_cases)
     return run_task_collection(
         suite_name=suite.name,
         tier=suite.tier,

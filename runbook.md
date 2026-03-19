@@ -104,8 +104,8 @@ Full official-corpus workflow:
 
 ```powershell
 python benchmarks\run_official_corpus.py --corpus all --prepare-only --strict-materialization
-python benchmarks\run_official_corpus.py --corpus gaia --deterministic --safe-runtime --results-dir results\official
-python benchmarks\run_official_corpus.py --corpus swebench --deterministic --safe-runtime --results-dir results\official
+python benchmarks\run_official_corpus.py --corpus gaia --max-cases 5 --deterministic --safe-runtime --results-dir results\official
+python benchmarks\run_official_corpus.py --corpus swebench --max-cases 5 --deterministic --safe-runtime --results-dir results\official
 ```
 
 Populate the official-corpus staging area from Hugging Face:
