@@ -108,6 +108,12 @@ python benchmarks\run_official_corpus.py --corpus gaia --max-cases 5 --determini
 python benchmarks\run_official_corpus.py --corpus swebench --max-cases 5 --deterministic --safe-runtime --results-dir results\official
 ```
 
+Interpretation note for official runs:
+
+- `GAIA` now supports live external arXiv research through the strict claim lane.
+- `SWE-bench` results now expose environment blockers in the benchmark JSON under `metadata.environment_issue_counts`.
+- If an older compiled repo cannot build on the current host toolchain, the case remains claim-clean but will report issues such as `compiled_extensions_missing` instead of masquerading as a reasoning success or an oracle-assisted run.
+
 Populate the official-corpus staging area from Hugging Face:
 
 ```powershell

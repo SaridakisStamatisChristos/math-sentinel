@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import unittest
+from unittest.mock import patch
 
-from domains.gaia_ops.backend import GaiaOpsReasoningDomain
+from domains.gaia_ops.backend import GaiaOpsReasoningDomain, _solve_arxiv_overlap
+from engine.task import ReasoningTask
 
 
 class GaiaOpsBackendTests(unittest.TestCase):
@@ -96,3 +98,57 @@ class GaiaOpsBackendTests(unittest.TestCase):
         self.assertTrue(graph.get("files"))
         self.assertGreaterEqual(float(state.metadata.get("answer_confidence", 0.0)), 0.45)
         self.assertTrue(state.metadata.get("answer_provenance"))
+
+    @patch("domains.gaia_ops.backend._arxiv_search")
+    def test_external_arxiv_research_flow_solves_overlap_question(self, mock_search: object) -> None:
+        mock_search.side_effect = [
+            [
+                {
+                    "title": "Fairness in Agreement With European Values: An Interdisciplinary Perspective on AI Regulation",
+                    "summary": "We discuss standardized, localized, utilitarian, egalitarian, consequential, and deontological conceptions of fairness.",
+                    "published": "2022-06-15T00:00:00Z",
+                    "id": "a",
+                    "categories": ["cs.AI"],
+                }
+            ],
+            [
+                {
+                    "title": "Example Physics and Society article",
+                    "summary": "The paper describes an egalitarian society under resource constraints.",
+                    "published": "2016-08-11T00:00:00Z",
+                    "id": "b",
+                    "categories": ["physics.soc-ph"],
+                }
+            ],
+        ]
+        backend = GaiaOpsReasoningDomain()
+        task = ReasoningTask(
+            task_id="gaia_external_arxiv_case",
+            domain="gaia_json_reasoning",
+            prompt="A paper about AI regulation that was originally submitted to arXiv.org in June 2022 shows a figure with three axes, where each axis has a label word at both ends. Which of these words is used to describe a type of society in a Physics and Society article submitted to arXiv.org on August 11, 2016?",
+            answer="egalitarian",
+            goal="Return the shortest correct final answer",
+            meta={"family": "gaia_json_reasoning"},
+        )
+        state = backend.make_state(task)
+        executor = backend.create_executor()
+
+        for _ in range(5):
+            repair = backend.fallback_repairs(state)[0]
+            state, _ = executor.apply(state, repair)
+            if state.metadata.get("candidate_answer"):
+                answer_action = backend.fallback_repairs(state)[0]
+                state, _ = executor.apply(state, answer_action)
+                break
+
+        self.assertEqual(state.status, "solved")
+        self.assertEqual(state.final_answer, "egalitarian")
+
+    def test_solve_arxiv_overlap_returns_matching_term(self) -> None:
+        primary = [{"title": "AI regulation", "summary": "standardized, localized, utilitarian, egalitarian, consequential and deontological", "published": "", "id": "", "categories": []}]
+        secondary = [{"title": "Physics and Society", "summary": "An egalitarian society is discussed here", "published": "", "id": "", "categories": []}]
+
+        answer, evidence = _solve_arxiv_overlap(primary, secondary)
+
+        self.assertEqual(answer, "egalitarian")
+        self.assertTrue(evidence)

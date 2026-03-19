@@ -3,6 +3,7 @@ from __future__ import annotations
 import unittest
 
 from domains.swebench_ops.backend import SwebenchOpsReasoningDomain
+from engine.task import ReasoningTask
 
 
 class SwebenchOpsBackendTests(unittest.TestCase):
@@ -137,3 +138,45 @@ class SwebenchOpsBackendTests(unittest.TestCase):
         attempts = state.metadata.get("patch_attempt_history", [])
         self.assertTrue(attempts)
         self.assertIn("fingerprint", attempts[-1])
+
+    def test_make_state_uses_prompt_source_hints_for_primary_file(self) -> None:
+        backend = SwebenchOpsReasoningDomain()
+        fixture_task = backend.benchmark_tasks()[0]
+        task = ReasoningTask(
+            task_id="prompt_hint_case",
+            domain=fixture_task.domain,
+            prompt="Patch the repository.\n```python\nfrom stats import count_positive\n```",
+            answer=fixture_task.answer,
+            goal=fixture_task.goal,
+            meta=dict(fixture_task.meta),
+        )
+        state = backend.make_state(task)
+
+        self.assertIn("prompt_symbols", state.metadata)
+        self.assertIn("count_positive", state.metadata["prompt_symbols"])
+
+    def test_make_state_prefers_symbol_defining_source_over_broad_models_module(self) -> None:
+        backend = SwebenchOpsReasoningDomain()
+        task = ReasoningTask(
+            task_id="official_like_prompt_case",
+            domain="swebench_patch",
+            prompt=(
+                "Fix the bug in separability_matrix.\n"
+                "```python\n"
+                "from astropy.modeling import models as m\n"
+                "from astropy.modeling.separable import separability_matrix\n"
+                "```\n"
+            ),
+            answer="patched_and_verified",
+            goal="Patch the repository so the tests pass",
+            meta={
+                "repo": "astropy/astropy",
+                "base_commit": "d16bfe05a744909de4b27f5875fe0d4ed41ce607",
+                "FAIL_TO_PASS": '["astropy/modeling/tests/test_separable.py::test_separable[compound_model6-result6]"]',
+                "PASS_TO_PASS": '["astropy/modeling/tests/test_separable.py::test_cstack"]',
+            },
+        )
+
+        state = backend.make_state(task)
+
+        self.assertEqual(state.metadata.get("primary_file"), "astropy/modeling/separable.py")

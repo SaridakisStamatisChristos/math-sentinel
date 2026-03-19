@@ -262,6 +262,14 @@ python benchmarks/run_official_corpus.py --corpus gaia --max-cases 5 --determini
 python benchmarks/run_official_corpus.py --corpus swebench --max-cases 5 --deterministic --safe-runtime --results-dir results/official
 ```
 
+On this branch, the official GAIA path has been live-validated on the first real corpus case through the strict claim lane using external arXiv retrieval.
+
+Important official SWE-bench note:
+
+- Pure-Python official repos can run directly through the claim lane.
+- Compiled repos now surface explicit benchmark environment diagnostics in the result JSON under `metadata.environment_issue_counts` instead of failing as silent zero-score reasoning misses.
+- On this Windows / Python 3.12 host, older compiled repos like the first official `astropy` case still report `compiled_extensions_missing`, which is an honest environment limitation rather than an oracle or fallback-path violation.
+
 You can also populate the staging area directly from Hugging Face:
 
 ```bash

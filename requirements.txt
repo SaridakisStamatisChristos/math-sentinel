@@ -1,5 +1,5 @@
 torch
-numpy
+numpy<2
 pyyaml
 sympy
 transformers
@@ -7,3 +7,5 @@ peft
 accelerate
 safetensors
 pyarrow
+pytest<8
+hypothesis

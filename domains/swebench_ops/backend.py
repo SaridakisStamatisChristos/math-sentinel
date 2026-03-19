@@ -14,6 +14,7 @@ from domains.repo_agent_utils import (
     create_workspace,
     draft_patch_tool as repo_draft_patch_tool,
     infer_primary_file,
+    infer_prompt_source_hints,
     inspect_tests_tool as repo_inspect_tests_tool,
     list_workspace_files,
     localize_failure_tool as repo_localize_failure_tool,
@@ -92,7 +93,14 @@ def _read_workspace_file(workspace: Path, relpath: str) -> str:
 def inspect_workspace(arg: str, state: Any = None) -> Dict[str, Any]:
     workspace = Path(str(state.metadata["workspace_dir"]))
     files = _list_workspace_files(workspace)
-    primary_file = infer_primary_file(files, preferred_file=str(state.metadata.get("primary_file", "")))
+    primary_file = infer_primary_file(
+        files,
+        workspace=workspace,
+        preferred_file=str(state.metadata.get("primary_file", "")),
+        candidate_source_files=state.metadata.get("prompt_candidate_source_files", []),
+        symbol_hints=state.metadata.get("prompt_symbols", []),
+        prompt_text=str(getattr(state, "problem_text", "")),
+    )
     return {
         "ok": True,
         "result": "\n".join(files),
@@ -122,7 +130,13 @@ def read_file(arg: str, state: Any = None) -> Dict[str, Any]:
     relpath = arg.strip() or str(state.metadata.get("primary_file", ""))
     if not relpath:
         files = _list_workspace_files(workspace)
-        relpath = infer_primary_file(files)
+        relpath = infer_primary_file(
+            files,
+            workspace=workspace,
+            candidate_source_files=state.metadata.get("candidate_source_files", []),
+            symbol_hints=list(state.metadata.get("test_symbols", [])) + list(state.metadata.get("prompt_symbols", [])),
+            prompt_text=str(getattr(state, "problem_text", "")),
+        )
     if not relpath:
         return {"ok": False, "result": "no file available"}
     text = _read_workspace_file(workspace, relpath)
@@ -248,11 +262,20 @@ class SwebenchOpsReasoningDomain:
     def make_state(self, task: ReasoningTask) -> ReasoningState:
         workspace = _workspace_for(task, deterministic=self.deterministic_runtime)
         files = _list_workspace_files(workspace)
+        prompt_hints = infer_prompt_source_hints(task.prompt, files)
         raw_metadata = dict(task.meta)
         metadata = dict(raw_metadata if self.assistance_mode == "assisted" and self.oracle_hints_enabled else strip_oracle_metadata(raw_metadata))
         metadata["workspace_dir"] = str(workspace)
         metadata["workspace_files"] = files
-        metadata["primary_file"] = infer_primary_file(files)
+        metadata["prompt_candidate_source_files"] = list(prompt_hints.get("candidate_source_files", []))
+        metadata["prompt_symbols"] = list(prompt_hints.get("symbols", []))
+        metadata["primary_file"] = infer_primary_file(
+            files,
+            workspace=workspace,
+            candidate_source_files=prompt_hints.get("candidate_source_files", []),
+            symbol_hints=prompt_hints.get("symbols", []),
+            prompt_text=task.prompt,
+        )
         metadata["benchmark_assistance_mode"] = self.assistance_mode
         metadata["oracle_hints_enabled"] = self.oracle_hints_enabled
         metadata["claim_mode"] = self.claim_mode
@@ -554,10 +577,11 @@ class SwebenchOpsReasoningDomain:
             return [{"content": ""}]
         if tool == "read_file":
             paths = [str(state.metadata.get("primary_file", ""))]
+            paths.extend(str(name) for name in state.metadata.get("prompt_candidate_source_files", []))
             paths.extend([name for name in state.metadata.get("workspace_files", []) if name.startswith("tests/")])
             return [{"content": path} for path in paths if path][:3]
         if tool == "search_code":
-            symbols = list(state.metadata.get("test_symbols", []))
+            symbols = list(state.metadata.get("test_symbols", [])) or list(state.metadata.get("prompt_symbols", []))
             return [{"content": symbol} for symbol in symbols[:3]] or [{"content": "return"}]
         if tool == "draft_patch":
             return self._draft_patch_bindings(state)

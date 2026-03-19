@@ -82,6 +82,7 @@ def _case_audit_from_search(cfg: Dict[str, Any], task: ReasoningTask, final_stat
     guided_rollout_steps = 0
     fallback_chain_used = False
     fallback_chain_steps = 0
+    environment_issues: List[str] = []
 
     states = [getattr(node, "state", None) for node in explored] + [final_state]
     for state in states:
@@ -109,6 +110,12 @@ def _case_audit_from_search(cfg: Dict[str, Any], task: ReasoningTask, final_stat
             guided_rollout_steps = max(guided_rollout_steps, int(search_audit.get("guided_rollout_steps", 0)))
             fallback_chain_used = fallback_chain_used or bool(search_audit.get("fallback_chain_used", False))
             fallback_chain_steps = max(fallback_chain_steps, int(search_audit.get("fallback_chain_steps", 0)))
+        failure_summary = metadata.get("last_test_failure_summary", {})
+        if isinstance(failure_summary, dict):
+            for issue in failure_summary.get("environment_issues", []):
+                text = str(issue).strip()
+                if text and text not in environment_issues:
+                    environment_issues.append(text)
 
     for node in explored:
         local_scores = getattr(node, "local_scores", {}) or {}
@@ -133,6 +140,7 @@ def _case_audit_from_search(cfg: Dict[str, Any], task: ReasoningTask, final_stat
             "oracle_fields_touched": touched_fields,
             "oracle_fields_present_in_runtime": bool(runtime_oracle_fields),
             "integrity_events": integrity_events,
+            "environment_issues": environment_issues,
         }
     )
     integrity_passed = not runtime_oracle_fields and not touched_fields
@@ -304,6 +312,17 @@ def run_task_collection(
             "guided_rollout_rate": sum(1 for case in case_results if bool(case.audit.get("guided_rollout_used", False))) / max(1, len(case_results)),
             "fallback_repair_rate": sum(1 for case in case_results if bool(case.audit.get("fallback_repair_used", False))) / max(1, len(case_results)),
             "fallback_chain_rate": sum(1 for case in case_results if bool(case.audit.get("fallback_chain_used", False))) / max(1, len(case_results)),
+            "environment_issue_counts": {
+                issue: sum(1 for case in case_results if issue in case.audit.get("environment_issues", []))
+                for issue in sorted(
+                    {
+                        str(issue)
+                        for case in case_results
+                        for issue in case.audit.get("environment_issues", [])
+                        if str(issue).strip()
+                    }
+                )
+            },
             "oracle_fields_touched": sorted(
                 {
                     str(field)

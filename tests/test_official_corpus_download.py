@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import shutil
+import sys
 import unittest
 import uuid
 from pathlib import Path
@@ -12,9 +13,15 @@ from benchmarks.manifest_loader import lint_manifest_suite
 from domains.repo_agent_utils import (
     _apply_unified_patch_sections,
     _ensure_repo_cache,
+    _workspace_repo_test_packages,
+    _packages_for_missing_modules,
     _materialize_repo_workspace,
+    _read_text_file,
     _recount_unified_patch,
     create_workspace,
+    infer_prompt_source_hints,
+    inspect_python_tests_with_context,
+    summarize_test_failures,
 )
 
 
@@ -172,6 +179,160 @@ class OfficialCorpusDownloadTests(unittest.TestCase):
         self.assertTrue((workspace / "stats.py").exists())
         mock_materialize.assert_called_once()
         mock_apply_patch.assert_called_once()
+
+    @patch("domains.repo_agent_utils._apply_git_patch")
+    @patch("domains.repo_agent_utils._materialize_repo_workspace")
+    def test_create_workspace_uses_fail_to_pass_for_targeted_pytest_command(self, mock_materialize: object, mock_apply_patch: object) -> None:
+        temp_root = self._fresh_dir("official-corpus-targeted-tests")
+
+        def _fake_materialize(repo_slug: str, commit: str, workspace: Path, *, repo_cache_root: Path, clone_url: str = "") -> None:
+            workspace.mkdir(parents=True, exist_ok=True)
+            (workspace / "pytest.ini").write_text("[pytest]\n", encoding="utf-8")
+
+        mock_materialize.side_effect = _fake_materialize
+
+        task = _Task(
+            "requests__bug-1",
+            "Fix the repository",
+            {
+                "repo": "local/repo",
+                "base_commit": "abc123",
+                "FAIL_TO_PASS": json.dumps(["tests/test_bug.py::test_regression"]),
+                "PASS_TO_PASS": json.dumps(["tests/test_smoke.py::test_smoke"]),
+            },
+        )
+
+        workspace = create_workspace(task, temp_root / "workspaces", deterministic=True)
+
+        self.assertTrue(workspace.exists())
+        self.assertEqual(
+            task.meta["test_command"],
+            [
+                sys.executable,
+                "-m",
+                "pytest",
+                "-q",
+                "tests/test_bug.py::test_regression",
+                "tests/test_smoke.py::test_smoke",
+            ],
+        )
+
+    @patch("domains.repo_agent_utils._apply_git_patch")
+    @patch("domains.repo_agent_utils._materialize_repo_workspace")
+    def test_create_workspace_adds_repo_specific_pytest_args_for_astropy(self, mock_materialize: object, mock_apply_patch: object) -> None:
+        temp_root = self._fresh_dir("official-corpus-astropy-pytest-args")
+
+        def _fake_materialize(repo_slug: str, commit: str, workspace: Path, *, repo_cache_root: Path, clone_url: str = "") -> None:
+            workspace.mkdir(parents=True, exist_ok=True)
+            (workspace / "pytest.ini").write_text("[pytest]\n", encoding="utf-8")
+
+        mock_materialize.side_effect = _fake_materialize
+
+        task = _Task(
+            "astropy__astropy-12907",
+            "Fix the repository",
+            {
+                "repo": "astropy/astropy",
+                "base_commit": "abc123",
+                "FAIL_TO_PASS": json.dumps(["astropy/modeling/tests/test_separable.py::test_separable[compound_model6-result6]"]),
+            },
+        )
+
+        create_workspace(task, temp_root / "workspaces", deterministic=True)
+
+        self.assertEqual(
+            task.meta["test_command"][:6],
+            [sys.executable, "-m", "pytest", "-q", "-p", "no:warnings"],
+        )
+
+    def test_read_text_file_skips_binary_payloads(self) -> None:
+        temp_root = self._fresh_dir("official-corpus-binary-read")
+        binary_path = temp_root / "payload.bin"
+        binary_path.write_bytes(b"\x1f\x8b\x08\x00binary")
+
+        self.assertEqual(_read_text_file(binary_path), "")
+
+    def test_infer_prompt_source_hints_maps_issue_imports_to_workspace_files(self) -> None:
+        files = [
+            "astropy/modeling/separable.py",
+            "astropy/modeling/tests/test_separable.py",
+            "astropy/modeling/__init__.py",
+        ]
+        prompt = (
+            "Fix the bug in separability_matrix.\n"
+            "```python\n"
+            "from astropy.modeling.separable import separability_matrix\n"
+            "```\n"
+        )
+
+        hints = infer_prompt_source_hints(prompt, files)
+
+        self.assertIn("astropy/modeling/separable.py", hints["candidate_source_files"])
+        self.assertIn("separability_matrix", hints["symbols"])
+
+    def test_inspect_python_tests_uses_targeted_pytest_files_and_imports(self) -> None:
+        temp_root = self._fresh_dir("official-corpus-targeted-inspect")
+        workspace = temp_root / "workspace"
+        (workspace / "pkg").mkdir(parents=True, exist_ok=True)
+        (workspace / "pkg" / "logic.py").write_text("def answer():\n    return 1\n", encoding="utf-8")
+        (workspace / "pkg" / "tests").mkdir(parents=True, exist_ok=True)
+        (workspace / "pkg" / "tests" / "test_logic.py").write_text(
+            "from pkg.logic import answer\n\n\ndef test_answer():\n    assert answer() == 2\n",
+            encoding="utf-8",
+        )
+
+        summary = inspect_python_tests_with_context(
+            workspace,
+            target_test_files=["pkg/tests/test_logic.py"],
+            prompt="Fix answer() in pkg.logic",
+            meta={"FAIL_TO_PASS": json.dumps(["pkg/tests/test_logic.py::test_answer"])},
+        )
+
+        self.assertEqual(summary["targeted_test_files"], ["pkg/tests/test_logic.py"])
+        self.assertIn("pkg/logic.py", summary["candidate_source_files"])
+        self.assertIn("answer", summary["symbols"])
+
+    def test_summarize_test_failures_tracks_missing_modules(self) -> None:
+        failure = summarize_test_failures("ModuleNotFoundError: No module named 'erfa'")
+
+        self.assertEqual(failure["missing_modules"], ["erfa"])
+        self.assertEqual(_packages_for_missing_modules(failure["missing_modules"]), ["pyerfa"])
+
+    def test_summarize_test_failures_detects_compiled_extension_bootstrap_needs(self) -> None:
+        failure = summarize_test_failures(
+            "ImportError: You appear to be trying to import astropy from within a source checkout "
+            "without building the extension modules first.\n"
+            "ModuleNotFoundError: No module named 'astropy.table._column_mixins'"
+        )
+
+        self.assertIn("compiled_extensions_missing", failure["environment_issues"])
+
+    def test_packages_for_missing_modules_skips_internal_compiled_module_names(self) -> None:
+        packages = _packages_for_missing_modules(["astropy.table._column_mixins", "erfa"])
+
+        self.assertEqual(packages, ["pyerfa"])
+
+    def test_workspace_repo_test_packages_reads_setup_cfg_test_dependencies(self) -> None:
+        temp_root = self._fresh_dir("official-corpus-setupcfg-packages")
+        workspace = temp_root / "workspace"
+        workspace.mkdir(parents=True, exist_ok=True)
+        (workspace / "setup.cfg").write_text(
+            "[options]\n"
+            "install_requires =\n"
+            "    packaging>=19.0\n"
+            "    PyYAML>=3.13\n\n"
+            "[options.extras_require]\n"
+            "test =\n"
+            "    pytest-astropy>=0.9\n"
+            "    pytest-xdist\n",
+            encoding="utf-8",
+        )
+
+        packages = _workspace_repo_test_packages(workspace, "astropy/astropy")
+
+        self.assertIn("pytest-astropy>=0.9", packages)
+        self.assertIn("pytest-xdist", packages)
+        self.assertIn("packaging>=19.0", packages)
 
     @patch("domains.repo_agent_utils._run_git")
     @patch("domains.repo_agent_utils._git_has_commit", return_value=True)
