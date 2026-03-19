@@ -14,6 +14,9 @@ def resolve_search_mode(initial_state: Any, score_config: dict[str, Any] | None 
         return mode
     domain = str(getattr(initial_state, "domain", "")).lower()
     metadata = getattr(initial_state, "metadata", {}) or {}
+    preferred = str(metadata.get("preferred_search_mode", "")).strip().lower()
+    if preferred in {"beam", "mcts"}:
+        return preferred
     family = str(metadata.get("family", "")).lower()
     combined = f"{domain} {family}"
     if any(token in combined for token in ["plan", "gaia", "swebench", "repo_patch"]):

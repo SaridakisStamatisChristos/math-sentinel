@@ -80,3 +80,35 @@ class SwebenchOpsBackendTests(unittest.TestCase):
 
         self.assertEqual(state.status, "solved")
         self.assertEqual(state.final_answer, "patched_and_verified")
+
+    def test_fallback_loop_solves_smoke_case_within_repo_repair_horizon(self) -> None:
+        backend = SwebenchOpsReasoningDomain()
+        task = backend.benchmark_tasks()[0]
+        state = backend.make_state(task)
+        executor = backend.create_executor()
+
+        steps = 0
+        while steps < 6 and state.status != "solved":
+            repair = backend.fallback_repairs(state)[0]
+            state, _ = executor.apply(state, repair)
+            steps += 1
+
+        self.assertEqual(state.status, "solved")
+        self.assertEqual(state.final_answer, "patched_and_verified")
+        self.assertLessEqual(steps, 6)
+
+    def test_draft_patch_bindings_include_patch_ready_context(self) -> None:
+        backend = SwebenchOpsReasoningDomain()
+        task = backend.benchmark_tasks()[0]
+        state = backend.make_state(task)
+        executor = backend.create_executor()
+
+        for _ in range(3):
+            repair = backend.fallback_repairs(state)[0]
+            state, _ = executor.apply(state, repair)
+
+        bindings = backend.candidate_bindings(state, "APPLY", "draft_patch")
+        joined = "\n---\n".join(item["content"] for item in bindings)
+
+        self.assertIn("Primary file:", joined)
+        self.assertTrue("Candidate files:" in joined or "Test symbols:" in joined)

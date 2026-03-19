@@ -69,6 +69,17 @@ class SearchRouterTests(unittest.TestCase):
         self.assertEqual(resolve_search_mode(swebench_state, {"mode": "auto"}), "mcts")
         self.assertEqual(resolve_search_mode(gaia_state, {"mode": "auto"}), "mcts")
 
+    def test_metadata_preferred_search_mode_overrides_auto_heuristic(self) -> None:
+        swebench_state = ProofState(
+            task_id="repo_2",
+            domain="swebench_patch",
+            problem_text="Patch the repository",
+            goal="Patch the repo",
+            metadata={"family": "swebench_patch", "preferred_search_mode": "beam"},
+        )
+
+        self.assertEqual(resolve_search_mode(swebench_state, {"mode": "auto"}), "beam")
+
     def test_run_search_routes_to_expected_engine(self) -> None:
         state = ProofState(
             task_id="plan_2",

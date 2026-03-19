@@ -260,6 +260,7 @@ class SwebenchOpsReasoningDomain:
         metadata["holdout_group"] = str(raw_metadata.get("holdout_group", metadata.get("holdout_group", "")))
         metadata["source"] = str(raw_metadata.get("source", metadata.get("source", "")))
         metadata["fixture_role"] = str(raw_metadata.get("fixture_role", metadata.get("fixture_role", "")))
+        metadata["preferred_search_mode"] = "beam"
         ensure_benchmark_audit(metadata, assistance_mode=self.assistance_mode)
         if self.assistance_mode == "assisted" and self.oracle_hints_enabled:
             oracle_primary = str(raw_metadata.get("oracle_primary_file", ""))
@@ -376,18 +377,88 @@ class SwebenchOpsReasoningDomain:
                 answers.append(candidate)
         return [{"content": item} for item in answers]
 
+    @staticmethod
+    def _patch_ready_context(state: ReasoningState) -> bool:
+        primary_file = str(state.metadata.get("primary_file", "")).strip()
+        candidate_files = [str(item).strip() for item in state.metadata.get("candidate_source_files", []) if str(item).strip()]
+        test_symbols = [str(item).strip() for item in state.metadata.get("test_symbols", []) if str(item).strip()]
+        failure_lines: List[str] = []
+        for record in reversed(list(state.tool_payloads)):
+            if not isinstance(record, dict) or record.get("tool") != "localize_failure":
+                continue
+            payload = record.get("payload", {})
+            if isinstance(payload, dict):
+                localization = payload.get("localization", {})
+                if isinstance(localization, dict):
+                    failure_lines = [str(item).strip() for item in localization.get("failure_lines", []) if str(item).strip()]
+            break
+        return bool(primary_file or candidate_files or test_symbols or failure_lines)
+
+    @staticmethod
+    def _draft_patch_bindings(state: ReasoningState) -> List[Dict[str, str]]:
+        problem = state.problem_text.strip()
+        primary_file = str(state.metadata.get("primary_file", "")).strip()
+        candidate_files = [str(item).strip() for item in state.metadata.get("candidate_source_files", []) if str(item).strip()]
+        test_symbols = [str(item).strip() for item in state.metadata.get("test_symbols", []) if str(item).strip()]
+        failure_lines: List[str] = []
+        for record in reversed(list(state.tool_payloads)):
+            if not isinstance(record, dict) or record.get("tool") != "localize_failure":
+                continue
+            payload = record.get("payload", {})
+            if not isinstance(payload, dict):
+                continue
+            localization = payload.get("localization", {})
+            if isinstance(localization, dict):
+                failure_lines = [str(item).strip() for item in localization.get("failure_lines", []) if str(item).strip()]
+            break
+
+        contexts: List[str] = []
+        if problem:
+            contexts.append(problem)
+        if primary_file:
+            contexts.append(f"{problem}\nPrimary file: {primary_file}".strip())
+        if candidate_files or test_symbols:
+            details: List[str] = []
+            if primary_file:
+                details.append(f"Primary file: {primary_file}")
+            if candidate_files:
+                details.append(f"Candidate files: {', '.join(candidate_files[:3])}")
+            if test_symbols:
+                details.append(f"Test symbols: {', '.join(test_symbols[:3])}")
+            contexts.append(f"{problem}\n" + "\n".join(details))
+        if failure_lines:
+            details = [f"Failure lines: {', '.join(failure_lines[:3])}"]
+            if primary_file:
+                details.append(f"Primary file: {primary_file}")
+            contexts.append(f"{problem}\n" + "\n".join(details))
+
+        deduped: List[Dict[str, str]] = []
+        seen: set[str] = set()
+        for item in contexts:
+            text = item.strip()
+            if not text or text in seen:
+                continue
+            seen.add(text)
+            deduped.append({"content": text})
+        return deduped or [{"content": problem or primary_file}]
+
     def _next_apply_tools(self, state: ReasoningState) -> List[str]:
         tool_names = self._tool_names(state)
         run_tests_count = tool_names.count("run_unit_tests")
+        patch_ready = self._patch_ready_context(state)
         if bool(state.metadata.get("claim_mode", False)):
             if "inspect_workspace" not in tool_names:
                 return ["inspect_workspace"]
             if "inspect_tests" not in tool_names:
                 return ["inspect_tests"]
+            if "draft_patch" in tool_names and "apply_patch" not in tool_names:
+                return ["apply_patch"]
             if "localize_failure" not in tool_names:
+                if run_tests_count >= 1 and patch_ready:
+                    return ["draft_patch", "localize_failure", "read_file"]
                 return ["localize_failure"] if run_tests_count >= 1 or bool(state.metadata.get("last_test_failed", False)) else ["localize_failure", "search_code"]
             if "draft_patch" not in tool_names:
-                return ["draft_patch", "read_file"] if str(state.metadata.get("primary_file", "")).strip() else ["draft_patch"]
+                return ["draft_patch", "read_file"] if patch_ready else ["draft_patch"]
             if "apply_patch" not in tool_names:
                 return ["apply_patch"]
             return ["rollback_patch", "draft_patch"]
@@ -395,11 +466,15 @@ class SwebenchOpsReasoningDomain:
             return ["inspect_workspace"]
         if "inspect_tests" not in tool_names:
             return ["inspect_tests", "search_code"]
+        if "draft_patch" in tool_names and "apply_patch" not in tool_names:
+            return ["apply_patch"]
         if "localize_failure" not in tool_names:
+            if run_tests_count >= 1 and patch_ready:
+                return ["draft_patch", "localize_failure", "read_file"]
             return ["localize_failure", "search_code"]
         if "draft_patch" not in tool_names:
             tools = ["read_file", "draft_patch", "search_code"]
-            return tools if str(state.metadata.get("primary_file", "")).strip() else ["search_code", "draft_patch"]
+            return tools if patch_ready else ["search_code", "draft_patch"]
         if "apply_patch" not in tool_names:
             return ["apply_patch", "rollback_patch"]
         return ["draft_patch", "read_file", "search_code", "rollback_patch"]
@@ -420,13 +495,19 @@ class SwebenchOpsReasoningDomain:
 
     def fallback_repairs(self, state: ReasoningState) -> List[Action]:
         tool_names = self._tool_names(state)
+        run_tests_count = tool_names.count("run_unit_tests")
+        patch_ready = self._patch_ready_context(state)
         if "inspect_workspace" not in tool_names:
             return [Action(type=ActionType.APPLY, tool="inspect_workspace", content="")]
         if "inspect_tests" not in tool_names:
             return [Action(type=ActionType.APPLY, tool="inspect_tests", content="")]
         if "run_unit_tests" not in tool_names:
             return [Action(type=ActionType.CHECK, tool="run_unit_tests", content="")]
-        if "localize_failure" not in tool_names and state.status != "solved":
+        if "draft_patch" in tool_names and "apply_patch" not in tool_names and state.status != "solved":
+            return [Action(type=ActionType.APPLY, tool="apply_patch", content="")]
+        if "draft_patch" not in tool_names and state.status != "solved" and run_tests_count >= 1 and patch_ready:
+            return [Action(type=ActionType.APPLY, tool="draft_patch", content=state.problem_text)]
+        if "localize_failure" not in tool_names and state.status != "solved" and "apply_patch" not in tool_names:
             return [Action(type=ActionType.APPLY, tool="localize_failure", content="")]
         if "draft_patch" not in tool_names and state.status != "solved":
             return [Action(type=ActionType.APPLY, tool="draft_patch", content=state.problem_text)]
@@ -441,10 +522,7 @@ class SwebenchOpsReasoningDomain:
     def allowed_action_types(self, state: ReasoningState) -> List[str]:
         if state.final_answer.strip():
             return ["ANSWER"]
-        if bool(state.metadata.get("claim_mode", False)):
-            actions = ["APPLY", "CHECK"]
-        else:
-            actions = ["THINK", "SUBGOAL", "APPLY", "CHECK"]
+        actions = ["APPLY", "CHECK"]
         if state.derived_facts or state.tool_history or state.metadata.get("candidate_answer"):
             actions.append("ANSWER")
         return actions
@@ -482,14 +560,15 @@ class SwebenchOpsReasoningDomain:
             symbols = list(state.metadata.get("test_symbols", []))
             return [{"content": symbol} for symbol in symbols[:3]] or [{"content": "return"}]
         if tool == "draft_patch":
-            context = str(state.metadata.get("primary_file", "")) or state.problem_text
-            return [{"content": context}]
+            return self._draft_patch_bindings(state)
         return []
 
     def action_preference(self, state: ReasoningState, action: Action) -> float:
         tool_names = self._tool_names(state)
         run_tests_count = tool_names.count("run_unit_tests")
         primary_file = str(state.metadata.get("primary_file", "")).strip()
+        patch_ready = self._patch_ready_context(state)
+        suggested_tools = [str(item).strip() for item in state.metadata.get("suggested_tools", []) if str(item).strip()]
         if action.type == ActionType.ANSWER:
             return 1.0 if state.final_answer.strip() or str(state.metadata.get("candidate_answer", "")).strip() else 0.0
         if action.type == ActionType.CHECK and action.tool == "run_unit_tests":
@@ -504,6 +583,8 @@ class SwebenchOpsReasoningDomain:
             if action.tool == "inspect_tests":
                 return 0.98 if "inspect_workspace" in tool_names and "inspect_tests" not in tool_names else 0.10
             if action.tool == "localize_failure":
+                if run_tests_count >= 1 and patch_ready and "draft_patch" not in tool_names:
+                    return 0.55
                 return 0.98 if run_tests_count >= 1 and "localize_failure" not in tool_names else 0.20
             if action.tool == "read_file":
                 last_read = str(state.metadata.get("last_read_file", "")).strip()
@@ -511,9 +592,13 @@ class SwebenchOpsReasoningDomain:
             if action.tool == "draft_patch":
                 if "localize_failure" in tool_names and "draft_patch" not in tool_names:
                     return 0.98
-                return 0.30
+                if run_tests_count >= 1 and patch_ready and "draft_patch" not in tool_names:
+                    return 0.98
+                return 0.38 if "draft_patch" in suggested_tools else 0.30
             if action.tool == "apply_patch":
-                return 1.0 if "draft_patch" in tool_names and "apply_patch" not in tool_names else 0.18
+                if "draft_patch" in tool_names and "apply_patch" not in tool_names:
+                    return 1.0
+                return 0.24 if "apply_patch" in suggested_tools else 0.18
             if action.tool == "search_code":
                 return 0.55 if "localize_failure" not in tool_names else 0.20
             if action.tool == "rollback_patch":

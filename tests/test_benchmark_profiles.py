@@ -37,6 +37,20 @@ class BenchmarkProfileTests(unittest.TestCase):
         self.assertEqual(cfg["search"]["beam_width"], 5)
         self.assertEqual(cfg["training"]["micro_batch_size"], 1)
 
+    def test_rtx4060_coder_profile_allows_full_repo_repair_horizon(self) -> None:
+        cfg = load_runtime_config("config/benchmarks/profile_rtx4060_coder_1p5b.yaml", search_config_path="")
+
+        self.assertEqual(cfg["model"]["provider"], "hf_causal_lm")
+        self.assertEqual(cfg["model"]["backbone"], "models/Qwen2.5-Coder-1.5B-Instruct")
+        self.assertTrue(cfg["model"]["local_files_only"])
+        self.assertEqual(cfg["search"]["mode"], "beam")
+        self.assertEqual(cfg["search"]["beam_width"], 8)
+        self.assertEqual(cfg["search"]["proposal_count"], 8)
+        self.assertEqual(cfg["search"]["max_depth"], 8)
+        self.assertEqual(cfg["search"]["mcts_simulations"], 24)
+        self.assertEqual(cfg["search"]["transposition_capacity"], 8192)
+        self.assertEqual(cfg["search"]["fallback_bonus"], 0.35)
+
     def test_rtx4060_product_config_preserves_local_search_when_override_is_disabled(self) -> None:
         cfg = load_runtime_config("config/product_rtx4060_laptop.yaml", search_config_path="")
 

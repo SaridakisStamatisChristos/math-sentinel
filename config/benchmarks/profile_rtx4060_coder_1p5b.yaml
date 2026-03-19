@@ -19,10 +19,12 @@ training:
   max_new_tokens: 48
 
 search:
-  beam_width: 6
-  proposal_count: 6
-  max_depth: 6
-  mcts_simulations: 16
-  mcts_branching: 6
-  guided_rollout_depth: 6
-  transposition_capacity: 4096
+  mode: beam
+  beam_width: 8
+  proposal_count: 8
+  max_depth: 8
+  mcts_simulations: 24
+  mcts_branching: 8
+  guided_rollout_depth: 8
+  transposition_capacity: 8192
+  fallback_bonus: 0.35
