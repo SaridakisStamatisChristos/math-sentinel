@@ -87,6 +87,7 @@ memory/replay.jsonl
 # Local env files
 .env
 .venv
+.hf_token.local
 
 # Benchmark artifacts
 benchmarks/manifests/*_full_official.json
