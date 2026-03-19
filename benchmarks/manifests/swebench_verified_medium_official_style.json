@@ -1,0 +1,124 @@
+{
+  "name": "swebench_verified_medium_official_style",
+  "backend": "swebench_ops",
+  "description": "Official-style SWE-bench benchmark manifest backed by local medium fixtures.",
+  "tier": "official_style",
+  "source_format": "swebench_jsonl",
+  "metadata": {
+    "source": "public_benchmark_export"
+  },
+  "cases": [
+    {
+      "task_id": "swebench_count_bug",
+      "domain": "swebench_patch",
+      "prompt": "Patch the repository so the failing tests pass. The bug is only visible from the tests and the workspace has distractor files. Fix the counting behavior and verify with the test suite.",
+      "answer": "patched_and_verified",
+      "goal": "Patch the repository so the tests pass",
+      "meta": {
+        "family": "swebench_patch",
+        "fixture_dir": "../fixtures/swebench_medium_smoke/count_bug",
+        "oracle_primary_file": "stats.py",
+        "oracle_patch": [
+          {
+            "path": "stats.py",
+            "search": "    return len(items) - 1\n",
+            "replace": "    return len(items)\n"
+          }
+        ],
+        "test_command": [
+          "python",
+          "-m",
+          "unittest",
+          "discover",
+          "-s",
+          "tests",
+          "-q"
+        ]
+      }
+    },
+    {
+      "task_id": "swebench_positive_filter_bug",
+      "domain": "swebench_patch",
+      "prompt": "Patch the repository so the failing tests pass. Fix the positivity predicate so zero is excluded, and verify with the test suite.",
+      "answer": "patched_and_verified",
+      "goal": "Patch the repository so the tests pass",
+      "meta": {
+        "family": "swebench_patch",
+        "fixture_dir": "../fixtures/swebench_medium_smoke/positive_filter_bug",
+        "oracle_primary_file": "filters.py",
+        "oracle_patch": [
+          {
+            "path": "filters.py",
+            "search": ">= 0",
+            "replace": "> 0"
+          }
+        ],
+        "test_command": [
+          "python",
+          "-m",
+          "unittest",
+          "discover",
+          "-s",
+          "tests",
+          "-q"
+        ]
+      }
+    },
+    {
+      "task_id": "swebench_slugify_bug_complex",
+      "domain": "swebench_patch",
+      "prompt": "Patch the repository so the failing tests pass. Normalize slugs with hyphens instead of underscores and verify with the test suite.",
+      "answer": "patched_and_verified",
+      "goal": "Patch the repository so the tests pass",
+      "meta": {
+        "family": "swebench_patch",
+        "fixture_dir": "../fixtures/swebench_medium_smoke/slugify_bug_complex",
+        "oracle_primary_file": "text_utils.py",
+        "oracle_patch": [
+          {
+            "path": "text_utils.py",
+            "search": "    return value.strip().lower().replace(\" \", \"_\")\n",
+            "replace": "    return \"-\".join(value.strip().lower().split())\n"
+          }
+        ],
+        "test_command": [
+          "python",
+          "-m",
+          "unittest",
+          "discover",
+          "-s",
+          "tests",
+          "-q"
+        ]
+      }
+    },
+    {
+      "task_id": "swebench_argument_order_bug",
+      "domain": "swebench_patch",
+      "prompt": "Patch the repository so the failing tests pass. The helper is correct, but the public formatter passes arguments in the wrong order. Verify with the test suite.",
+      "answer": "patched_and_verified",
+      "goal": "Patch the repository so the tests pass",
+      "meta": {
+        "family": "swebench_patch",
+        "fixture_dir": "../fixtures/swebench_medium_smoke/argument_order_bug",
+        "oracle_primary_file": "formatters.py",
+        "oracle_patch": [
+          {
+            "path": "formatters.py",
+            "search": "    return build_name(last, first)\n",
+            "replace": "    return build_name(first, last)\n"
+          }
+        ],
+        "test_command": [
+          "python",
+          "-m",
+          "unittest",
+          "discover",
+          "-s",
+          "tests",
+          "-q"
+        ]
+      }
+    }
+  ]
+}

@@ -86,6 +86,20 @@ RTX 4060 laptop code-agent benchmark smoke:
 python benchmark_v7.py --profile rtx4060_coder_local --suite swebench_verified_smoke --deterministic --safe-runtime
 ```
 
+Official-style manifest benchmark on the RTX 4060:
+
+```powershell
+python benchmark_v7.py --profile rtx4060_general_local --suite manifest:benchmarks/manifests/gaia_medium_official_style.json --deterministic --safe-runtime
+python benchmark_v7.py --profile rtx4060_coder_local --suite manifest:benchmarks/manifests/swebench_verified_medium_official_style.json --deterministic --safe-runtime
+```
+
+Import a local public benchmark export into a runnable manifest:
+
+```powershell
+python benchmarks/import_public_manifest.py --format swebench --input data\swebench_export.jsonl --output benchmarks\manifests\swebench_public_import.json --fixtures-root benchmarks\fixtures\swebench_medium_smoke
+python benchmarks/import_public_manifest.py --format gaia --input data\gaia_export.jsonl --output benchmarks\manifests\gaia_public_import.json --fixtures-root benchmarks\fixtures\gaia_medium_smoke
+```
+
 When using a dedicated product config like `config/product_rtx4060_laptop.yaml`, pass `--search-config ""` if you want the config's own search block to stay intact instead of being overridden by `config/search.yaml`.
 
 The RTX 4060 branch assumes the downloaded Qwen 1.5B weights live under the local `models/` folder, so the config can stay offline by default.

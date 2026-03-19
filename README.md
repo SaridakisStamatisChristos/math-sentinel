@@ -240,6 +240,20 @@ For code-agent tasks on the same GPU, prefer the coder-tuned 1.5B benchmark prof
 python benchmark_v7.py --profile rtx4060_coder_local --suite swebench_verified_smoke --deterministic --safe-runtime
 ```
 
+Official-style manifest benchmarks are also supported. A manifest run uses `--suite manifest:<path>` and drives the same benchmark engine through a locally imported public-benchmark export:
+
+```bash
+python benchmark_v7.py --profile rtx4060_general_local --suite manifest:benchmarks/manifests/gaia_medium_official_style.json --deterministic --safe-runtime
+python benchmark_v7.py --profile rtx4060_coder_local --suite manifest:benchmarks/manifests/swebench_verified_medium_official_style.json --deterministic --safe-runtime
+```
+
+To convert a local benchmark export into a runnable manifest:
+
+```bash
+python benchmarks/import_public_manifest.py --format swebench --input data/swebench_export.jsonl --output benchmarks/manifests/swebench_public_import.json --fixtures-root benchmarks/fixtures/swebench_medium_smoke
+python benchmarks/import_public_manifest.py --format gaia --input data/gaia_export.jsonl --output benchmarks/manifests/gaia_public_import.json --fixtures-root benchmarks/fixtures/gaia_medium_smoke
+```
+
 You can also scale the model in `config/default.yaml` once CUDA is confirmed working.
 
 Resume:

@@ -14,6 +14,7 @@ from sentinel.search_runtime import build_action_bias_fn, build_prompt_builder, 
 from sentinel.verifier import StateVerifier
 
 from .base import BenchmarkCaseResult, BenchmarkSuite, BenchmarkSuiteResult
+from .manifest_loader import load_manifest_suite
 from .public_catalog import available_public_suites, available_public_suite_groups, load_public_suite
 
 
@@ -37,9 +38,16 @@ def resolve_backends(spec: str) -> List[str]:
 
 def resolve_suite_targets(suite_spec: str, backends_spec: str) -> List[Tuple[str, str]]:
     targets: List[Tuple[str, str]] = []
-    normalized_suite = (suite_spec or "internal").strip().lower()
+    raw_suite = (suite_spec or "internal").strip()
+    normalized_suite = raw_suite.lower()
     public_suites = set(available_public_suites())
     public_groups = available_public_suite_groups()
+
+    if normalized_suite.startswith("manifest:"):
+        manifest_path = raw_suite.split(":", 1)[1].strip()
+        if manifest_path:
+            return [("manifest", manifest_path)]
+        return []
 
     if normalized_suite in {"internal", "all"}:
         for backend_name in resolve_backends(backends_spec):
@@ -339,6 +347,8 @@ def run_suite_target(
         return run_backend_benchmark(target_name, cfg, prover, verifier, tokenizer, device, checker_plugin, event_logger)
     if target_kind == "public":
         return run_public_suite(target_name, cfg, prover, verifier, tokenizer, device, checker_plugin, event_logger)
+    if target_kind == "manifest":
+        return run_manifest_suite(target_name, cfg, prover, verifier, tokenizer, device, checker_plugin, event_logger)
     raise ValueError(f"unknown benchmark target kind: {target_kind}")
 
 
@@ -353,6 +363,33 @@ def run_public_suite(
     event_logger: Any,
 ) -> BenchmarkSuiteResult:
     suite: BenchmarkSuite = load_public_suite(suite_name)
+    return run_task_collection(
+        suite_name=suite.name,
+        tier=suite.tier,
+        description=suite.description,
+        backend_name=suite.backend,
+        tasks=suite.cases,
+        cfg=cfg,
+        prover=prover,
+        verifier=verifier,
+        tokenizer=tokenizer,
+        device=device,
+        checker_plugin=checker_plugin,
+        event_logger=event_logger,
+    )
+
+
+def run_manifest_suite(
+    manifest_path: str,
+    cfg: Dict[str, Any],
+    prover: torch.nn.Module,
+    verifier: StateVerifier,
+    tokenizer: Any,
+    device: str,
+    checker_plugin: str,
+    event_logger: Any,
+) -> BenchmarkSuiteResult:
+    suite: BenchmarkSuite = load_manifest_suite(manifest_path)
     return run_task_collection(
         suite_name=suite.name,
         tier=suite.tier,

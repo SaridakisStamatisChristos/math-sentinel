@@ -18,7 +18,7 @@ from sentinel.runtime_events import build_runtime_event_logger
 
 def default_campaign_profile_for_suite(suite_spec: str) -> str:
     normalized = (suite_spec or "").strip().lower()
-    if normalized.startswith("public"):
+    if normalized.startswith("public") or normalized.startswith("manifest:"):
         return "public_unassisted_strict"
     return "smoke_tiny"
 

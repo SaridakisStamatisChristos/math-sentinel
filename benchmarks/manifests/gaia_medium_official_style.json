@@ -1,0 +1,54 @@
+{
+  "name": "gaia_medium_official_style",
+  "backend": "gaia_ops",
+  "description": "Official-style GAIA benchmark manifest backed by local medium fixtures.",
+  "tier": "official_style",
+  "source_format": "gaia_jsonl",
+  "metadata": {
+    "source": "public_benchmark_export"
+  },
+  "cases": [
+    {
+      "task_id": "gaia_cross_file_sales",
+      "domain": "gaia_csv_reasoning",
+      "prompt": "Use the files in the workspace to answer this question: what is the total sales amount for the east region across q1_sales.csv and q2_sales.csv? Return only the number.",
+      "answer": "41",
+      "goal": "Return the shortest correct final answer",
+      "meta": {
+        "family": "gaia_csv_reasoning",
+        "fixture_dir": "../fixtures/gaia_medium_smoke/cross_file_sales",
+        "oracle_tool": "csv_region_total_multi",
+        "oracle_input": "q1_sales.csv,q2_sales.csv|region|east|amount",
+        "oracle_evidence_file": "q1_sales.csv"
+      }
+    },
+    {
+      "task_id": "gaia_city_leaderboard",
+      "domain": "gaia_csv_reasoning",
+      "prompt": "Use the files in the workspace to answer this question: which city had the highest total amount in March 2025 in orders.csv? Return only the city name.",
+      "answer": "Athens",
+      "goal": "Return the shortest correct final answer",
+      "meta": {
+        "family": "gaia_csv_reasoning",
+        "fixture_dir": "../fixtures/gaia_medium_smoke/city_leaderboard",
+        "oracle_tool": "csv_groupby_max",
+        "oracle_input": "orders.csv|month=2025-03|group=city|amount|max",
+        "oracle_evidence_file": "orders.csv"
+      }
+    },
+    {
+      "task_id": "gaia_roadmap_dates",
+      "domain": "gaia_json_reasoning",
+      "prompt": "Use the files in the workspace to answer this question: in roadmap.json, which pending task owned by Mira has the earliest due date? Return only the task title.",
+      "answer": "Finalize budget",
+      "goal": "Return the shortest correct final answer",
+      "meta": {
+        "family": "gaia_json_reasoning",
+        "fixture_dir": "../fixtures/gaia_medium_smoke/roadmap_dates",
+        "oracle_tool": "json_record_date_min",
+        "oracle_input": "roadmap.json|owner=Mira|status=pending|date=due|answer=title|min",
+        "oracle_evidence_file": "roadmap.json"
+      }
+    }
+  ]
+}
