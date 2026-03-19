@@ -1,12 +1,20 @@
 profiles:
   public_claim_no_repairs:
-    description: Headline public-claim profile with unassisted evaluation, no repairs, no guided rollout, and no retrieval.
+    description: Headline public-claim profile using the local Qwen 1.5B runtime with unassisted evaluation, no repairs, no guided rollout, and no retrieval.
     config: profile_public_claim_no_repairs.yaml
     suites: [public_smoke, public_medium]
-    tags: [public, strict, unassisted, claim, no_repairs]
+    tags: [public, strict, unassisted, claim, no_repairs, hf, qwen, local]
     metadata:
-      scale: tiny
+      scale: 1.5b
       purpose: public_claim_no_repairs
+  public_claim_coder_local_1p5b:
+    description: SWE-bench-style public-claim profile using the local Qwen Coder 1.5B runtime with no repairs, no guided rollout, and no retrieval.
+    config: profile_public_claim_coder_local_1p5b.yaml
+    suites: [swebench_verified_smoke, swebench_verified_medium]
+    tags: [public, strict, unassisted, claim, no_repairs, hf, qwen, local, coder]
+    metadata:
+      scale: 1.5b
+      purpose: public_claim_no_repairs_coder
   public_unassisted_strict:
     description: Legacy strict public profile kept for compatibility; use public_claim_no_repairs for headline claims.
     config: profile_public_unassisted_strict.yaml

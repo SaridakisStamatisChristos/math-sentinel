@@ -14,6 +14,7 @@ class BenchmarkProfileTests(unittest.TestCase):
 
         self.assertIn("smoke_tiny", profiles)
         self.assertIn("public_claim_no_repairs", profiles)
+        self.assertIn("public_claim_coder_local_1p5b", profiles)
         self.assertIn("public_unassisted_strict", profiles)
         self.assertIn("qwen_coder_flagship_32b", profiles)
         self.assertIn("rtx4060_general_local", profiles)
@@ -79,20 +80,33 @@ class BenchmarkProfileTests(unittest.TestCase):
 
     def test_default_public_campaign_profile_uses_no_repairs_claim_lane(self) -> None:
         self.assertEqual(default_campaign_profile_for_suite("public_medium"), "public_claim_no_repairs")
+        self.assertEqual(default_campaign_profile_for_suite("swebench_verified_medium"), "public_claim_coder_local_1p5b")
+        self.assertEqual(
+            default_campaign_profile_for_suite("manifest:benchmarks/manifests/swebench_verified_medium_official_style.json"),
+            "public_claim_coder_local_1p5b",
+        )
         self.assertEqual(
             default_campaign_profile_for_suite("manifest:benchmarks/manifests/gaia_medium_official_style.json"),
             "public_claim_no_repairs",
         )
 
     def test_strict_and_search_assisted_public_profiles_diverge_on_guided_rollout(self) -> None:
+        coder_claim_cfg = load_runtime_config("config/benchmarks/profile_public_claim_coder_local_1p5b.yaml", search_config_path="")
         claim_cfg = load_runtime_config("config/benchmarks/profile_public_claim_no_repairs.yaml", search_config_path="")
         strict_cfg = load_runtime_config("config/benchmarks/profile_public_unassisted_strict.yaml", search_config_path="")
         assisted_cfg = load_runtime_config("config/benchmarks/profile_public_search_assisted.yaml", search_config_path="")
 
+        self.assertEqual(claim_cfg["model"]["provider"], "hf_causal_lm")
+        self.assertEqual(claim_cfg["model"]["backbone"], "models/Qwen2.5-1.5B-Instruct")
+        self.assertTrue(claim_cfg["model"]["local_files_only"])
+        self.assertEqual(claim_cfg["model"]["dtype"], "float16")
         self.assertEqual(claim_cfg["benchmark"]["report_lane"], "claim_no_repairs")
         self.assertFalse(claim_cfg["search"]["enable_fallback_repairs"])
         self.assertFalse(claim_cfg["search"]["guided_fallback_rollout"])
         self.assertEqual(claim_cfg["memory"]["retrieval_mode"], "none")
+        self.assertEqual(coder_claim_cfg["model"]["backbone"], "models/Qwen2.5-Coder-1.5B-Instruct")
+        self.assertEqual(coder_claim_cfg["benchmark"]["report_lane"], "claim_no_repairs_coder")
+        self.assertEqual(coder_claim_cfg["search"]["beam_width"], 8)
         self.assertEqual(strict_cfg["benchmark"]["assistance_mode"], "unassisted")
         self.assertTrue(strict_cfg["benchmark"]["claim_mode"])
         self.assertFalse(strict_cfg["search"]["guided_fallback_rollout"])

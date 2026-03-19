@@ -418,11 +418,25 @@ python benchmark_v7.py \
 
 Important benchmark profiles now include:
 
-- `public_unassisted_strict`: the default claim profile
+- `public_claim_no_repairs`: the default local 1.5B public claim profile
+- `public_claim_coder_local_1p5b`: the default local 1.5B coder claim profile for SWE-bench-style runs
+- `public_unassisted_strict`: the legacy tiny strict profile kept for compatibility
 - `public_search_assisted`: a development baseline with guided rollout enabled
 - `smoke_tiny`: a fast regression profile
 - `rtx4060_general_local`: RTX 4060 laptop tuned general local profile
 - `rtx4060_coder_local`: RTX 4060 laptop tuned code-agent local profile
+
+For official-style local claim runs on a machine with the downloaded 1.5B models:
+
+```bash
+python benchmark_v7.py --suite manifest:benchmarks/manifests/gaia_medium_official_style.json --deterministic --safe-runtime
+python benchmark_v7.py --suite manifest:benchmarks/manifests/swebench_verified_medium_official_style.json --deterministic --safe-runtime
+```
+
+On this branch, those manifest commands auto-select the local 1.5B claim profile:
+
+- GAIA / math style suites -> `public_claim_no_repairs`
+- SWE-bench style suites -> `public_claim_coder_local_1p5b`
 
 There are also focused runner entrypoints:
 

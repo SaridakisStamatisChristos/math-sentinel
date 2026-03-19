@@ -7,7 +7,7 @@ from typing import Any, Dict
 from benchmarks.ablations import resolve_benchmark_ablations
 from benchmarks.ablations import available_benchmark_ablations
 from benchmarks.campaign import run_benchmark_campaign
-from benchmarks.profiles import resolve_benchmark_profiles
+from benchmarks.profiles import apply_benchmark_profile, resolve_benchmark_profiles
 from benchmarks.profiles import available_benchmark_profiles
 from benchmarks.results import save_suite_result
 from benchmarks.runners import load_benchmark_runtime, resolve_suite_targets, run_suite_target
@@ -18,6 +18,8 @@ from sentinel.runtime_events import build_runtime_event_logger
 
 def default_campaign_profile_for_suite(suite_spec: str) -> str:
     normalized = (suite_spec or "").strip().lower()
+    if "swebench" in normalized:
+        return "public_claim_coder_local_1p5b"
     if normalized.startswith("public") or normalized.startswith("manifest:"):
         return "public_claim_no_repairs"
     return "smoke_tiny"
@@ -70,12 +72,17 @@ def main() -> None:
 
     cfg = load_runtime_config(args.config, search_config_path=args.search_config)
     overrides = cli_cfg_overrides(args)
+    targets = resolve_suite_targets(args.suite, args.backends)
+    campaign_mode = bool(args.profile or args.ablations or args.repeat > 1 or args.campaign_name)
+    auto_profile = ""
+    if not campaign_mode and any(kind in {"public", "manifest"} for kind, _ in targets):
+        auto_profile = default_campaign_profile_for_suite(args.suite)
+    if auto_profile:
+        cfg = apply_benchmark_profile(cfg, resolve_benchmark_profiles(auto_profile, args.profiles_config)[0])
     if overrides:
-        cfg = load_runtime_config(args.config, search_config_path=args.search_config)
         for section, values in overrides.items():
             cfg.setdefault(section, {}).update(values)
 
-    campaign_mode = bool(args.profile or args.ablations or args.repeat > 1 or args.campaign_name)
     if campaign_mode:
         profiles = resolve_benchmark_profiles(args.profile or default_campaign_profile_for_suite(args.suite), args.profiles_config)
         ablations = resolve_benchmark_ablations(args.ablations or "baseline", args.ablation_config)
@@ -101,7 +108,7 @@ def main() -> None:
     event_logger = build_runtime_event_logger(cfg)
     prover, tokenizer, verifier = load_benchmark_runtime(cfg, device, checkpoint=args.checkpoint)
 
-    for target_kind, target_name in resolve_suite_targets(args.suite, args.backends):
+    for target_kind, target_name in targets:
         result = run_suite_target(target_kind, target_name, cfg, prover, verifier, tokenizer, device, args.checker_plugin, event_logger)
         save_suite_result(args.results_dir, result)
         print(result.to_dict())

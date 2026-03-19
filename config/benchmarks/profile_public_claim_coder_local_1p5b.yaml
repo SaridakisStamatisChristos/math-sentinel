@@ -1,0 +1,18 @@
+extends: profile_public_claim_no_repairs.yaml
+
+benchmark:
+  report_lane: claim_no_repairs_coder
+
+model:
+  backbone: models/Qwen2.5-Coder-1.5B-Instruct
+
+search:
+  mode: beam
+  beam_width: 8
+  proposal_count: 8
+  max_depth: 8
+  mcts_simulations: 24
+  mcts_branching: 8
+  guided_rollout_depth: 8
+  transposition_capacity: 8192
+
