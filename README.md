@@ -262,6 +262,19 @@ python benchmarks/run_official_corpus.py --corpus gaia --deterministic --safe-ru
 python benchmarks/run_official_corpus.py --corpus swebench --deterministic --safe-runtime --results-dir results/official
 ```
 
+You can also populate the staging area directly from Hugging Face:
+
+```bash
+python benchmarks/download_official_corpus.py --corpus swebench
+python benchmarks/download_official_corpus.py --corpus gaia --gaia-token <hf_token>
+```
+
+Notes:
+
+- SWE-bench Verified is publicly downloadable and will populate `data/official_corpus/swebench/records.jsonl`.
+- GAIA metadata and attachments are gated on Hugging Face. Without an authenticated token that has access, the downloader writes a status report instead of pretending the corpus is present.
+- SWE-bench official records now support lazy repo materialization from `repo + base_commit` metadata, so you do not need 500 prebuilt workspaces before preparing the manifest.
+
 By default the runner expects:
 
 - `data/official_corpus/gaia/records.jsonl`

@@ -124,6 +124,19 @@ def ingest_swebench_records(
             meta["test_command"] = record["test_command"]
         elif "test_cmd" in record:
             meta["test_command"] = record["test_cmd"]
+        for key in (
+            "repo",
+            "base_commit",
+            "environment_setup_commit",
+            "version",
+            "hints_text",
+            "created_at",
+            "FAIL_TO_PASS",
+            "PASS_TO_PASS",
+            "test_patch",
+        ):
+            if key in record:
+                meta[key] = record[key]
         if "oracle_primary_file" in record:
             meta["oracle_primary_file"] = record["oracle_primary_file"]
         elif "primary_file" in record:
@@ -210,6 +223,10 @@ def ingest_gaia_records(
             value = _first_text(record, *source_keys)
             if value:
                 meta[target_key] = value
+        for key in ("file_name", "file_path", "level", "question_id"):
+            value = record.get(key)
+            if value is not None and str(value).strip():
+                meta[key] = value
         cases.append(
             {
                 "task_id": task_id,

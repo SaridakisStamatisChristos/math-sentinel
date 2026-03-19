@@ -30,7 +30,7 @@ def _read_manifest_payload(path: Path) -> Dict[str, Any]:
 
 def _resolve_metadata_paths(meta: Dict[str, Any], manifest_dir: Path) -> Dict[str, Any]:
     resolved = dict(meta)
-    for key in ("fixture_dir", "workspace_dir", "attachments_dir", "attachment_dir", "workspace_archive"):
+    for key in ("fixture_dir", "workspace_dir", "attachments_dir", "attachment_dir", "workspace_archive", "repo_cache_root"):
         value = resolved.get(key)
         if not isinstance(value, str) or not value.strip():
             continue
@@ -144,8 +144,13 @@ def _case_problems(
             continue
         if key.endswith("_dir") and not target.is_dir():
             errors.append(f"manifest case {task_id or '<unknown>'} expected directory for {key}: {target}")
-    if suite_backend == "swebench_ops" and not any(str(meta.get(key, "")).strip() for key in ("fixture_dir", "workspace_dir")):
-        warnings.append(f"manifest case {task_id or '<unknown>'} has no fixture_dir/workspace_dir for repo materialization")
+    if suite_backend == "swebench_ops":
+        has_materialized_repo = any(str(meta.get(key, "")).strip() for key in ("fixture_dir", "workspace_dir"))
+        has_repo_source = all(str(meta.get(key, "")).strip() for key in ("repo", "base_commit"))
+        if not has_materialized_repo and not has_repo_source:
+            warnings.append(
+                f"manifest case {task_id or '<unknown>'} has no fixture_dir/workspace_dir or repo/base_commit for repo materialization"
+            )
     if suite_backend == "gaia_ops" and not any(str(meta.get(key, "")).strip() for key in ("fixture_dir", "workspace_dir", "attachments_dir", "attachment_dir")):
         warnings.append(f"manifest case {task_id or '<unknown>'} has no materialized evidence directory")
     return errors, warnings

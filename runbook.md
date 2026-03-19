@@ -108,6 +108,13 @@ python benchmarks\run_official_corpus.py --corpus gaia --deterministic --safe-ru
 python benchmarks\run_official_corpus.py --corpus swebench --deterministic --safe-runtime --results-dir results\official
 ```
 
+Populate the official-corpus staging area from Hugging Face:
+
+```powershell
+python benchmarks\download_official_corpus.py --corpus swebench
+python benchmarks\download_official_corpus.py --corpus gaia --gaia-token <hf_token>
+```
+
 The runner expects these staged inputs by default:
 
 - `data\official_corpus\gaia\records.jsonl`
@@ -116,6 +123,12 @@ The runner expects these staged inputs by default:
 - `data\official_corpus\swebench\workspaces\`
 
 It will build strict manifests in `benchmarks\manifests\gaia_full_official.json` and `benchmarks\manifests\swebench_full_official.json`.
+
+Practical note:
+
+- SWE-bench Verified records are publicly downloadable.
+- GAIA requires authenticated Hugging Face access; without it, the downloader writes `data\official_corpus\gaia\download_status.json`.
+- SWE-bench can now materialize repositories lazily from the official `repo` and `base_commit` metadata, so an empty `workspaces\` directory is acceptable before preparation.
 
 When using a dedicated product config like `config/product_rtx4060_laptop.yaml`, pass `--search-config ""` if you want the config's own search block to stay intact instead of being overridden by `config/search.yaml`.
 

@@ -64,9 +64,18 @@ data/official_corpus/*
 !data/official_corpus/gaia/
 data/official_corpus/gaia/*
 !data/official_corpus/gaia/.gitkeep
+!data/official_corpus/gaia/attachments/
+data/official_corpus/gaia/attachments/*
+!data/official_corpus/gaia/attachments/.gitkeep
 !data/official_corpus/swebench/
 data/official_corpus/swebench/*
 !data/official_corpus/swebench/.gitkeep
+!data/official_corpus/swebench/workspaces/
+data/official_corpus/swebench/workspaces/*
+!data/official_corpus/swebench/workspaces/.gitkeep
+!data/official_corpus/swebench/repo_cache/
+data/official_corpus/swebench/repo_cache/*
+!data/official_corpus/swebench/repo_cache/.gitkeep
 memory/*.json
 memory/replay.jsonl
 
@@ -80,6 +89,7 @@ memory/replay.jsonl
 .venv
 
 # Benchmark artifacts
+benchmarks/manifests/*_full_official.json
 results/*.json
 results/benchmark_ledger.jsonl
 results/campaigns/

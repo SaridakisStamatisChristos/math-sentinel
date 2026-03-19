@@ -14,6 +14,65 @@ from typing import Any, Dict, Iterable, List, Sequence
 
 TEST_FILE_RE = re.compile(r"(^tests?/|/tests?/)")
 TRACEBACK_FILE_RE = re.compile(r'File "([^"]+)", line (\d+)')
+ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_REPO_CACHE_ROOT = ROOT / "data" / "official_corpus" / "swebench" / "repo_cache"
+
+
+def _run_git(args: Sequence[str], *, cwd: Path | None = None) -> None:
+    completed = subprocess.run(
+        ["git", *args],
+        cwd=str(cwd) if cwd is not None else None,
+        capture_output=True,
+        text=True,
+    )
+    if completed.returncode != 0:
+        stderr = completed.stderr.strip()
+        stdout = completed.stdout.strip()
+        detail = stderr or stdout or f"git {' '.join(args)} failed"
+        raise RuntimeError(detail)
+
+
+def _repo_cache_path(repo_slug: str, repo_cache_root: Path) -> Path:
+    return repo_cache_root / repo_slug.replace("/", "__")
+
+
+def _ensure_repo_cache(repo_slug: str, repo_cache_root: Path, *, clone_url: str = "") -> Path:
+    repo_cache_root.mkdir(parents=True, exist_ok=True)
+    target = _repo_cache_path(repo_slug, repo_cache_root)
+    remote = clone_url.strip() or f"https://github.com/{repo_slug}.git"
+    remote_path = Path(remote)
+    if not target.exists():
+        if remote_path.exists():
+            _run_git(["clone", str(remote_path), str(target)])
+        else:
+            _run_git(["clone", "--filter=blob:none", remote, str(target)])
+    else:
+        _run_git(["fetch", "--all", "--tags", "--prune"], cwd=target)
+    return target
+
+
+def _materialize_repo_workspace(repo_slug: str, base_commit: str, workspace: Path, *, repo_cache_root: Path, clone_url: str = "") -> None:
+    cache_repo = _ensure_repo_cache(repo_slug, repo_cache_root, clone_url=clone_url)
+    _run_git(["clone", str(cache_repo), str(workspace)])
+    _run_git(["checkout", base_commit], cwd=workspace)
+
+
+def _apply_git_patch(workspace: Path, patch_text: str) -> None:
+    if not patch_text.strip():
+        return
+    normalized = patch_text.replace("\r\n", "\n").replace("\r", "\n")
+    if not normalized.endswith("\n"):
+        normalized += "\n"
+    patch_path = workspace / ".math_sentinel_patch.diff"
+    patch_path.write_text(normalized, encoding="utf-8", newline="\n")
+    try:
+        try:
+            _run_git(["apply", "--whitespace=nowarn", str(patch_path)], cwd=workspace)
+        except RuntimeError:
+            _run_git(["apply", "--whitespace=nowarn", "--recount", "--inaccurate-eof", str(patch_path)], cwd=workspace)
+    finally:
+        if patch_path.exists():
+            patch_path.unlink(missing_ok=True)
 
 
 def create_workspace(task: Any, tmp_root: Path, *, deterministic: bool = False) -> Path:
@@ -25,6 +84,21 @@ def create_workspace(task: Any, tmp_root: Path, *, deterministic: bool = False) 
         shutil.rmtree(workspace, ignore_errors=True)
     if fixture_ref:
         shutil.copytree(Path(fixture_ref), workspace)
+        return workspace
+    repo_slug = str(getattr(task, "meta", {}).get("repo", "")).strip()
+    base_commit = str(getattr(task, "meta", {}).get("base_commit", "")).strip()
+    if repo_slug and base_commit:
+        repo_cache_root = Path(
+            str(getattr(task, "meta", {}).get("repo_cache_root", "")).strip() or DEFAULT_REPO_CACHE_ROOT
+        )
+        clone_url = str(getattr(task, "meta", {}).get("repo_clone_url", "")).strip()
+        _materialize_repo_workspace(repo_slug, base_commit, workspace, repo_cache_root=repo_cache_root, clone_url=clone_url)
+        _apply_git_patch(workspace, str(getattr(task, "meta", {}).get("test_patch", "")))
+        test_command = getattr(task, "meta", {}).get("test_command")
+        if not test_command:
+            pytest_ini = workspace / "pytest.ini"
+            if pytest_ini.exists() or any(path.name.startswith("test") for path in workspace.rglob("tests")):
+                getattr(task, "meta", {})["test_command"] = [sys.executable, "-m", "pytest", "-q"]
         return workspace
     workspace.mkdir(parents=True, exist_ok=True)
     prompt = str(getattr(task, "prompt", "")).strip() or "No task prompt provided."
