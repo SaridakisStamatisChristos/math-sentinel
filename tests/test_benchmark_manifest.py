@@ -44,6 +44,11 @@ class BenchmarkManifestTests(unittest.TestCase):
 
         self.assertEqual(targets, [("manifest", "benchmarks/manifests/gaia_medium_official_style.json")])
 
+    def test_resolve_suite_targets_supports_official_prefix(self) -> None:
+        targets = resolve_suite_targets("official:all", "all")
+
+        self.assertEqual(targets, [("official", "gaia"), ("official", "swebench")])
+
     def test_ingest_swebench_records_writes_manifest(self) -> None:
         tmp_dir = self._fresh_dir("ingest-swebench")
         input_path = tmp_dir / "records.jsonl"

@@ -18,6 +18,10 @@ from sentinel.runtime_events import build_runtime_event_logger
 
 def default_campaign_profile_for_suite(suite_spec: str) -> str:
     normalized = (suite_spec or "").strip().lower()
+    if normalized.startswith("official:swebench"):
+        return "public_claim_coder_local_1p5b"
+    if normalized.startswith("official:gaia"):
+        return "public_claim_no_repairs"
     if "swebench" in normalized:
         return "public_claim_coder_local_1p5b"
     if normalized.startswith("public") or normalized.startswith("manifest:"):
@@ -71,6 +75,7 @@ def main() -> None:
         return
 
     cfg = load_runtime_config(args.config, search_config_path=args.search_config)
+    benchmark_source_cfg = cfg
     overrides = cli_cfg_overrides(args)
     targets = resolve_suite_targets(args.suite, args.backends)
     campaign_mode = bool(args.profile or args.ablations or args.repeat > 1 or args.campaign_name)
@@ -109,7 +114,11 @@ def main() -> None:
     prover, tokenizer, verifier = load_benchmark_runtime(cfg, device, checkpoint=args.checkpoint)
 
     for target_kind, target_name in targets:
-        result = run_suite_target(target_kind, target_name, cfg, prover, verifier, tokenizer, device, args.checker_plugin, event_logger)
+        target_cfg = cfg
+        if target_kind == "official" and "official_corpus" in benchmark_source_cfg:
+            target_cfg = dict(cfg)
+            target_cfg["official_corpus"] = benchmark_source_cfg.get("official_corpus", {})
+        result = run_suite_target(target_kind, target_name, target_cfg, prover, verifier, tokenizer, device, args.checker_plugin, event_logger)
         save_suite_result(args.results_dir, result)
         print(result.to_dict())
 

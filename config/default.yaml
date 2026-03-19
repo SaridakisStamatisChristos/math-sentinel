@@ -125,3 +125,25 @@ paths:
   checkpoints_dir: checkpoints
   logs_dir: logs
   data_dir: data
+
+official_corpus:
+  gaia:
+    format: gaia
+    input_path: data/official_corpus/gaia/records.jsonl
+    fixtures_root: data/official_corpus/gaia/attachments
+    manifest_path: benchmarks/manifests/gaia_full_official.json
+    suite_name: gaia_full_official
+    description: Full GAIA corpus imported from a local official export.
+    tier: official
+    default_profile: public_claim_no_repairs
+    strict_materialization: true
+  swebench:
+    format: swebench
+    input_path: data/official_corpus/swebench/records.jsonl
+    fixtures_root: data/official_corpus/swebench/workspaces
+    manifest_path: benchmarks/manifests/swebench_full_official.json
+    suite_name: swebench_verified_full_official
+    description: Full SWE-bench corpus imported from a local official export.
+    tier: official
+    default_profile: public_claim_coder_local_1p5b
+    strict_materialization: true

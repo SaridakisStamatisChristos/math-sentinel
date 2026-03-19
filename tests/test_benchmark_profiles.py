@@ -81,6 +81,8 @@ class BenchmarkProfileTests(unittest.TestCase):
     def test_default_public_campaign_profile_uses_no_repairs_claim_lane(self) -> None:
         self.assertEqual(default_campaign_profile_for_suite("public_medium"), "public_claim_no_repairs")
         self.assertEqual(default_campaign_profile_for_suite("swebench_verified_medium"), "public_claim_coder_local_1p5b")
+        self.assertEqual(default_campaign_profile_for_suite("official:swebench"), "public_claim_coder_local_1p5b")
+        self.assertEqual(default_campaign_profile_for_suite("official:gaia"), "public_claim_no_repairs")
         self.assertEqual(
             default_campaign_profile_for_suite("manifest:benchmarks/manifests/swebench_verified_medium_official_style.json"),
             "public_claim_coder_local_1p5b",

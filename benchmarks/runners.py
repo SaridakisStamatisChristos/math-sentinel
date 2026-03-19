@@ -5,6 +5,7 @@ from typing import Any, Dict, Iterable, List, Tuple
 import torch
 
 from benchmarks.integrity import collect_state_audit, ensure_benchmark_audit, is_runtime_oracle_field
+from benchmarks.official_corpus import ensure_official_manifest, resolve_official_corpus_selection
 from domains import available_backends, create_reasoning_domain
 from engine.task import ReasoningTask
 from search.router import run_search
@@ -48,6 +49,10 @@ def resolve_suite_targets(suite_spec: str, backends_spec: str) -> List[Tuple[str
         if manifest_path:
             return [("manifest", manifest_path)]
         return []
+
+    if normalized_suite.startswith("official:"):
+        selection = raw_suite.split(":", 1)[1].strip() or "all"
+        return [("official", name) for name in resolve_official_corpus_selection(selection)]
 
     if normalized_suite in {"internal", "all"}:
         for backend_name in resolve_backends(backends_spec):
@@ -355,6 +360,9 @@ def run_suite_target(
         return run_public_suite(target_name, cfg, prover, verifier, tokenizer, device, checker_plugin, event_logger)
     if target_kind == "manifest":
         return run_manifest_suite(target_name, cfg, prover, verifier, tokenizer, device, checker_plugin, event_logger)
+    if target_kind == "official":
+        manifest_path = ensure_official_manifest(target_name, cfg, strict_materialization=True)
+        return run_manifest_suite(manifest_path, cfg, prover, verifier, tokenizer, device, checker_plugin, event_logger)
     raise ValueError(f"unknown benchmark target kind: {target_kind}")
 
 

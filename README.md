@@ -254,6 +254,23 @@ python benchmarks/import_public_manifest.py --format swebench --input data/swebe
 python benchmarks/import_public_manifest.py --format gaia --input data/gaia_export.jsonl --output benchmarks/manifests/gaia_public_import.json --fixtures-root benchmarks/fixtures/gaia_medium_smoke
 ```
 
+For full official-corpus runs, stage the exported records under `data/official_corpus/` and use the dedicated runner:
+
+```bash
+python benchmarks/run_official_corpus.py --corpus all --prepare-only --strict-materialization
+python benchmarks/run_official_corpus.py --corpus gaia --deterministic --safe-runtime --results-dir results/official
+python benchmarks/run_official_corpus.py --corpus swebench --deterministic --safe-runtime --results-dir results/official
+```
+
+By default the runner expects:
+
+- `data/official_corpus/gaia/records.jsonl`
+- `data/official_corpus/gaia/attachments/`
+- `data/official_corpus/swebench/records.jsonl`
+- `data/official_corpus/swebench/workspaces/`
+
+It will materialize strict manifests into `benchmarks/manifests/gaia_full_official.json` and `benchmarks/manifests/swebench_full_official.json` before running them.
+
 You can also scale the model in `config/default.yaml` once CUDA is confirmed working.
 
 Resume:
@@ -437,6 +454,14 @@ On this branch, those manifest commands auto-select the local 1.5B claim profile
 
 - GAIA / math style suites -> `public_claim_no_repairs`
 - SWE-bench style suites -> `public_claim_coder_local_1p5b`
+
+For full official exports, the dedicated runner chooses the same strict 1.5B claim profiles automatically:
+
+```bash
+python benchmarks/run_official_corpus.py --corpus all --prepare-only --strict-materialization
+python benchmarks/run_official_corpus.py --corpus gaia --deterministic --safe-runtime --results-dir results/official
+python benchmarks/run_official_corpus.py --corpus swebench --deterministic --safe-runtime --results-dir results/official
+```
 
 There are also focused runner entrypoints:
 

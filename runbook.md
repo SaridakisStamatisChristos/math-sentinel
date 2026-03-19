@@ -100,6 +100,23 @@ python benchmarks/import_public_manifest.py --format swebench --input data\swebe
 python benchmarks/import_public_manifest.py --format gaia --input data\gaia_export.jsonl --output benchmarks\manifests\gaia_public_import.json --fixtures-root benchmarks\fixtures\gaia_medium_smoke
 ```
 
+Full official-corpus workflow:
+
+```powershell
+python benchmarks\run_official_corpus.py --corpus all --prepare-only --strict-materialization
+python benchmarks\run_official_corpus.py --corpus gaia --deterministic --safe-runtime --results-dir results\official
+python benchmarks\run_official_corpus.py --corpus swebench --deterministic --safe-runtime --results-dir results\official
+```
+
+The runner expects these staged inputs by default:
+
+- `data\official_corpus\gaia\records.jsonl`
+- `data\official_corpus\gaia\attachments\`
+- `data\official_corpus\swebench\records.jsonl`
+- `data\official_corpus\swebench\workspaces\`
+
+It will build strict manifests in `benchmarks\manifests\gaia_full_official.json` and `benchmarks\manifests\swebench_full_official.json`.
+
 When using a dedicated product config like `config/product_rtx4060_laptop.yaml`, pass `--search-config ""` if you want the config's own search block to stay intact instead of being overridden by `config/search.yaml`.
 
 The RTX 4060 branch assumes the downloaded Qwen 1.5B weights live under the local `models/` folder, so the config can stay offline by default.

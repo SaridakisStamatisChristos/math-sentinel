@@ -55,7 +55,18 @@ checkpoints/
 models/
 
 # Data and generated files
-data/
+data/*
+!data/.gitkeep
+!data/official_corpus/
+data/official_corpus/*
+!data/official_corpus/.gitkeep
+!data/official_corpus/README.md
+!data/official_corpus/gaia/
+data/official_corpus/gaia/*
+!data/official_corpus/gaia/.gitkeep
+!data/official_corpus/swebench/
+data/official_corpus/swebench/*
+!data/official_corpus/swebench/.gitkeep
 memory/*.json
 memory/replay.jsonl
 
