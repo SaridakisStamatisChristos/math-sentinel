@@ -69,6 +69,8 @@ class BenchmarkCampaignTests(unittest.TestCase):
 
         self.assertEqual(summary.name, "unit_campaign")
         self.assertEqual(len(summary.variants), 2)
+        self.assertTrue(all("lane" in variant for variant in summary.variants))
+        self.assertTrue(all("integrity_pass_rate" in variant["aggregate"] for variant in summary.variants))
         self.assertTrue((campaign_root / "campaign_summary.json").exists())
         self.assertTrue((campaign_root / "campaign_report.md").exists())
         self.assertEqual(len([line for line in ledger_path.read_text(encoding="utf-8").splitlines() if line.strip()]), 4)

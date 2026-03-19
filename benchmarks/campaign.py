@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 from dataclasses import asdict, dataclass, field
+import json
 from pathlib import Path
 import subprocess
 from typing import Any, Dict, Iterable, List, Tuple
@@ -54,6 +55,28 @@ def _aggregate_suite_results(results: List[BenchmarkSuiteResult]) -> Tuple[float
     )
 
 
+def _aggregate_audit_metrics(results: List[BenchmarkSuiteResult]) -> Dict[str, float]:
+    cases = [case for result in results for case in result.cases]
+    if not cases:
+        metadata = [result.metadata for result in results]
+        return {
+            "integrity_pass_rate": _mean([1.0 if bool(item.get("benchmark_integrity_passed", False)) else 0.0 for item in metadata]),
+            "claim_pass_rate": _mean([1.0 if bool(item.get("claim_profile_passed", False)) else 0.0 for item in metadata]),
+            "guided_rollout_rate": _mean([1.0 if bool(item.get("guided_rollout_used", False)) else 0.0 for item in metadata]),
+            "fallback_repair_rate": _mean([1.0 if bool(item.get("fallback_repair_used", False)) else 0.0 for item in metadata]),
+            "fallback_chain_rate": _mean([1.0 if bool(item.get("fallback_chain_used", False)) else 0.0 for item in metadata]),
+            "oracle_touch_rate": _mean([1.0 if bool(item.get("oracle_fields_touched")) else 0.0 for item in metadata]),
+        }
+    return {
+        "integrity_pass_rate": _mean([1.0 if bool(case.audit.get("benchmark_integrity_passed", False)) else 0.0 for case in cases]),
+        "claim_pass_rate": _mean([1.0 if bool(case.audit.get("claim_profile_passed", False)) else 0.0 for case in cases]),
+        "guided_rollout_rate": _mean([1.0 if bool(case.audit.get("guided_rollout_used", False)) else 0.0 for case in cases]),
+        "fallback_repair_rate": _mean([1.0 if bool(case.audit.get("fallback_repair_used", False)) else 0.0 for case in cases]),
+        "fallback_chain_rate": _mean([1.0 if bool(case.audit.get("fallback_chain_used", False)) else 0.0 for case in cases]),
+        "oracle_touch_rate": _mean([1.0 if bool(case.audit.get("oracle_fields_touched", [])) else 0.0 for case in cases]),
+    }
+
+
 @dataclass
 class BenchmarkCampaignRun:
     profile: str
@@ -68,11 +91,13 @@ class BenchmarkCampaignRun:
 
     def aggregate_metrics(self) -> Dict[str, float]:
         solved_rate, equivalence_rate, avg_branches = _aggregate_suite_results(self.suite_results)
-        return {
+        aggregate = {
             "solved_rate": solved_rate,
             "equivalence_rate": equivalence_rate,
             "avg_branches": avg_branches,
         }
+        aggregate.update(_aggregate_audit_metrics(self.suite_results))
+        return aggregate
 
     def to_dict(self) -> Dict[str, Any]:
         payload = asdict(self)
@@ -108,39 +133,69 @@ def summarize_campaign_runs(runs: List[BenchmarkCampaignRun]) -> List[Dict[str, 
         for run in group:
             for result in run.suite_results:
                 suite_groups.setdefault(result.suite, []).append(result)
-        aggregate_solved = _mean([run.aggregate_metrics()["solved_rate"] for run in group])
-        aggregate_equivalence = _mean([run.aggregate_metrics()["equivalence_rate"] for run in group])
-        aggregate_branches = _mean([run.aggregate_metrics()["avg_branches"] for run in group])
-        stable = len(
+        aggregate_metrics = [run.aggregate_metrics() for run in group]
+        aggregate_solved = _mean([item["solved_rate"] for item in aggregate_metrics])
+        aggregate_equivalence = _mean([item["equivalence_rate"] for item in aggregate_metrics])
+        aggregate_branches = _mean([item["avg_branches"] for item in aggregate_metrics])
+        aggregate_integrity = _mean([item["integrity_pass_rate"] for item in aggregate_metrics])
+        aggregate_claim = _mean([item["claim_pass_rate"] for item in aggregate_metrics])
+        aggregate_guided = _mean([item["guided_rollout_rate"] for item in aggregate_metrics])
+        aggregate_repairs = _mean([item["fallback_repair_rate"] for item in aggregate_metrics])
+        aggregate_chain = _mean([item["fallback_chain_rate"] for item in aggregate_metrics])
+        aggregate_oracle = _mean([item["oracle_touch_rate"] for item in aggregate_metrics])
+        stable_core = len(
             {
                 (
-                    round(run.aggregate_metrics()["solved_rate"], 6),
-                    round(run.aggregate_metrics()["equivalence_rate"], 6),
-                    round(run.aggregate_metrics()["avg_branches"], 6),
+                    round(item["solved_rate"], 6),
+                    round(item["equivalence_rate"], 6),
+                    round(item["integrity_pass_rate"], 6),
+                    round(item["claim_pass_rate"], 6),
+                    round(item["guided_rollout_rate"], 6),
+                    round(item["fallback_repair_rate"], 6),
+                    round(item["fallback_chain_rate"], 6),
                 )
-                for run in group
+                for item in aggregate_metrics
             }
         ) == 1
+        branch_values = [item["avg_branches"] for item in aggregate_metrics]
+        branch_variance = max(branch_values) - min(branch_values) if branch_values else 0.0
+        stable = stable_core and branch_variance <= 0.5
         suite_breakdown = []
         for suite_name, suite_runs in sorted(suite_groups.items()):
+            audit = _aggregate_audit_metrics(suite_runs)
             suite_breakdown.append(
                 {
                     "suite": suite_name,
                     "solved_rate": _mean([entry.solved_rate for entry in suite_runs]),
                     "equivalence_rate": _mean([entry.equivalence_rate for entry in suite_runs]),
                     "avg_branches": _mean([entry.avg_branches for entry in suite_runs]),
+                    "integrity_pass_rate": audit["integrity_pass_rate"],
+                    "claim_pass_rate": audit["claim_pass_rate"],
+                    "guided_rollout_rate": audit["guided_rollout_rate"],
+                    "fallback_repair_rate": audit["fallback_repair_rate"],
+                    "fallback_chain_rate": audit["fallback_chain_rate"],
                 }
             )
+        lane = str(group[0].metadata.get("report_lane", group[0].metadata.get("profile_metadata", {}).get("purpose", "unspecified"))).strip() or "unspecified"
         variants.append(
             {
                 "profile": profile,
                 "ablation": ablation,
+                "lane": lane,
                 "repeats": len(group),
                 "stable": stable,
+                "stable_core": stable_core,
+                "branch_variance": branch_variance,
                 "aggregate": {
                     "solved_rate": aggregate_solved,
                     "equivalence_rate": aggregate_equivalence,
                     "avg_branches": aggregate_branches,
+                    "integrity_pass_rate": aggregate_integrity,
+                    "claim_pass_rate": aggregate_claim,
+                    "guided_rollout_rate": aggregate_guided,
+                    "fallback_repair_rate": aggregate_repairs,
+                    "fallback_chain_rate": aggregate_chain,
+                    "oracle_touch_rate": aggregate_oracle,
                 },
                 "suite_breakdown": suite_breakdown,
             }
@@ -178,21 +233,49 @@ def render_campaign_report(summary: BenchmarkCampaignSummary) -> str:
         f"- repeats: `{summary.repeat}`",
         f"- branch: `{summary.metadata.get('git', {}).get('branch', '')}`",
         f"- commit: `{summary.metadata.get('git', {}).get('commit', '')}`",
+        f"- runtime fingerprints: `{len(summary.metadata.get('runtime_fingerprints', []))}`",
         "",
         "## Variants",
         "",
     ]
+    lane_groups: Dict[str, List[Dict[str, Any]]] = {}
+    for variant in summary.variants:
+        lane_groups.setdefault(str(variant.get("lane", "unspecified")), []).append(variant)
+    for lane, lane_variants in sorted(lane_groups.items()):
+        lines.append(f"### Lane: {lane}")
+        for variant in lane_variants:
+            aggregate = variant["aggregate"]
+            delta = variant["delta_vs_baseline"]
+            lines.append(
+                (
+                    f"- `{variant['profile']}/{variant['ablation']}` "
+                    f"solved={aggregate['solved_rate']:.3f} "
+                    f"equiv={aggregate['equivalence_rate']:.3f} "
+                    f"branches={aggregate['avg_branches']:.3f} "
+                    f"integrity={aggregate['integrity_pass_rate']:.3f} "
+                    f"claim={aggregate['claim_pass_rate']:.3f} "
+                    f"repairs={aggregate['fallback_repair_rate']:.3f} "
+                    f"guided={aggregate['guided_rollout_rate']:.3f} "
+                    f"stable={variant['stable']} "
+                    f"delta_equiv={delta['equivalence_rate']:+.3f}"
+                )
+            )
+        lines.append("")
+    lines.append("## Publication Summary")
+    lines.append("")
     for variant in summary.variants:
         aggregate = variant["aggregate"]
-        delta = variant["delta_vs_baseline"]
         lines.append(
             (
                 f"- `{variant['profile']}/{variant['ablation']}` "
-                f"solved={aggregate['solved_rate']:.3f} "
-                f"equiv={aggregate['equivalence_rate']:.3f} "
-                f"branches={aggregate['avg_branches']:.3f} "
-                f"stable={variant['stable']} "
-                f"delta_equiv={delta['equivalence_rate']:+.3f}"
+                f"lane={variant.get('lane', 'unspecified')} "
+                f"integrity_pass_rate={aggregate['integrity_pass_rate']:.3f} "
+                f"claim_pass_rate={aggregate['claim_pass_rate']:.3f} "
+                f"fallback_repair_rate={aggregate['fallback_repair_rate']:.3f} "
+                f"fallback_chain_rate={aggregate['fallback_chain_rate']:.3f} "
+                f"guided_rollout_rate={aggregate['guided_rollout_rate']:.3f} "
+                f"oracle_touch_rate={aggregate['oracle_touch_rate']:.3f} "
+                f"branch_variance={variant.get('branch_variance', 0.0):.3f}"
             )
         )
     lines.append("")
@@ -205,7 +288,11 @@ def render_campaign_report(summary: BenchmarkCampaignSummary) -> str:
                 (
                     f"- `{suite['suite']}` solved={suite['solved_rate']:.3f} "
                     f"equiv={suite['equivalence_rate']:.3f} "
-                    f"branches={suite['avg_branches']:.3f}"
+                    f"branches={suite['avg_branches']:.3f} "
+                    f"integrity={suite['integrity_pass_rate']:.3f} "
+                    f"claim={suite['claim_pass_rate']:.3f} "
+                    f"repairs={suite['fallback_repair_rate']:.3f} "
+                    f"guided={suite['guided_rollout_rate']:.3f}"
                 )
             )
         lines.append("")
@@ -297,6 +384,11 @@ def run_benchmark_campaign(
                     metadata={
                         "profile_tags": list(profile.tags),
                         "ablation_tags": list(ablation.tags),
+                        "profile_metadata": dict(profile.metadata),
+                        "report_lane": str(
+                            run_cfg.get("benchmark", {}).get("report_lane", profile.metadata.get("purpose", "unspecified"))
+                        ).strip()
+                        or "unspecified",
                     },
                 )
                 save_json(str(run_dir / "config_snapshot.json"), run_cfg)
@@ -339,6 +431,20 @@ def run_benchmark_campaign(
             "git": git_context,
             "profile_names": [profile.name for profile in profiles],
             "ablation_names": [ablation.name for ablation in ablations],
+            "runtime_fingerprints": sorted(
+                {
+                    json.dumps(
+                        {
+                            "provider": run.model_runtime.get("provider", ""),
+                            "backbone": run.model_runtime.get("backbone", ""),
+                            "adapter_mode": run.model_runtime.get("adapter_mode", ""),
+                            "quantization": run.model_runtime.get("quantization", ""),
+                        },
+                        sort_keys=True,
+                    )
+                    for run in runs
+                }
+            ),
         },
     )
     save_json(str(campaign_root / "campaign_summary.json"), summary.to_dict())

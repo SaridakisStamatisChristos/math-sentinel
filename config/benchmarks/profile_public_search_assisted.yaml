@@ -2,6 +2,7 @@ extends: profile_public_unassisted_strict.yaml
 
 benchmark:
   claim_mode: false
+  report_lane: repair_assisted_dev
 
 search:
   mode: auto

@@ -287,12 +287,18 @@ def run_task_collection(
         avg_branches=branches / max(1, len(task_list)),
         cases=case_results,
         metadata={
+            "report_lane": str(cfg.get("benchmark", {}).get("report_lane", "")).strip(),
             "task_count": len(task_list),
             "benchmark_integrity_passed": all(bool(case.audit.get("benchmark_integrity_passed", True)) for case in case_results),
             "claim_profile_passed": all(bool(case.audit.get("claim_profile_passed", True)) for case in case_results),
             "guided_rollout_used": any(bool(case.audit.get("guided_rollout_used", False)) for case in case_results),
             "fallback_repair_used": any(bool(case.audit.get("fallback_repair_used", False)) for case in case_results),
             "fallback_chain_used": any(bool(case.audit.get("fallback_chain_used", False)) for case in case_results),
+            "integrity_pass_rate": sum(1 for case in case_results if bool(case.audit.get("benchmark_integrity_passed", False))) / max(1, len(case_results)),
+            "claim_pass_rate": sum(1 for case in case_results if bool(case.audit.get("claim_profile_passed", False))) / max(1, len(case_results)),
+            "guided_rollout_rate": sum(1 for case in case_results if bool(case.audit.get("guided_rollout_used", False))) / max(1, len(case_results)),
+            "fallback_repair_rate": sum(1 for case in case_results if bool(case.audit.get("fallback_repair_used", False))) / max(1, len(case_results)),
+            "fallback_chain_rate": sum(1 for case in case_results if bool(case.audit.get("fallback_chain_used", False))) / max(1, len(case_results)),
             "oracle_fields_touched": sorted(
                 {
                     str(field)

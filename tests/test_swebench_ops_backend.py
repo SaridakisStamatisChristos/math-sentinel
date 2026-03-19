@@ -112,3 +112,28 @@ class SwebenchOpsBackendTests(unittest.TestCase):
 
         self.assertIn("Primary file:", joined)
         self.assertTrue("Candidate files:" in joined or "Test symbols:" in joined)
+
+    def test_repo_repair_loop_records_selected_patch_candidate_and_attempt_history(self) -> None:
+        backend = SwebenchOpsReasoningDomain()
+        task = backend.benchmark_tasks()[0]
+        state = backend.make_state(task)
+        executor = backend.create_executor()
+
+        for _ in range(4):
+            repair = backend.fallback_repairs(state)[0]
+            state, _ = executor.apply(state, repair)
+
+        latest_payload = state.tool_payloads[-1]["payload"]
+        selected = latest_payload["selected_patch_candidate"]
+
+        self.assertTrue(selected["fingerprint"])
+        self.assertIn("rank_features", selected)
+
+        repair = backend.fallback_repairs(state)[0]
+        state, _ = executor.apply(state, repair)
+        repair = backend.fallback_repairs(state)[0]
+        state, _ = executor.apply(state, repair)
+
+        attempts = state.metadata.get("patch_attempt_history", [])
+        self.assertTrue(attempts)
+        self.assertIn("fingerprint", attempts[-1])

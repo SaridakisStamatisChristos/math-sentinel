@@ -112,6 +112,46 @@ def _latest_payload(state: Any, tool_name: str) -> Dict[str, Any]:
     return {}
 
 
+def _candidate_fingerprint(candidate: Any) -> str:
+    if isinstance(candidate, dict) and "ops" in candidate:
+        payload = candidate["ops"]
+    else:
+        payload = candidate
+    return hashlib.sha1(json.dumps(payload or [], ensure_ascii=True, sort_keys=True).encode("utf-8")).hexdigest()[:12]
+
+
+def _patch_attempt_history(state: Any) -> List[Dict[str, Any]]:
+    items = state.metadata.get("patch_attempt_history", [])
+    if isinstance(items, list):
+        return [item for item in items if isinstance(item, dict)]
+    return []
+
+
+def _latest_selected_patch_candidate(state: Any) -> Dict[str, Any]:
+    for record in reversed(list(getattr(state, "tool_payloads", []))):
+        if not isinstance(record, dict) or record.get("tool") != "draft_patch":
+            continue
+        payload = record.get("payload", {})
+        if not isinstance(payload, dict):
+            continue
+        selected = payload.get("selected_patch_candidate", {})
+        if isinstance(selected, dict) and selected:
+            return selected
+    return {}
+
+
+def _latest_test_failure_signal(state: Any) -> Dict[str, Any]:
+    for record in reversed(list(getattr(state, "tool_payloads", []))):
+        if not isinstance(record, dict) or record.get("tool") != "run_unit_tests":
+            continue
+        payload = record.get("payload", {})
+        if isinstance(payload, dict):
+            failure = payload.get("failure_summary", {})
+            if isinstance(failure, dict):
+                return failure
+    return {}
+
+
 def isolate_workspace_for_mutation(state: Any, ops: Sequence[Dict[str, str]]) -> Path:
     current = Path(str(state.metadata["workspace_dir"]))
     if bool(state.metadata.get("workspace_isolated", False)):
@@ -168,7 +208,14 @@ def apply_patch_tool(arg: str, state: Any = None) -> Dict[str, Any]:
     if not ops:
         return {"ok": False, "result": "no patch operations available", "risk": 0.8}
     workspace = isolate_workspace_for_mutation(state, ops)
-    return apply_patch_ops(workspace, ops)
+    result = apply_patch_ops(workspace, ops)
+    selected_candidate = _latest_selected_patch_candidate(state)
+    if result.get("ok") and selected_candidate:
+        payload = dict(result.get("payload", {}))
+        payload["selected_patch_candidate"] = selected_candidate
+        payload["patch_candidate_fingerprint"] = str(selected_candidate.get("fingerprint", ""))
+        result["payload"] = payload
+    return result
 
 
 def rollback_patch_tool(arg: str, state: Any = None) -> Dict[str, Any]:
@@ -204,6 +251,20 @@ def run_unit_tests_tool(arg: str, state: Any = None) -> Dict[str, Any]:
     failure = summarize_test_failures(output)
     evidence = [f"test return code {proc.returncode}"]
     evidence.extend(failure["line_refs"][:3])
+    selected_candidate = _latest_selected_patch_candidate(state)
+    patch_history = list(_patch_attempt_history(state))
+    if selected_candidate:
+        attempt = {
+            "fingerprint": str(selected_candidate.get("fingerprint", "")),
+            "path": str(selected_candidate.get("path", "")),
+            "provenance": list(selected_candidate.get("provenance", [])),
+            "generator": str(selected_candidate.get("generator", "")),
+            "validated_cases": dict(selected_candidate.get("validated_cases", {})),
+            "passed": passed,
+            "returncode": proc.returncode,
+        }
+        if not patch_history or patch_history[-1] != attempt:
+            patch_history.append(attempt)
     return {
         "ok": True,
         "result": output or ("tests passed" if passed else "tests failed"),
@@ -215,10 +276,18 @@ def run_unit_tests_tool(arg: str, state: Any = None) -> Dict[str, Any]:
             "command": resolved,
             "returncode": proc.returncode,
             "test_output": output,
+            "failure_summary": failure,
             "evidence": evidence,
             "resolved_obligations": ["verify tests"] if passed else ["run tests"],
-            "obligations": [] if passed else ["localize failure", "draft patch"],
-            "state_metadata": {"last_test_failed": not passed, "last_test_returncode": proc.returncode},
+            "obligations": [] if passed else ["localize failure", "draft patch", "rank alternative patch"],
+            "state_metadata": {
+                "last_test_failed": not passed,
+                "last_test_returncode": proc.returncode,
+                "last_test_output": output,
+                "last_test_failure_summary": failure,
+                "patch_attempt_history": patch_history,
+                "failed_patch_attempt_count": sum(1 for item in patch_history if not bool(item.get("passed", False))),
+            },
         },
     }
 
@@ -407,6 +476,54 @@ def _apply_ops_to_text(text: str, ops: Sequence[Dict[str, str]]) -> str | None:
     return updated
 
 
+def _score_patch_candidate(
+    candidate: Dict[str, Any],
+    *,
+    preferred_file: str,
+    suspected_files: Sequence[str],
+    failed_fingerprints: set[str],
+) -> Dict[str, Any]:
+    relpath = str(candidate.get("source_file", ""))
+    fingerprint = str(candidate.get("fingerprint", ""))
+    validated = dict(candidate.get("validated_cases", {}))
+    base = float(candidate.get("score", 0.0))
+    features: Dict[str, float] = {
+        "validated_fit": base,
+        "preferred_file_bonus": 0.05 if relpath == preferred_file else 0.0,
+        "suspected_file_bonus": 0.12 if relpath and relpath in suspected_files else 0.0,
+        "novel_candidate_bonus": 0.08 if fingerprint and fingerprint not in failed_fingerprints else 0.0,
+        "retry_penalty": -0.30 if fingerprint and fingerprint in failed_fingerprints else 0.0,
+        "case_coverage_bonus": 0.02 * float(validated.get("passed", 0)),
+    }
+    candidate["rank_features"] = features
+    candidate["score"] = base + sum(features.values())
+    return candidate
+
+
+def _diversify_candidates(candidates: Sequence[Dict[str, Any]], limit: int = 5) -> List[Dict[str, Any]]:
+    diversified: List[Dict[str, Any]] = []
+    used_keys: set[tuple[str, str]] = set()
+    for candidate in candidates:
+        diversity_key = (
+            str(candidate.get("generator", "")),
+            str(candidate.get("source_file", "")),
+        )
+        if diversity_key in used_keys and len(diversified) < max(1, limit // 2):
+            continue
+        diversified.append(candidate)
+        used_keys.add(diversity_key)
+        if len(diversified) >= limit:
+            break
+    if len(diversified) < limit:
+        for candidate in candidates:
+            if candidate in diversified:
+                continue
+            diversified.append(candidate)
+            if len(diversified) >= limit:
+                break
+    return diversified
+
+
 def _score_cases_with_source(module_text: str, cases: Sequence[Dict[str, Any]]) -> tuple[int, int]:
     if not cases:
         return (0, 0)
@@ -561,6 +678,13 @@ def draft_patch_tool(arg: str, state: Any = None) -> Dict[str, Any]:
         source_file = str(case.get("source_file", "")).strip()
         if source_file:
             cases_by_source.setdefault(source_file, []).append(case)
+    failure_signal = _latest_test_failure_signal(state)
+    suspected_files = [str(item).strip() for item in failure_signal.get("suspected_files", []) if str(item).strip()]
+    failed_fingerprints = {
+        str(item.get("fingerprint", "")).strip()
+        for item in _patch_attempt_history(state)
+        if not bool(item.get("passed", False))
+    }
 
     ranked_candidates: List[Dict[str, Any]] = []
     failed_candidates: List[Dict[str, Any]] = []
@@ -578,7 +702,14 @@ def draft_patch_tool(arg: str, state: Any = None) -> Dict[str, Any]:
             fit = float(passed) / float(max(1, total)) if total > 0 else 0.0
             score = fit + (0.05 if relpath == preferred_file else 0.0)
             candidate["validated_cases"] = {"passed": passed, "total": total}
+            candidate["fingerprint"] = _candidate_fingerprint(candidate)
             candidate["score"] = score
+            candidate = _score_patch_candidate(
+                candidate,
+                preferred_file=preferred_file,
+                suspected_files=suspected_files,
+                failed_fingerprints=failed_fingerprints,
+            )
             if total > 0 and passed == total:
                 ranked_candidates.append(candidate)
             else:
@@ -595,7 +726,14 @@ def draft_patch_tool(arg: str, state: Any = None) -> Dict[str, Any]:
         fit = float(passed) / float(max(1, total)) if total > 0 else 0.25
         score = fit + 0.02
         candidate["validated_cases"] = {"passed": passed, "total": total}
+        candidate["fingerprint"] = _candidate_fingerprint(candidate)
         candidate["score"] = score
+        candidate = _score_patch_candidate(
+            candidate,
+            preferred_file=preferred_file,
+            suspected_files=suspected_files,
+            failed_fingerprints=failed_fingerprints,
+        )
         if total == 0 or passed == total:
             ranked_candidates.append(candidate)
         else:
@@ -609,6 +747,7 @@ def draft_patch_tool(arg: str, state: Any = None) -> Dict[str, Any]:
         ),
         reverse=True,
     )
+    ranked_candidates = _diversify_candidates(ranked_candidates, limit=6)
     failed_candidates.sort(
         key=lambda item: (
             float(item.get("score", 0.0)),
@@ -622,6 +761,15 @@ def draft_patch_tool(arg: str, state: Any = None) -> Dict[str, Any]:
         ops = chosen["ops"]
         evidence = list(chosen.get("evidence", []))
         validated = dict(chosen.get("validated_cases", {}))
+        selected_candidate = {
+            "fingerprint": str(chosen.get("fingerprint", "")),
+            "path": str(ops[0]["path"]),
+            "score": round(float(chosen.get("score", 0.0)), 4),
+            "provenance": list(chosen.get("provenance", [])),
+            "generator": str(chosen.get("generator", "")),
+            "validated_cases": validated,
+            "rank_features": dict(chosen.get("rank_features", {})),
+        }
         return {
             "ok": True,
             "result": json.dumps({"ops": ops}, ensure_ascii=True),
@@ -633,21 +781,28 @@ def draft_patch_tool(arg: str, state: Any = None) -> Dict[str, Any]:
                 "obligations": ["apply patch", "verify tests"],
                 "resolved_obligations": ["inspect source", "inspect tests"],
                 "suggested_tools": ["apply_patch", "run_unit_tests"],
+                "selected_patch_candidate": selected_candidate,
                 "patch_candidates": [
                     {
                         "path": str(item["ops"][0]["path"]),
+                        "fingerprint": str(item.get("fingerprint", "")),
                         "score": round(float(item.get("score", 0.0)), 4),
                         "provenance": list(item.get("provenance", [])),
+                        "generator": str(item.get("generator", "")),
                         "validated_cases": dict(item.get("validated_cases", {})),
+                        "rank_features": dict(item.get("rank_features", {})),
                     }
                     for item in ranked_candidates[:5]
                 ],
                 "failed_patch_candidates": [
                     {
                         "path": str(item["ops"][0]["path"]),
+                        "fingerprint": str(item.get("fingerprint", "")),
                         "score": round(float(item.get("score", 0.0)), 4),
                         "provenance": list(item.get("provenance", [])),
+                        "generator": str(item.get("generator", "")),
                         "validated_cases": dict(item.get("validated_cases", {})),
+                        "rank_features": dict(item.get("rank_features", {})),
                     }
                     for item in failed_candidates[:5]
                 ],
@@ -655,6 +810,16 @@ def draft_patch_tool(arg: str, state: Any = None) -> Dict[str, Any]:
                     "primary_file": ops[0]["path"],
                     "patch_candidate_count": len(ranked_candidates),
                     "failed_patch_attempt_count": len(failed_candidates),
+                    "selected_patch_fingerprint": str(chosen.get("fingerprint", "")),
+                    "failed_patch_candidates": [
+                        {
+                            "path": str(item["ops"][0]["path"]),
+                            "fingerprint": str(item.get("fingerprint", "")),
+                            "score": round(float(item.get("score", 0.0)), 4),
+                            "generator": str(item.get("generator", "")),
+                        }
+                        for item in failed_candidates[:3]
+                    ],
                 },
             },
         }

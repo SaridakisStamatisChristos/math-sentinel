@@ -1,0 +1,5 @@
+extends: profile_public_unassisted_strict.yaml
+
+benchmark:
+  report_lane: claim_no_repairs
+

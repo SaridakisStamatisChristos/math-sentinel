@@ -1,12 +1,20 @@
 profiles:
+  public_claim_no_repairs:
+    description: Headline public-claim profile with unassisted evaluation, no repairs, no guided rollout, and no retrieval.
+    config: profile_public_claim_no_repairs.yaml
+    suites: [public_smoke, public_medium]
+    tags: [public, strict, unassisted, claim, no_repairs]
+    metadata:
+      scale: tiny
+      purpose: public_claim_no_repairs
   public_unassisted_strict:
-    description: Headline public-claim profile with strict unassisted benchmark rules and no guided fallback rollout.
+    description: Legacy strict public profile kept for compatibility; use public_claim_no_repairs for headline claims.
     config: profile_public_unassisted_strict.yaml
     suites: [public_smoke, public_medium]
     tags: [public, strict, unassisted, claim]
     metadata:
       scale: tiny
-      purpose: public_claim
+      purpose: public_claim_legacy
   public_search_assisted:
     description: Development-only public benchmark profile that keeps guided fallback rollout enabled for search-assisted baselines.
     config: profile_public_search_assisted.yaml
@@ -14,7 +22,7 @@ profiles:
     tags: [public, dev, search_assisted]
     metadata:
       scale: tiny
-      purpose: public_dev_baseline
+      purpose: public_repair_assisted_dev
   smoke_tiny:
     description: Deterministic legacy-tiny smoke profile for CI, fast regressions, and ablation sanity checks.
     config: profile_smoke_tiny.yaml

@@ -6,6 +6,7 @@ benchmark:
   fail_on_integrity_violation: true
   claim_mode: true
   holdout_enabled: true
+  report_lane: strict_unassisted_legacy
 
 search:
   mode: beam

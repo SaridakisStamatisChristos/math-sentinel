@@ -673,6 +673,7 @@ class SwebenchOpsReasoningDomain:
             [
                 state.domain,
                 str(state.metadata.get("primary_file", "")),
+                str(state.metadata.get("selected_patch_fingerprint", "")),
                 " | ".join(state.derived_facts[-3:]),
                 " | ".join(state.obligations[-3:]),
                 state.final_answer.strip(),
@@ -700,10 +701,16 @@ class SwebenchOpsReasoningDomain:
         return None
 
     def build_failure_recovery_example(self, bundle: Dict[str, Any]) -> str:
+        failure_type = str(bundle.get("failure_type", "")).strip()
+        focus = f"\nRecovery focus: {failure_type.replace('_', ' ')}." if failure_type else ""
+        failed_candidates = list(bundle.get("failed_patch_candidates", [])) if isinstance(bundle.get("failed_patch_candidates", []), list) else []
+        failed_hint = ""
+        if failed_candidates:
+            failed_hint = f"\nAvoid repeating failed patch paths: {', '.join(str(item.get('path', '')) for item in failed_candidates[:3] if str(item.get('path', '')).strip())}"
         task = ReasoningTask(
             task_id=str(bundle.get("task_id", f"recovery_{uuid.uuid4().hex[:8]}")),
             domain=str(bundle.get("domain", "swebench_patch")),
-            prompt=str(bundle.get("task", "")),
+            prompt=str(bundle.get("task", "")) + focus + failed_hint,
             answer=str(bundle.get("expected", "")),
             goal=str(bundle.get("goal", "Patch the repository so the tests pass")),
             meta=dict(bundle.get("meta", {})),

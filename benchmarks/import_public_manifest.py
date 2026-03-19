@@ -2,8 +2,16 @@
 from __future__ import annotations
 
 import argparse
+import json
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 from benchmarks.official_ingest import ingest_gaia_records, ingest_swebench_records
+from benchmarks.manifest_loader import lint_manifest_suite
 
 
 def main() -> None:
@@ -15,6 +23,7 @@ def main() -> None:
     ap.add_argument("--suite-name", default="")
     ap.add_argument("--tier", default="official")
     ap.add_argument("--description", default="")
+    ap.add_argument("--strict-materialization", action="store_true")
     args = ap.parse_args()
 
     if args.format == "swebench":
@@ -36,7 +45,10 @@ def main() -> None:
             description=args.description or "Official-style GAIA manifest imported from local records.",
         )
 
-    print(written)
+    report = lint_manifest_suite(written, strict_materialization=bool(args.strict_materialization))
+    print(json.dumps({"written": written, "lint": report}, ensure_ascii=True, indent=2))
+    if not bool(report.get("valid", False)):
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":

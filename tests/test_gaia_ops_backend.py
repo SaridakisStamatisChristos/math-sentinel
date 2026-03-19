@@ -78,3 +78,21 @@ class GaiaOpsBackendTests(unittest.TestCase):
 
         self.assertEqual(state.status, "solved")
         self.assertEqual(state.final_answer, "41")
+
+    def test_inspect_and_solve_populate_evidence_graph_and_confidence(self) -> None:
+        backend = GaiaOpsReasoningDomain()
+        task = backend.benchmark_tasks()[0]
+        state = backend.make_state(task)
+        executor = backend.create_executor()
+
+        for _ in range(4):
+            repair = backend.fallback_repairs(state)[0]
+            state, _ = executor.apply(state, repair)
+            if state.metadata.get("candidate_answer"):
+                break
+
+        graph = state.metadata.get("evidence_graph", {})
+
+        self.assertTrue(graph.get("files"))
+        self.assertGreaterEqual(float(state.metadata.get("answer_confidence", 0.0)), 0.45)
+        self.assertTrue(state.metadata.get("answer_provenance"))

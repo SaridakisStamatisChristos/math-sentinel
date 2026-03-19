@@ -39,6 +39,11 @@ def combine_scores(
     obligation_progress = float(exec_info.get("obligation_progress", 0.0))
     stagnation = float(exec_info.get("stagnation_penalty", 0.0))
     repeat_bias = float(exec_info.get("repeat_penalty", 0.0))
+    answer_confidence = float(exec_info.get("answer_confidence", 0.0))
+    patch_candidate_bonus = float(exec_info.get("patch_candidate_bonus", 0.0))
+    patch_failure_penalty = float(exec_info.get("patch_failure_penalty", 0.0))
+    evidence_graph_bonus = float(exec_info.get("evidence_graph_bonus", 0.0))
+    ambiguity_penalty = float(exec_info.get("ambiguity_penalty", 0.0))
 
     score = 0.0
     score += 0.45 * valid
@@ -53,9 +58,14 @@ def combine_scores(
     score += 0.08 * (tool_bias - 0.5)
     score += evidence_weight * evidence_bonus
     score += obligation_weight * obligation_progress
+    score += 0.12 * answer_confidence
+    score += 0.10 * patch_candidate_bonus
+    score += 0.08 * evidence_graph_bonus
     score -= 0.25 * risk
     score -= stagnation_penalty * stagnation
     score -= repeat_penalty * repeat_bias
+    score -= 0.10 * patch_failure_penalty
+    score -= 0.08 * ambiguity_penalty
     score -= simplicity_penalty * depth
     if local_valid < 0.5:
         score -= invalid_penalty

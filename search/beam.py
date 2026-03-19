@@ -74,6 +74,21 @@ def _build_exec_features(
     exec_info["obligation_progress"] = 1.0 / float(1 + obligation_count)
     exec_info["stagnation_penalty"] = min(1.0, float(getattr(state, "metadata", {}).get("no_progress_streak", 0)) / 3.0)
     exec_info["repeat_penalty"] = min(1.0, float(getattr(state, "metadata", {}).get("repeat_tool_steps", 0)) / 2.0)
+    metadata = getattr(state, "metadata", {}) or {}
+    answer_confidence = float(metadata.get("answer_confidence", getattr(state, "terminal_confidence", 0.0)) or 0.0)
+    patch_candidate_count = int(metadata.get("patch_candidate_count", 0) or 0)
+    patch_attempt_history = metadata.get("patch_attempt_history", [])
+    failed_patch_attempt_count = int(metadata.get("failed_patch_attempt_count", len(patch_attempt_history) if isinstance(patch_attempt_history, list) else 0) or 0)
+    evidence_graph = metadata.get("evidence_graph", {})
+    if isinstance(evidence_graph, dict):
+        evidence_graph_size = len(evidence_graph.get("files", []) or []) + len(evidence_graph.get("edges", []) or [])
+    else:
+        evidence_graph_size = 0
+    exec_info["answer_confidence"] = max(0.0, min(1.0, answer_confidence))
+    exec_info["patch_candidate_bonus"] = min(1.0, patch_candidate_count / 4.0)
+    exec_info["patch_failure_penalty"] = min(1.0, failed_patch_attempt_count / 4.0)
+    exec_info["evidence_graph_bonus"] = min(1.0, evidence_graph_size / 4.0)
+    exec_info["ambiguity_penalty"] = max(0.0, min(1.0, float(metadata.get("ambiguity_score", 0.0) or 0.0)))
     return exec_info
 
 

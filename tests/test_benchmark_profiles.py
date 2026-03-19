@@ -4,6 +4,7 @@ import unittest
 
 from benchmarks.ablations import available_benchmark_ablations, resolve_benchmark_ablations
 from benchmarks.profiles import apply_benchmark_profile, available_benchmark_profiles, resolve_benchmark_profiles
+from benchmark_v7 import default_campaign_profile_for_suite
 from sentinel.config import load_runtime_config
 
 
@@ -12,6 +13,7 @@ class BenchmarkProfileTests(unittest.TestCase):
         profiles = set(available_benchmark_profiles())
 
         self.assertIn("smoke_tiny", profiles)
+        self.assertIn("public_claim_no_repairs", profiles)
         self.assertIn("public_unassisted_strict", profiles)
         self.assertIn("qwen_coder_flagship_32b", profiles)
         self.assertIn("rtx4060_general_local", profiles)
@@ -75,10 +77,22 @@ class BenchmarkProfileTests(unittest.TestCase):
         self.assertEqual(cfg["benchmark"]["assistance_mode"], "unassisted")
         self.assertFalse(cfg["search"]["guided_fallback_rollout"])
 
+    def test_default_public_campaign_profile_uses_no_repairs_claim_lane(self) -> None:
+        self.assertEqual(default_campaign_profile_for_suite("public_medium"), "public_claim_no_repairs")
+        self.assertEqual(
+            default_campaign_profile_for_suite("manifest:benchmarks/manifests/gaia_medium_official_style.json"),
+            "public_claim_no_repairs",
+        )
+
     def test_strict_and_search_assisted_public_profiles_diverge_on_guided_rollout(self) -> None:
+        claim_cfg = load_runtime_config("config/benchmarks/profile_public_claim_no_repairs.yaml", search_config_path="")
         strict_cfg = load_runtime_config("config/benchmarks/profile_public_unassisted_strict.yaml", search_config_path="")
         assisted_cfg = load_runtime_config("config/benchmarks/profile_public_search_assisted.yaml", search_config_path="")
 
+        self.assertEqual(claim_cfg["benchmark"]["report_lane"], "claim_no_repairs")
+        self.assertFalse(claim_cfg["search"]["enable_fallback_repairs"])
+        self.assertFalse(claim_cfg["search"]["guided_fallback_rollout"])
+        self.assertEqual(claim_cfg["memory"]["retrieval_mode"], "none")
         self.assertEqual(strict_cfg["benchmark"]["assistance_mode"], "unassisted")
         self.assertTrue(strict_cfg["benchmark"]["claim_mode"])
         self.assertFalse(strict_cfg["search"]["guided_fallback_rollout"])

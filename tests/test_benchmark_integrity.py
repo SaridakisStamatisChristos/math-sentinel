@@ -11,8 +11,8 @@ from search.nodes import SearchNode
 
 class BenchmarkIntegrityTests(unittest.TestCase):
     def test_default_public_campaign_profile_is_strict(self) -> None:
-        self.assertEqual(default_campaign_profile_for_suite("public_smoke"), "public_unassisted_strict")
-        self.assertEqual(default_campaign_profile_for_suite("public_medium"), "public_unassisted_strict")
+        self.assertEqual(default_campaign_profile_for_suite("public_smoke"), "public_claim_no_repairs")
+        self.assertEqual(default_campaign_profile_for_suite("public_medium"), "public_claim_no_repairs")
         self.assertEqual(default_campaign_profile_for_suite("internal"), "smoke_tiny")
 
     def test_case_audit_detects_runtime_oracle_metadata(self) -> None:

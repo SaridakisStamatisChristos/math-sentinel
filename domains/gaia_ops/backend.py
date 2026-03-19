@@ -448,6 +448,55 @@ def _infer_json_answer(prompt: str, payload: Any) -> tuple[str, List[str]]:
     return str(best_value), [f"{best_path} -> {best_value}"]
 
 
+def _infer_multi_json_answer(prompt: str, json_files: Sequence[tuple[str, Any]]) -> tuple[str, List[str]]:
+    best_answer = ""
+    best_evidence: List[str] = []
+    best_score = -1.0
+    prompt_tokens = set(_tokenize(prompt))
+    for name, payload in json_files:
+        candidate, evidence = _infer_json_answer(prompt, payload)
+        if not candidate:
+            continue
+        score = float(len(evidence))
+        score += 0.25 * float(sum(1 for token in prompt_tokens if token in str(candidate).lower()))
+        if score > best_score:
+            best_answer = candidate
+            best_evidence = [f"from {name}"] + evidence
+            best_score = score
+    return best_answer, best_evidence
+
+
+def _merge_evidence_graph(existing: Any, *, relpath: str, summary: str, file_kind: str) -> Dict[str, Any]:
+    graph = dict(existing) if isinstance(existing, dict) else {}
+    files = [str(item) for item in graph.get("files", []) if str(item).strip()]
+    if relpath and relpath not in files:
+        files.append(relpath)
+    nodes = list(graph.get("nodes", [])) if isinstance(graph.get("nodes", []), list) else []
+    nodes.append({"file": relpath, "kind": file_kind, "summary": summary[:160]})
+    edges = list(graph.get("edges", [])) if isinstance(graph.get("edges", []), list) else []
+    if len(files) >= 2:
+        edge = {"from": files[-2], "to": files[-1], "relation": "inspected_after"}
+        if edge not in edges:
+            edges.append(edge)
+    graph["files"] = files
+    graph["nodes"] = nodes[-8:]
+    graph["edges"] = edges[-8:]
+    return graph
+
+
+def _answer_confidence(candidate: str, evidence: Sequence[str], file_count: int, *, fallback_text: bool = False) -> float:
+    if not candidate:
+        return 0.0
+    confidence = 0.45
+    confidence += min(0.30, 0.10 * len([item for item in evidence if str(item).strip()]))
+    confidence += 0.08 if file_count <= 2 else 0.03
+    if fallback_text:
+        confidence -= 0.18
+    if len(str(candidate).strip()) <= 4:
+        confidence += 0.05
+    return max(0.05, min(0.99, confidence))
+
+
 def list_files(arg: str, state: Any = None) -> Dict[str, Any]:
     workspace = Path(str(state.metadata["workspace_dir"]))
     files = _list_workspace_files(workspace)
@@ -472,6 +521,7 @@ def plan_question(arg: str, state: Any = None) -> Dict[str, Any]:
     intent = _infer_question_intent(prompt)
     target_label = ", ".join(candidate_files[:3]) if candidate_files else (target_file or "the most relevant file")
     plan = f"inspect {target_label} then solve intent={intent}"
+    ambiguity_score = max(0.0, min(1.0, float(max(0, len(candidate_files) - 1)) / 3.0))
     if str(state.metadata.get("benchmark_assistance_mode", "unassisted")) == "assisted" and bool(state.metadata.get("oracle_hints_enabled", False)):
         oracle_file = str(state.metadata.get("oracle_evidence_file", "")).strip()
         if oracle_file:
@@ -485,7 +535,17 @@ def plan_question(arg: str, state: Any = None) -> Dict[str, Any]:
             "evidence": [plan],
             "suggested_tools": ["list_files", "inspect_file", "solve_question"],
             "obligations": ["inspect evidence file", "solve from evidence"],
-            "state_metadata": {"target_file": target_file, "candidate_files": candidate_files, "question_intent": intent},
+            "state_metadata": {
+                "target_file": target_file,
+                "candidate_files": candidate_files,
+                "question_intent": intent,
+                "ambiguity_score": ambiguity_score,
+                "question_plan": {
+                    "intent": intent,
+                    "target_file": target_file,
+                    "candidate_files": candidate_files[:4],
+                },
+            },
         },
     }
 
@@ -499,9 +559,17 @@ def inspect_file(arg: str, state: Any = None) -> Dict[str, Any]:
     text = (workspace / relpath).read_text(encoding="utf-8")
     summary = ""
     file_kind = Path(relpath).suffix.lower().lstrip(".") or "text"
+    inspected_files = [str(item) for item in state.metadata.get("inspected_files", []) if str(item).strip()]
+    if relpath and relpath not in inspected_files:
+        inspected_files.append(relpath)
     payload: Dict[str, Any] = {
         "path": relpath,
-        "state_metadata": {"target_file": relpath, "active_file": relpath, "active_file_kind": file_kind},
+        "state_metadata": {
+            "target_file": relpath,
+            "active_file": relpath,
+            "active_file_kind": file_kind,
+            "inspected_files": inspected_files,
+        },
     }
     if file_kind == "csv":
         rows = list(csv.DictReader(text.splitlines()))
@@ -524,6 +592,16 @@ def inspect_file(arg: str, state: Any = None) -> Dict[str, Any]:
             "obligations": ["solve from evidence"],
         }
     )
+    payload["state_metadata"]["evidence_graph"] = _merge_evidence_graph(
+        state.metadata.get("evidence_graph", {}),
+        relpath=relpath,
+        summary=summary,
+        file_kind=file_kind,
+    )
+    payload["state_metadata"]["ambiguity_score"] = max(
+        0.0,
+        min(1.0, float(max(0, len([name for name in state.metadata.get("candidate_files", []) if str(name).strip()]) - len(inspected_files))) / 3.0),
+    )
     return {"ok": True, "result": text, "goal_progress": 0.25, "payload": payload}
 
 
@@ -532,7 +610,13 @@ def solve_question(arg: str, state: Any = None) -> Dict[str, Any]:
     prompt = (arg.strip() or str(getattr(state, "problem_text", ""))).split("\nWorkspace files:\n", 1)[0].strip()
     files = list(state.metadata.get("workspace_files", []))
     target_file = str(state.metadata.get("target_file", ""))
-    candidate_files = list(state.metadata.get("candidate_files", [])) or _resolve_target_files(prompt, files, target_file)
+    inspected_files = [str(item) for item in state.metadata.get("inspected_files", []) if str(item).strip()]
+    planned_files = list(state.metadata.get("candidate_files", [])) or _resolve_target_files(prompt, files, target_file)
+    candidate_files = []
+    for name in inspected_files + planned_files:
+        text = str(name).strip()
+        if text and text not in candidate_files:
+            candidate_files.append(text)
     if str(state.metadata.get("benchmark_assistance_mode", "unassisted")) == "assisted" and bool(state.metadata.get("oracle_hints_enabled", False)):
         target_file = str(state.metadata.get("oracle_evidence_file", "") or target_file)
         candidate_files = [target_file] if target_file else candidate_files
@@ -546,30 +630,59 @@ def solve_question(arg: str, state: Any = None) -> Dict[str, Any]:
     suffixes = {path.suffix.lower() for _, path in existing_paths}
     candidate = ""
     evidence: List[str] = []
+    answer_provenance: List[str] = []
     resolved_target = existing_paths[0][0]
+    fallback_text = False
     if suffixes == {".csv"}:
         csv_files = [(name, path.read_text(encoding="utf-8")) for name, path in existing_paths]
         candidate, evidence = _infer_csv_answer(prompt, csv_files)
+        answer_provenance = [f"csv:{name}" for name, _ in existing_paths]
     elif suffixes == {".json"} and len(existing_paths) == 1:
         resolved_target, path = existing_paths[0]
         candidate, evidence = _infer_json_answer(prompt, json.loads(path.read_text(encoding="utf-8")))
+        answer_provenance = [f"json:{resolved_target}"]
+    elif suffixes == {".json"}:
+        json_files = [(name, json.loads(path.read_text(encoding="utf-8"))) for name, path in existing_paths]
+        candidate, evidence = _infer_multi_json_answer(prompt, json_files)
+        answer_provenance = [f"json:{name}" for name, _ in existing_paths]
     else:
         resolved_target, path = existing_paths[0]
         text = path.read_text(encoding="utf-8")
         candidate = text.strip().splitlines()[0] if text.strip() else ""
         evidence = [f"used first non-empty line from {resolved_target}"]
+        answer_provenance = [f"text:{resolved_target}"]
+        fallback_text = True
     if not candidate:
         return {"ok": False, "result": "could not infer answer from evidence", "risk": 0.75}
+    confidence = _answer_confidence(candidate, evidence, len(existing_paths), fallback_text=fallback_text)
+    ambiguity_score = max(
+        0.0,
+        min(
+            1.0,
+            float(max(0, len(candidate_files) - len(existing_paths))) / 3.0 + max(0.0, 0.55 - confidence),
+        ),
+    )
+    state_metadata = {
+        "target_file": resolved_target,
+        "candidate_files": [name for name, _ in existing_paths],
+        "answer_confidence": confidence,
+        "answer_provenance": answer_provenance,
+        "ambiguity_score": ambiguity_score,
+    }
+    if confidence >= 0.45:
+        state_metadata["candidate_answer"] = candidate
     return {
         "ok": True,
         "result": candidate,
         "goal_progress": 0.8,
         "payload": {
-            "candidate_answer": candidate,
-            "evidence": evidence,
+            "candidate_answer": candidate if confidence >= 0.45 else "",
+            "answer": candidate,
+            "evidence": evidence + [f"confidence={confidence:.2f}"],
             "resolved_obligations": ["solve from evidence"],
-            "state_metadata": {"candidate_answer": candidate, "target_file": resolved_target, "candidate_files": [name for name, _ in existing_paths]},
+            "state_metadata": state_metadata,
         },
+        "risk": max(0.0, 1.0 - confidence),
     }
 
 
@@ -746,12 +859,14 @@ class GaiaOpsReasoningDomain:
 
     def _answer_candidates(self, state: ReasoningState) -> List[Dict[str, str]]:
         answers: List[str] = []
+        threshold = 0.45
+        metadata_confidence = float(state.metadata.get("answer_confidence", 0.0) or 0.0)
         for candidate in [
             state.final_answer,
             str(state.metadata.get("candidate_answer", "")),
         ]:
             text = str(candidate).strip()
-            if text and text not in answers:
+            if text and (text == state.final_answer or metadata_confidence >= threshold) and text not in answers:
                 answers.append(text)
         for record in reversed(list(state.tool_history)):
             if not isinstance(record, dict):
@@ -759,19 +874,30 @@ class GaiaOpsReasoningDomain:
             result = record.get("result", {})
             if not isinstance(result, dict):
                 continue
+            payload = result.get("result_payload", {})
+            confidence = metadata_confidence
+            if isinstance(payload, dict):
+                state_metadata = payload.get("state_metadata", {})
+                if isinstance(state_metadata, dict):
+                    confidence = float(state_metadata.get("answer_confidence", confidence) or confidence)
             candidate = str(result.get("answer", "")).strip()
-            if candidate and candidate not in answers:
+            if candidate and confidence >= threshold and candidate not in answers:
                 answers.append(candidate)
         return [{"content": item} for item in answers]
 
     def _next_apply_tools(self, state: ReasoningState) -> List[str]:
         tool_names = self._tool_names(state)
+        inspected_files = [str(item) for item in state.metadata.get("inspected_files", []) if str(item).strip()]
+        candidate_files = [str(item) for item in state.metadata.get("candidate_files", []) if str(item).strip()]
+        remaining_files = [name for name in candidate_files if name not in inspected_files]
         if "plan_question" not in tool_names:
             return ["plan_question"]
         if "list_files" not in tool_names:
             return ["list_files"]
         if "inspect_file" not in tool_names:
             return ["inspect_file"]
+        if remaining_files and float(state.metadata.get("ambiguity_score", 0.0) or 0.0) >= 0.25 and len(inspected_files) < min(2, len(candidate_files)):
+            return ["inspect_file", "solve_question"]
         if "solve_question" not in tool_names:
             return ["solve_question"]
         return ["inspect_file", "solve_question", "list_files"]
@@ -845,16 +971,26 @@ class GaiaOpsReasoningDomain:
 
     def action_preference(self, state: ReasoningState, action: Action) -> float:
         tool_names = self._tool_names(state)
+        inspected_files = [str(item) for item in state.metadata.get("inspected_files", []) if str(item).strip()]
+        candidate_files = [str(item) for item in state.metadata.get("candidate_files", []) if str(item).strip()]
+        remaining_files = [name for name in candidate_files if name not in inspected_files]
         if action.type == ActionType.ANSWER:
-            return 1.0 if state.final_answer.strip() or str(state.metadata.get("candidate_answer", "")).strip() else 0.0
+            confidence = float(state.metadata.get("answer_confidence", 0.0) or 0.0)
+            return 1.0 if state.final_answer.strip() or (str(state.metadata.get("candidate_answer", "")).strip() and confidence >= 0.45) else 0.0
         if action.type == ActionType.APPLY:
             if action.tool == "plan_question":
                 return 1.0 if "plan_question" not in tool_names else 0.05
             if action.tool == "list_files":
                 return 0.98 if "plan_question" in tool_names and "list_files" not in tool_names else 0.10
             if action.tool == "inspect_file":
-                return 0.98 if "list_files" in tool_names and "inspect_file" not in tool_names else 0.18
+                if "list_files" in tool_names and "inspect_file" not in tool_names:
+                    return 0.98
+                if remaining_files and float(state.metadata.get("ambiguity_score", 0.0) or 0.0) >= 0.25:
+                    return 0.72
+                return 0.18
             if action.tool == "solve_question":
+                if remaining_files and float(state.metadata.get("ambiguity_score", 0.0) or 0.0) >= 0.25:
+                    return 0.35
                 return 1.0 if "inspect_file" in tool_names and "solve_question" not in tool_names else 0.25
         if action.type == ActionType.CHECK and action.tool == "solve_question":
             return 0.80 if "inspect_file" in tool_names else 0.20
@@ -922,6 +1058,7 @@ class GaiaOpsReasoningDomain:
                 state.domain,
                 str(state.metadata.get("target_file", "")),
                 str(state.metadata.get("question_intent", "")),
+                ",".join(str(item) for item in state.metadata.get("inspected_files", [])[-3:]),
                 " | ".join(state.derived_facts[-3:]),
                 " | ".join(state.obligations[-3:]),
                 state.final_answer.strip(),
@@ -949,10 +1086,15 @@ class GaiaOpsReasoningDomain:
         return None
 
     def build_failure_recovery_example(self, bundle: Dict[str, Any]) -> str:
+        failure_type = str(bundle.get("failure_type", "")).strip()
+        focus = ""
+        if failure_type:
+            focus = f"\nRecovery focus: {failure_type.replace('_', ' ')}."
+        evidence_graph = dict(bundle.get("evidence_graph", {})) if isinstance(bundle.get("evidence_graph", {}), dict) else {}
         task = ReasoningTask(
             task_id=str(bundle.get("task_id", f"recovery_{uuid.uuid4().hex[:8]}")),
             domain=str(bundle.get("domain", "gaia_csv_reasoning")),
-            prompt=str(bundle.get("task", "")),
+            prompt=str(bundle.get("task", "")) + focus + (f"\nKnown evidence files: {', '.join(evidence_graph.get('files', [])[:4])}" if evidence_graph.get("files") else ""),
             answer=str(bundle.get("expected", "")),
             goal=str(bundle.get("goal", "Return the shortest correct final answer")),
             meta=dict(bundle.get("meta", {})),

@@ -4,6 +4,27 @@ import json
 from pathlib import Path
 from typing import Any, Dict, Iterable, List
 
+from .manifest_loader import lint_manifest_suite
+
+
+def _first_text(record: Dict[str, Any], *keys: str, default: str = "") -> str:
+    for key in keys:
+        value = record.get(key)
+        if value is None:
+            continue
+        text = str(value).strip()
+        if text:
+            return text
+    return default
+
+
+def _metadata_block(record: Dict[str, Any]) -> Dict[str, Any]:
+    for key in ("meta", "metadata"):
+        value = record.get(key)
+        if isinstance(value, dict):
+            return dict(value)
+    return {}
+
 
 def _read_records(path_like: str) -> List[Dict[str, Any]]:
     path = Path(path_like)
@@ -37,7 +58,15 @@ def _relpath_for_manifest(target: Path, *, output_dir: Path) -> str:
 
 
 def _fixture_path(record: Dict[str, Any], fixtures_root: str) -> str:
-    for key in ("fixture_dir", "workspace_dir", "attachments_dir", "attachment_dir"):
+    for key in (
+        "fixture_dir",
+        "workspace_dir",
+        "workspace_path",
+        "workspace",
+        "attachments_dir",
+        "attachment_dir",
+        "artifact_dir",
+    ):
         value = str(record.get(key, "")).strip()
         if value:
             return value
@@ -75,10 +104,10 @@ def ingest_swebench_records(
     output_dir = Path(output_path).resolve().parent
     cases: List[Dict[str, Any]] = []
     for idx, record in enumerate(records, start=1):
-        task_id = str(record.get("task_id", record.get("instance_id", record.get("id", f"swebench_import_{idx}")))).strip()
-        prompt = str(record.get("prompt", record.get("problem_statement", record.get("issue", "")))).strip()
+        task_id = _first_text(record, "task_id", "instance_id", "id", default=f"swebench_import_{idx}")
+        prompt = _first_text(record, "prompt", "problem_statement", "issue", "problem", "statement")
         fixture_dir = _fixture_path(record, fixtures_root)
-        meta = dict(record.get("meta", record.get("metadata", {})) or {})
+        meta = _metadata_block(record)
         meta.update(
             {
                 "family": "swebench_patch",
@@ -93,17 +122,23 @@ def ingest_swebench_records(
             meta["fixture_dir"] = _relpath_for_manifest(Path(fixture_dir), output_dir=output_dir)
         if "test_command" in record:
             meta["test_command"] = record["test_command"]
+        elif "test_cmd" in record:
+            meta["test_command"] = record["test_cmd"]
         if "oracle_primary_file" in record:
             meta["oracle_primary_file"] = record["oracle_primary_file"]
+        elif "primary_file" in record:
+            meta["oracle_primary_file"] = record["primary_file"]
         if "oracle_patch" in record:
             meta["oracle_patch"] = record["oracle_patch"]
+        elif "patch" in record:
+            meta["oracle_patch"] = record["patch"]
         cases.append(
             {
                 "task_id": task_id,
                 "domain": "swebench_patch",
                 "prompt": prompt,
-                "answer": str(record.get("answer", record.get("expected_answer", "patched_and_verified"))).strip() or "patched_and_verified",
-                "goal": str(record.get("goal", "Patch the repository so the tests pass")).strip(),
+                "answer": _first_text(record, "answer", "expected_answer", "final_answer", default="patched_and_verified") or "patched_and_verified",
+                "goal": _first_text(record, "goal", default="Patch the repository so the tests pass"),
                 "meta": meta,
             }
         )
@@ -116,7 +151,11 @@ def ingest_swebench_records(
         "metadata": {"record_count": len(cases), "input_path": str(Path(input_path).resolve())},
         "cases": cases,
     }
-    return _write_manifest(output_path, payload)
+    written = _write_manifest(output_path, payload)
+    lint = lint_manifest_suite(written, strict_materialization=True)
+    if not lint["valid"]:
+        raise ValueError("; ".join(str(item) for item in lint["errors"]))
+    return written
 
 
 def _infer_gaia_domain(record: Dict[str, Any], fixture_dir: str) -> str:
@@ -145,11 +184,11 @@ def ingest_gaia_records(
     output_dir = Path(output_path).resolve().parent
     cases: List[Dict[str, Any]] = []
     for idx, record in enumerate(records, start=1):
-        task_id = str(record.get("task_id", record.get("question_id", record.get("id", f"gaia_import_{idx}")))).strip()
-        prompt = str(record.get("prompt", record.get("question", ""))).strip()
+        task_id = _first_text(record, "task_id", "question_id", "id", default=f"gaia_import_{idx}")
+        prompt = _first_text(record, "prompt", "question", "problem_statement")
         fixture_dir = _fixture_path(record, fixtures_root)
         domain = _infer_gaia_domain(record, fixture_dir)
-        meta = dict(record.get("meta", record.get("metadata", {})) or {})
+        meta = _metadata_block(record)
         meta.update(
             {
                 "family": domain,
@@ -162,16 +201,22 @@ def ingest_gaia_records(
         )
         if fixture_dir:
             meta["fixture_dir"] = _relpath_for_manifest(Path(fixture_dir), output_dir=output_dir)
-        for key in ("oracle_tool", "oracle_input", "oracle_evidence_file"):
-            if key in record:
-                meta[key] = record[key]
+        alias_map = {
+            "oracle_tool": ("oracle_tool", "recommended_tool"),
+            "oracle_input": ("oracle_input", "tool_input"),
+            "oracle_evidence_file": ("oracle_evidence_file", "evidence_file", "primary_file"),
+        }
+        for target_key, source_keys in alias_map.items():
+            value = _first_text(record, *source_keys)
+            if value:
+                meta[target_key] = value
         cases.append(
             {
                 "task_id": task_id,
                 "domain": domain,
                 "prompt": prompt,
-                "answer": str(record.get("answer", record.get("final_answer", record.get("expected_answer", "")))).strip(),
-                "goal": str(record.get("goal", "Return the shortest correct final answer")).strip(),
+                "answer": _first_text(record, "answer", "final_answer", "expected_answer"),
+                "goal": _first_text(record, "goal", default="Return the shortest correct final answer"),
                 "meta": meta,
             }
         )
@@ -184,4 +229,8 @@ def ingest_gaia_records(
         "metadata": {"record_count": len(cases), "input_path": str(Path(input_path).resolve())},
         "cases": cases,
     }
-    return _write_manifest(output_path, payload)
+    written = _write_manifest(output_path, payload)
+    lint = lint_manifest_suite(written, strict_materialization=True)
+    if not lint["valid"]:
+        raise ValueError("; ".join(str(item) for item in lint["errors"]))
+    return written

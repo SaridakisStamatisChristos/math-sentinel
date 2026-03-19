@@ -10,6 +10,7 @@ from typing import Any, Dict, List, Optional, cast
 import torch
 
 from benchmarks.public_catalog import available_public_suites, load_public_suite
+from benchmarks.manifest_loader import load_manifest_suite
 from curriculum.generators import GeneratedTask
 from curriculum.phases import PhaseScheduler
 from domains import create_reasoning_domain, default_curriculum_config
@@ -330,6 +331,16 @@ def benchmark_tasks_for_backend(reasoning_domain: Any, suite_names: List[str]) -
             for task in private_train_tasks:
                 tasks.append((normalized, task))
             continue
+        if normalized.startswith("manifest:"):
+            try:
+                suite = load_manifest_suite(str(suite_name).split(":", 1)[1].strip())
+            except Exception:
+                continue
+            if suite.backend != str(getattr(reasoning_domain, "name", "")):
+                continue
+            for task in suite.cases:
+                tasks.append((f"manifest:{suite.name}", task))
+            continue
         try:
             suite = load_public_suite(suite_name)
         except Exception:
@@ -339,6 +350,41 @@ def benchmark_tasks_for_backend(reasoning_domain: Any, suite_names: List[str]) -
         for task in suite.cases:
             tasks.append((suite.name, task))
     return tasks
+
+
+def _classify_benchmark_failure(reasoning_domain: Any, task: Any, final_state: ProofState, explored: List[Any]) -> str:
+    del reasoning_domain
+    domain = str(getattr(task, "domain", "")).lower()
+    metadata = getattr(final_state, "metadata", {}) if isinstance(getattr(final_state, "metadata", {}), dict) else {}
+    if final_state.final_answer.strip():
+        return "answer_mismatch"
+    if "swebench" in domain:
+        if bool(metadata.get("last_test_failed", False)):
+            return "repo_patch_verification_failure"
+        if int(metadata.get("patch_candidate_count", 0) or 0) <= 0:
+            return "repo_patch_localization_failure"
+        return "repo_patch_search_failure"
+    if "gaia" in domain:
+        if not getattr(final_state, "evidence_refs", []):
+            return "evidence_gathering_failure"
+        if not str(metadata.get("candidate_answer", "")).strip():
+            return "evidence_synthesis_failure"
+        return "evidence_answer_failure"
+    if len(explored) <= 1:
+        return "search_stall_failure"
+    return "open_domain_failure"
+
+
+def _failure_weight(failure_type: str, final_state: ProofState) -> float:
+    metadata = getattr(final_state, "metadata", {}) if isinstance(getattr(final_state, "metadata", {}), dict) else {}
+    base = 3.0
+    if failure_type in {"repo_patch_verification_failure", "evidence_answer_failure", "answer_mismatch"}:
+        base += 1.0
+    if int(metadata.get("failed_patch_attempt_count", 0) or 0) > 0:
+        base += 0.5
+    if not str(getattr(final_state, "final_answer", "")).strip():
+        base += 0.25
+    return base
 
 
 @torch.no_grad()
@@ -394,6 +440,10 @@ def harvest_benchmark_failures(
         ok = final_state.status == "solved" and reasoning_domain.evaluate_answer(task, final_state.final_answer)
         if ok:
             continue
+        failure_type = _classify_benchmark_failure(reasoning_domain, task, final_state, explored)
+        weight = _failure_weight(failure_type, final_state)
+        metadata = dict(getattr(final_state, "metadata", {})) if isinstance(getattr(final_state, "metadata", {}), dict) else {}
+        patch_attempt_history = list(metadata.get("patch_attempt_history", [])) if isinstance(metadata.get("patch_attempt_history", []), list) else []
         bundle = {
             "kind": "benchmark_failure",
             "suite": suite_name,
@@ -404,15 +454,32 @@ def harvest_benchmark_failures(
             "expected": task.answer,
             "answer": final_state.final_answer or "<no_answer>",
             "status": final_state.status,
+            "failure_type": failure_type,
             "score": len(explored),
-            "weight": 3.0,
+            "weight": weight,
             "source": str(task.meta.get("source", "benchmark_train")),
             "holdout_group": str(task.meta.get("holdout_group", "")),
             "meta": dict(task.meta),
             "state": final_state.serialize(),
             "search_audit": dict(final_state.metadata.get("search_audit", {})),
+            "tool_trace": [
+                {
+                    "tool": str(record.get("tool", "")),
+                    "ok": bool((record.get("result", {}) or {}).get("ok", False)) if isinstance(record.get("result", {}), dict) else False,
+                }
+                for record in getattr(final_state, "tool_history", [])[-8:]
+                if isinstance(record, dict)
+            ],
+            "obligations_remaining": list(getattr(final_state, "obligations", [])),
+            "evidence_refs": list(getattr(final_state, "evidence_refs", [])),
+            "candidate_answer": str(metadata.get("candidate_answer", "")),
+            "answer_confidence": float(metadata.get("answer_confidence", 0.0) or 0.0),
+            "question_plan": dict(metadata.get("question_plan", {})) if isinstance(metadata.get("question_plan", {}), dict) else {},
+            "evidence_graph": dict(metadata.get("evidence_graph", {})) if isinstance(metadata.get("evidence_graph", {}), dict) else {},
+            "patch_attempt_history": patch_attempt_history,
+            "failed_patch_candidates": list(metadata.get("failed_patch_candidates", [])) if isinstance(metadata.get("failed_patch_candidates", []), list) else [],
         }
-        replay.add_failure_bundle(bundle, weight=3.0)
+        replay.add_failure_bundle(bundle, weight=weight)
         hard_cases.add_failure_bundle(bundle)
         harvested += 1
     return harvested
@@ -426,7 +493,7 @@ def sample_benchmark_recovery_examples(replay: ReplayBuffer, reasoning_domain: A
         item
         for item in replay.sample_weighted(max(limit * 6, limit))
         if item.get("kind") == "benchmark_failure"
-        and str(item.get("source", "")).strip() == "benchmark_train"
+        and str(item.get("source", "")).strip() not in {"benchmark_claim_holdout", "public_benchmark"}
         and (not private_domains or str(item.get("domain", "")).strip() in private_domains)
     ]
     examples: List[str] = []
