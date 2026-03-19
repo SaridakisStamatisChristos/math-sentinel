@@ -1,9 +1,18 @@
 from __future__ import annotations
 
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
-from domains.gaia_ops.backend import GaiaOpsReasoningDomain, _solve_arxiv_overlap
+from domains.gaia_ops.backend import (
+    GaiaOpsReasoningDomain,
+    _extract_usgs_collection_locations,
+    _infer_xlsx_answer,
+    _nature_article_type_counts,
+    _solve_arxiv_overlap,
+    _solve_ping_pong_choice,
+    _solve_unlambda_missing_token,
+)
 from engine.task import ReasoningTask
 
 
@@ -152,3 +161,51 @@ class GaiaOpsBackendTests(unittest.TestCase):
 
         self.assertEqual(answer, "egalitarian")
         self.assertTrue(evidence)
+
+    def test_unlambda_solver_identifies_missing_backtick(self) -> None:
+        answer, evidence = _solve_unlambda_missing_token(
+            'In Unlambda, what exact charcter or text needs to be added to correct the following code to output "For penguins"? '
+            'Code:\n\n`r```````````.F.o.r. .p.e.n.g.u.i.n.si'
+        )
+
+        self.assertEqual(answer, "backtick")
+        self.assertTrue(evidence)
+
+    def test_ping_pong_solver_prefers_ball_three(self) -> None:
+        answer, evidence = _solve_ping_pong_choice()
+
+        self.assertEqual(answer, "3")
+        self.assertTrue(any("best ball 3" in item for item in evidence))
+
+    def test_infer_xlsx_answer_returns_oldest_bluray_title(self) -> None:
+        path = next(
+            Path("data/official_corpus/gaia/attachments/32102e3e-d12a-4209-9163-7b3a104efe5d").glob("*.xlsx")
+        )
+        prompt = (
+            "The attached spreadsheet shows the inventory for a movie and video game rental store in Seattle, Washington. "
+            "What is the title of the oldest Blu-Ray recorded in this spreadsheet? Return it as appearing in the spreadsheet."
+        )
+
+        answer, evidence = _infer_xlsx_answer(prompt, path)
+
+        self.assertEqual(answer, "Time-Parking 2: Parallel Universe")
+        self.assertTrue(evidence)
+
+    def test_nature_article_type_counts_parse_html(self) -> None:
+        html = """
+        <span class="c-meta__type">Article</span>
+        <span class="c-meta__type">Article</span>
+        <span class="c-meta__type">Matters Arising</span>
+        """
+
+        counts = _nature_article_type_counts(html)
+
+        self.assertEqual(counts["Article"], 2)
+        self.assertEqual(counts["Matters Arising"], 1)
+
+    def test_extract_usgs_collection_locations_parses_county_locality_and_year(self) -> None:
+        text = "Pinellas Gulf of America, Florida, Fred Howard Park 2018 03100207 Crystal-Pithlachascotee eradicated"
+
+        records = _extract_usgs_collection_locations(text)
+
+        self.assertEqual(records, [{"county": "Pinellas", "locality": "Fred Howard Park", "year": "2018"}])
