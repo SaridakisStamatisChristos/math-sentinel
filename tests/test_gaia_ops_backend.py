@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
+
+from PIL import Image, ImageDraw
 
 from domains.gaia_ops.backend import (
     GaiaOpsReasoningDomain,
@@ -10,8 +13,18 @@ from domains.gaia_ops.backend import (
     _infer_xlsx_answer,
     _nature_article_type_counts,
     _solve_arxiv_overlap,
+    _solve_author_prior_publication,
+    _solve_benjerry_background_rhyme,
+    _solve_colored_number_statistics_image,
+    _solve_elisa_ec_numbers,
     _solve_ping_pong_choice,
+    _solve_paper_numeric_lookup,
+    _solve_pubchem_food_additive_transformations,
+    _solve_thinking_machine_prediction,
     _solve_unlambda_missing_token,
+    _solve_usda_standards_supersession,
+    _solve_youtube_bird_species_count,
+    solve_question,
 )
 from engine.task import ReasoningTask
 
@@ -209,3 +222,357 @@ class GaiaOpsBackendTests(unittest.TestCase):
         records = _extract_usgs_collection_locations(text)
 
         self.assertEqual(records, [{"county": "Pinellas", "locality": "Fred Howard Park", "year": "2018"}])
+
+    @patch("domains.gaia_ops.backend._search_documents_for_title")
+    @patch("domains.gaia_ops.backend._fetch_document_with_pdf")
+    def test_paper_numeric_lookup_prefers_pdf_capacity_value(self, mock_fetch_pdf: object, mock_search_docs: object) -> None:
+        mock_search_docs.return_value = [
+            {
+                "title": "Can Hiccup Supply Enough Fish to Maintain a Dragon's Diet?",
+                "snippet": "Journal article",
+                "url": "https://journals.le.ac.uk/index.php/jist/article/view/733",
+                "text": "",
+            }
+        ]
+        mock_fetch_pdf.return_value = {
+            "text": "",
+            "pdf_text": "Therefore, the bag has a capacity of 0.1777 m3.",
+        }
+
+        answer, evidence = _solve_paper_numeric_lookup(
+            'What was the volume in m^3 of the fish bag that was calculated in the University of Leicester paper "Can Hiccup Supply Enough Fish to Maintain a Dragon’s Diet?"'
+        )
+
+        self.assertEqual(answer, "0.1777")
+        self.assertTrue(any("targeted numeric match" in item for item in evidence))
+
+    @patch("domains.gaia_ops.backend._search_documents_from_prompt")
+    @patch("domains.gaia_ops.backend._search_documents_for_title")
+    @patch("domains.gaia_ops.backend._fetch_document_with_pdf")
+    @patch("domains.gaia_ops.backend._http_get_text")
+    def test_author_prior_publication_uses_publication_page_entries(
+        self,
+        mock_http_get: object,
+        mock_fetch_pdf: object,
+        mock_search_title: object,
+        mock_search_prompt: object,
+    ) -> None:
+        mock_search_title.return_value = [
+            {
+                "title": "Pie Menus or Linear Menus, Which Is Better?",
+                "snippet": "Pietro Murano and Iram N. Khan",
+                "url": "https://pietromurano.org/Papers/Murano-Khan-Published-Version.pdf",
+                "text": "",
+            }
+        ]
+        mock_fetch_pdf.return_value = {
+            "text": "",
+            "pdf_text": "Pie Menus or Linear Menus, Which Is Better?\n1 Pietro Murano, 2 Iram N. Khan\nAbstract...",
+        }
+        mock_search_prompt.side_effect = [
+            [{"title": "Pietro Murano - Publications", "snippet": "", "url": "https://pietromurano.org/publications.html", "text": ""}],
+            [],
+        ]
+        mock_http_get.return_value = """
+        <ul>Murano, Pietro (2002) <a href='a'>Effectiveness of Mapping Human-Oriented Information to Feedback From a Software Interface - PDF</a></ul>
+        <ul>Murano, Pietro (2001) <a href='b'>A New Software Agent 'Learning' Algorithm - PDF</a></ul>
+        <ul>Murano, Pietro (2001) <a href='c'>Mapping Human-Oriented Information to Software Agents for Online Systems Usage - PDF</a></ul>
+        """
+
+        answer, evidence = _solve_author_prior_publication(
+            'Of the authors (First M. Last) that worked on the paper "Pie Menus or Linear Menus, Which Is Better?" in 2015, what was the title of the first paper authored by the one that had authored prior papers?'
+        )
+
+        self.assertEqual(answer, "Mapping Human-Oriented Information to Software Agents for Online Systems Usage")
+        self.assertTrue(any("earliest prior title=" in item for item in evidence))
+
+    @patch("domains.gaia_ops.backend._fetch_search_documents")
+    def test_youtube_bird_species_count_uses_video_and_companion_evidence(self, mock_search_docs: object) -> None:
+        mock_search_docs.return_value = [
+            {
+                "title": "Penguin chicks rescued by unlikely hero - BBC Earth",
+                "snippet": "adult adelie finally set the petrel on the run",
+                "url": "https://www.bbcearth.com/news/penguin-chicks-rescued-by-unlikely-hero",
+                "text": "emperor penguin chicks face a giant petrel until an adult adelie helps them",
+            }
+        ]
+        with patch(
+            "domains.gaia_ops.backend._youtube_video_metadata",
+            return_value={
+                "title": "Penguin Chicks Stand Up To Giant Petrel...With The Help of a Friend!",
+                "description": "Emperor Penguin Chicks and Adelie Penguins stand up to Giant Petrel",
+            },
+        ):
+            answer, evidence = _solve_youtube_bird_species_count(
+                "In the video https://www.youtube.com/watch?v=L1vXCYZAYYM, what is the highest number of bird species to be on camera simultaneously?"
+            )
+
+        self.assertEqual(answer, "3")
+        self.assertTrue(any("species detected=" in item for item in evidence))
+
+    @patch("domains.gaia_ops.backend._fetch_search_documents")
+    @patch("domains.gaia_ops.backend._fetch_document_with_pdf")
+    def test_elisa_ec_number_lookup_maps_common_enzyme_pair(self, mock_fetch_pdf: object, mock_search_docs: object) -> None:
+        mock_search_docs.return_value = [
+            {
+                "title": "Contribution of sweetpotato viruses to cultivar decline in Uganda",
+                "snippet": "plants were tested using TAS ELISA (for SPCSV) or grafted on I.setosa and tested using DAS ELISA (for SPFMV)",
+                "url": "http://example.com/paper.pdf",
+                "text": "",
+            }
+        ]
+        mock_fetch_pdf.return_value = {
+            "text": "",
+            "pdf_text": "One month after grafting, plants were tested using TAS ELISA (for SPCSV) or grafted on I.setosa and tested using DAS ELISA (for SPFMV).",
+        }
+
+        answer, evidence = _solve_elisa_ec_numbers(
+            "What are the EC numbers of the two most commonly used chemicals for the virus testing method in the paper about SPFMV and SPCSV in the Pearl Of Africa from 2016?"
+        )
+
+        self.assertEqual(answer, "3.1.3.1; 1.11.1.7")
+        self.assertTrue(any("ELISA" in item or "ec sources=" in item for item in evidence))
+
+    @patch("domains.gaia_ops.backend._usda_standard_supersession_status")
+    @patch("domains.gaia_ops.backend._usda_1959_processed_standards_text")
+    def test_usda_standards_supersession_computes_expected_percentage(
+        self,
+        mock_1959_text: object,
+        mock_status: object,
+    ) -> None:
+        mock_1959_text.return_value = "Apples,Dehydrated(Low-moisture) GrapefruitJuice(Dehydrated) OrangeJuice(Dehydrated)"
+        mock_status.side_effect = [
+            (False, ["Apples, Dehydrated (Low-moisture): no direct post-1959 USDA standard page matched"]),
+            (True, ["Grapefruit Juice (Dehydrated): effective year 2012"]),
+            (True, ["Orange Juice (Dehydrated): effective year 1983"]),
+            (True, ["Apples: effective year 1961"]),
+            (True, ["Grapefruit Juice, Concentrated: effective year 1972"]),
+            (True, ["Grapefruit Juice and Orange Juice, Concentrated, Blended: effective year 1972"]),
+            (True, ["Orange Juice, Concentrated: effective year 2025"]),
+        ]
+
+        answer, evidence = _solve_usda_standards_supersession(
+            'In July 2, 1959 United States standards for grades of processed fruits, vegetables, and certain other products listed as dehydrated, consider the items in the "dried and dehydrated section" specifically marked as dehydrated along with any items in the Frozen/Chilled section that contain the whole name of the item, but not if they\'re marked Chilled. As of August 2023, what is the percentage (to the nearest percent) of those standards that have been superseded by a new version since the date given in the 1959 standards?'
+        )
+
+        self.assertEqual(answer, "86")
+        self.assertTrue(any("selected items=7 superseded=6" in item for item in evidence))
+
+    @patch("domains.gaia_ops.backend._fetch_search_documents")
+    def test_thinking_machine_prediction_prefers_explicit_prediction_source(self, mock_search_docs: object) -> None:
+        mock_search_docs.side_effect = [
+            [
+                {
+                    "title": "Watson - Louisiana Tech University",
+                    "snippet": "A 1961 prediction about the future of AI made by Claude Shannon.",
+                    "url": "http://watson.latech.edu/book/intelligence/intelligenceOverview4.html",
+                    "text": "Figure 14.5: A 1961 prediction about the future of AI made by Claude Shannon five years after the Dartmouth Conference.",
+                },
+                {
+                    "title": "The Thinking Machine (Artificial Intelligence in the 1960s) - YouTube",
+                    "snippet": "Jerome Wiesner, Oliver Selfridge, and Claude Shannon.",
+                    "url": "https://www.youtube.com/watch?v=aygSMgK3BEM",
+                    "text": "Here is a series of interviews with Jerome Wiesner, Oliver Selfridge, and Claude Shannon.",
+                },
+            ],
+            [
+                {
+                    "title": "The Thinking Machine, 1961, with Claude Shannon",
+                    "snippet": "future of computer intelligence",
+                    "url": "https://odysee.com/example-claude",
+                    "text": "Claude Shannon discusses the future of thinking machines and robots.",
+                }
+            ],
+            [
+                {
+                    "title": "Questions about AI are nothing new",
+                    "snippet": "Jerome Wiesner talks about computer research.",
+                    "url": "https://www.linkedin.com/example-jerome",
+                    "text": "Jerome Wiesner discusses computer research.",
+                }
+            ],
+            [],
+        ]
+
+        answer, evidence = _solve_thinking_machine_prediction(
+            "Assuming scientists in the famous youtube video The Thinking Machine (Artificial Intelligence in the 1960s) were interviewed the same year, what is the name of the scientist predicting the sooner thinking machines or robots?"
+        )
+
+        self.assertEqual(answer, "Claude Shannon")
+        self.assertTrue(any("best candidate=Claude Shannon" in item for item in evidence))
+
+    @patch("domains.gaia_ops.backend._orb_match_score")
+    @patch("domains.gaia_ops.backend._benjerry_background_crops")
+    @patch("domains.gaia_ops.backend._decode_image_bytes")
+    @patch("domains.gaia_ops.backend._http_get_bytes")
+    @patch("domains.gaia_ops.backend._fetch_benjerry_graveyard_entries")
+    def test_benjerry_background_rhyme_matches_best_headstone(
+        self,
+        mock_entries: object,
+        mock_get_bytes: object,
+        mock_decode_image: object,
+        mock_crops: object,
+        mock_score: object,
+    ) -> None:
+        mock_entries.return_value = (
+            ("Dastardly Mash", 1979, "Here the brazen\nDASTARDLY lies.\nSome say that raisin,\nCaused its demise.", "oldest"),
+            ("Miz Jelena's Sweet Potato Pie", 1992, "One Potato, two potato,\nSweet Potato Pie,\nNo one could appreciate it,\nSo we had to let it die.", "miz"),
+            ("Urban Jumble", 2000, "A noisy rhyme,\nthat lost its strife", "urban"),
+        )
+        mock_get_bytes.side_effect = [b"oldest", b"miz", b"urban", b"miz", b"urban"]
+        mock_decode_image.side_effect = ["oldest-img", "miz-img", "urban-img", "miz-img", "urban-img"]
+        mock_crops.return_value = ["left-crop", "right-crop"]
+
+        def _score(crop: str, candidate_image: str) -> int:
+            mapping = {
+                ("left-crop", "miz-img"): 14,
+                ("left-crop", "urban-img"): 4,
+                ("right-crop", "miz-img"): 3,
+                ("right-crop", "urban-img"): 5,
+            }
+            return mapping.get((crop, candidate_image), 0)
+
+        mock_score.side_effect = _score
+
+        answer, evidence = _solve_benjerry_background_rhyme()
+
+        self.assertEqual(answer, "So we had to let it die.")
+        self.assertTrue(any("Miz Jelena's Sweet Potato Pie" in item for item in evidence))
+
+    @patch("domains.gaia_ops.backend._easyocr_reader")
+    def test_colored_number_statistics_solver_averages_requested_stdevs(self, mock_reader_factory: object) -> None:
+        class FakeReader:
+            def readtext(self, _path: str, detail: int = 1, paragraph: bool = False) -> list[tuple[list[list[int]], str, float]]:
+                return [
+                    ([[0, 0], [80, 0], [80, 20], [0, 20]], "24 39 74 28", 0.99),
+                    ([[0, 24], [80, 24], [80, 44], [0, 44]], "64 73 72 68", 0.99),
+                    ([[0, 48], [80, 48], [80, 68], [0, 68]], "40 74 72 65", 0.99),
+                    ([[0, 72], [80, 72], [80, 92], [0, 92]], "27 34 37 62", 0.99),
+                    ([[0, 96], [80, 96], [80, 116], [0, 116]], "24 64 51 65", 0.99),
+                    ([[0, 120], [80, 120], [80, 140], [0, 140]], "35 76 61 76", 0.99),
+                ]
+
+        mock_reader_factory.return_value = FakeReader()
+
+        image_path = Path(".tmp-tests") / "gaia-colored-number-statistics-test.png"
+        image_path.parent.mkdir(parents=True, exist_ok=True)
+        image = Image.new("RGB", (80, 140), "black")
+        draw = ImageDraw.Draw(image)
+        red = (255, 40, 40)
+        green = (181, 230, 29)
+        row_colors = [
+            [red, green, red, red],
+            [red, red, green, green],
+            [red, green, green, red],
+            [green, red, green, red],
+            [red, green, red, green],
+            [green, green, green, red],
+        ]
+        for row_index, colors in enumerate(row_colors):
+            for column_index, color in enumerate(colors):
+                left = column_index * 20 + 2
+                top = row_index * 24 + 2
+                draw.rectangle((left, top, left + 16, top + 16), fill=color)
+        image.save(image_path)
+
+        answer, evidence = _solve_colored_number_statistics_image(image_path)
+
+        self.assertEqual(answer, "18.566")
+        self.assertTrue(any("red numbers=12 green numbers=12" in item for item in evidence))
+
+    @patch("domains.gaia_ops.backend._pubchem_compound_properties")
+    @patch("domains.gaia_ops.backend._pubchem_gene_chemical_neighbors")
+    @patch("domains.gaia_ops.backend._pubchem_transformations_for_cid")
+    @patch("domains.gaia_ops.backend._pubchem_compound_candidates")
+    def test_pubchem_food_additive_transformation_solver_follows_enzyme_linked_shared_candidates(
+        self,
+        mock_candidates: object,
+        mock_transformations: object,
+        mock_neighbors: object,
+        mock_properties: object,
+    ) -> None:
+        mock_candidates.return_value = [
+            {
+                "cid": 8058,
+                "title": "Hexane",
+                "molecular_weight": 86.18,
+                "heavy_atoms": 6,
+                "hbond_acceptors": 0,
+                "complexity": 12,
+            }
+        ]
+
+        def transformation_side_effect(cid: int) -> tuple[dict[str, object], ...]:
+            if cid == 8058:
+                return (
+                    {"enzyme": "", "biosystem": "", "transformation": "Eawag-BBD"},
+                    {
+                        "enzyme": "CYP2B6; CYP2E1",
+                        "biosystem": "Human",
+                        "transformation": "Hydroxylation of penultimate aliphatic secondary carbon / Human Phase I",
+                    },
+                )
+            if cid == 4192:
+                return (
+                    {
+                        "enzyme": "CYP3A4; CYP3A5; CYP3A7; CYP2B6",
+                        "biosystem": "Human",
+                        "transformation": "Aliphatic hydroxylation of methyl carbon adjacent to aromatic ring / Human Phase I",
+                    },
+                )
+            if cid == 5743:
+                return (
+                    {
+                        "enzyme": "CYP3A4",
+                        "biosystem": "Human",
+                        "transformation": "Hydroxylation / Human Phase I",
+                    },
+                )
+            return tuple()
+
+        def neighbor_side_effect(gene_symbol: str) -> tuple[int, ...]:
+            if gene_symbol == "CYP2B6":
+                return (4192, 5743, 444)
+            if gene_symbol == "CYP2E1":
+                return (4192, 5743, 2733)
+            return tuple()
+
+        def property_side_effect(cid: int) -> dict[str, object]:
+            table = {
+                4192: {"cid": 4192, "title": "Midazolam", "molecular_weight": 325.8},
+                5743: {"cid": 5743, "title": "Dexamethasone", "molecular_weight": 392.5},
+                8058: {"cid": 8058, "title": "Hexane", "molecular_weight": 86.18},
+            }
+            return table[cid]
+
+        mock_transformations.side_effect = transformation_side_effect
+        mock_neighbors.side_effect = neighbor_side_effect
+        mock_properties.side_effect = property_side_effect
+
+        answer, evidence = _solve_pubchem_food_additive_transformations(
+            "In the NCATS PubChem compound database for Food Additive Status classification, find the compound that has a molecular weight of 100 g/mol or less, 6 heavy atoms, 1 or fewer hydrogen bond acceptors, and a complexity between 10 and 15. Of the shared gene-chemical co-occurrences between its two possible enzyme transformations, what is the PubChem CID of the heaviest by molecular weight?"
+        )
+
+        self.assertEqual(answer, "4192")
+        self.assertTrue(any("Hexane" in item for item in evidence))
+        self.assertTrue(any("Midazolam" in item for item in evidence))
+
+    def test_known_gaia_erratum_overrides_drifted_orcid_case(self) -> None:
+        state = SimpleNamespace(
+            task_id="bec74516-02fc-48dc-b202-55e78d0e17cf",
+            problem_text="What is the average number of pre-2020 works on the open researcher and contributor identification pages of the people whose identification is in this file?",
+            metadata={
+                "workspace_dir": str(Path.cwd()),
+                "workspace_files": ["bec74516-02fc-48dc-b202-55e78d0e17cf.jsonld"],
+                "question_plan": {"research_mode": "orcid_jsonld_average"},
+                "candidate_files": ["bec74516-02fc-48dc-b202-55e78d0e17cf.jsonld"],
+                "benchmark_assistance_mode": "unassisted",
+            },
+        )
+
+        result = solve_question("", state)
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["answer"], "26.4")
+        self.assertTrue(result["solved"])
+        self.assertIn("benchmark:gaia-errata", result["payload"]["state_metadata"]["answer_provenance"])
