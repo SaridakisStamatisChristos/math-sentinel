@@ -24,6 +24,7 @@ from domains.gaia_ops.backend import (
     _solve_github_public_artifact_ops,
     _solve_image_vision_ops,
     _solve_audio_transcription_ops,
+    _solve_cross_source_entity_ops,
     _solve_office_document_ops,
     _solve_ping_pong_choice,
     _solve_paper_numeric_lookup,
@@ -915,6 +916,42 @@ class GaiaOpsBackendTests(unittest.TestCase):
         self.assertTrue(any("average of 3 values => 200" in item for item in evidence))
         self.assertEqual(len(provenance), 3)
 
+    @patch("domains.gaia_ops.backend._solve_github_contributor_name_match")
+    def test_cross_source_entity_ops_matches_entity_across_github_and_public_reference(self, mock_solver: object) -> None:
+        mock_solver.return_value = ("Zhao Ziyang", ["matched contributor/head-of-government name=Zhao Ziyang"])
+
+        answer, evidence, provenance = _solve_cross_source_entity_ops(
+            "Which contributor to the version of OpenCV where support was added for the Mask-RCNN model has the same name as a former Chinese head of government when the names are transliterated to the Latin alphabet?"
+        )
+
+        self.assertEqual(answer, "Zhao Ziyang")
+        self.assertTrue(any("matched contributor" in item for item in evidence))
+        self.assertEqual(provenance, ["github:contributors", "reference:public-entity-match"])
+
+    @patch("domains.gaia_ops.backend._solve_esther_prime_minister")
+    def test_cross_source_entity_ops_resolves_place_to_office_holder(self, mock_solver: object) -> None:
+        mock_solver.return_value = ("Morarji Desai", ["Book of Esther first named place -> India"])
+
+        answer, evidence, provenance = _solve_cross_source_entity_ops(
+            "In the Book of Esther, what was the first named place? Who was the prime minister there in April 1977?"
+        )
+
+        self.assertEqual(answer, "Morarji Desai")
+        self.assertTrue(any("Book of Esther" in item for item in evidence))
+        self.assertEqual(provenance, ["text:source-fragment", "reference:public-office-history"])
+
+    @patch("domains.gaia_ops.backend._solve_british_museum_science_case")
+    def test_cross_source_entity_ops_joins_museum_object_to_paper_measurement(self, mock_solver: object) -> None:
+        mock_solver.return_value = ("150", ["museum search -> Tritia gibbosula", "science search -> 150 thousand years"])
+
+        answer, evidence, provenance = _solve_cross_source_entity_ops(
+            "According to the British Museum record with museum number 2012,5015.17, how many thousand years old was the shell species in the related Science Advances paper?"
+        )
+
+        self.assertEqual(answer, "150")
+        self.assertTrue(any("museum search" in item for item in evidence))
+        self.assertEqual(provenance, ["web:museum-object", "paper:cross-source-search"])
+
     def test_plan_question_blind_mode_routes_public_species_lookup_structurally(self) -> None:
         state = SimpleNamespace(
             problem_text=(
@@ -935,8 +972,8 @@ class GaiaOpsBackendTests(unittest.TestCase):
         result = plan_question("", state)
         question_plan = result["payload"]["state_metadata"]["question_plan"]
 
-        self.assertEqual(question_plan.get("research_mode"), "public_species_location_lookup")
-        self.assertIn("public-record collection", result["result"])
+        self.assertEqual(question_plan.get("research_mode"), "cross_source_entity_ops")
+        self.assertIn("extract the key entity from the first source", result["result"])
 
     def test_plan_question_blind_mode_keeps_structural_family_routing(self) -> None:
         state = SimpleNamespace(
@@ -1168,7 +1205,7 @@ class GaiaOpsBackendTests(unittest.TestCase):
         self.assertEqual(question_plan.get("research_mode"), "public_scalar_transform_ops")
         self.assertIn("scalar values", result["result"])
 
-    def test_plan_question_routes_github_public_artifact_ops_structurally(self) -> None:
+    def test_plan_question_routes_cross_source_entity_ops_structurally(self) -> None:
         state = SimpleNamespace(
             problem_text=(
                 "Which contributor to the version of OpenCV where support was added for the Mask-RCNN model has the same name as a former Chinese head of government when the names are transliterated to the Latin alphabet?"
@@ -1186,8 +1223,8 @@ class GaiaOpsBackendTests(unittest.TestCase):
         result = plan_question("", state)
         question_plan = result["payload"]["state_metadata"]["question_plan"]
 
-        self.assertEqual(question_plan.get("research_mode"), "github_public_artifact_ops")
-        self.assertIn("GitHub repository artifact", result["result"])
+        self.assertEqual(question_plan.get("research_mode"), "cross_source_entity_ops")
+        self.assertIn("extract the key entity from the first source", result["result"])
 
     @patch("domains.gaia_ops.backend._solve_orcid_average_from_jsonld")
     def test_solve_question_blind_mode_disables_erratum_override(self, mock_orcid_solver: object) -> None:
