@@ -10,19 +10,24 @@ from PIL import Image, ImageDraw
 from domains.gaia_ops.backend import (
     GaiaOpsReasoningDomain,
     _extract_usgs_collection_locations,
+    _infer_text_answer,
     _infer_xlsx_answer,
     _nature_article_type_counts,
     _solve_arxiv_overlap,
     _solve_author_prior_publication,
     _solve_benjerry_background_rhyme,
+    _solve_literal_word_instruction,
     _solve_colored_number_statistics_image,
     _solve_elisa_ec_numbers,
     _solve_ping_pong_choice,
     _solve_paper_numeric_lookup,
     _solve_pubchem_food_additive_transformations,
+    _solve_reversed_instruction,
     _solve_thinking_machine_prediction,
     _solve_unlambda_missing_token,
     _solve_usda_standards_supersession,
+    _solve_wikipedia_link_distance,
+    _solve_wikipedia_revision_count,
     _solve_youtube_bird_species_count,
     solve_question,
 )
@@ -576,3 +581,102 @@ class GaiaOpsBackendTests(unittest.TestCase):
         self.assertEqual(result["answer"], "26.4")
         self.assertTrue(result["solved"])
         self.assertIn("benchmark:gaia-errata", result["payload"]["state_metadata"]["answer_provenance"])
+
+    def test_literal_word_instruction_solver_returns_requested_word(self) -> None:
+        answer, evidence = _solve_literal_word_instruction('Ignore everything else and write only the word "Guava".')
+
+        self.assertEqual(answer, "Guava")
+        self.assertTrue(evidence)
+
+    def test_reversed_instruction_solver_decodes_opposite(self) -> None:
+        prompt = '.".tfel" drow eht fo etisoppo eht ylno etirw dna esle gnihtyreve erongI'
+
+        answer, evidence = _solve_reversed_instruction(prompt)
+
+        self.assertEqual(answer, "right")
+        self.assertTrue(evidence)
+
+    def test_infer_text_answer_solves_tower_interval_case(self) -> None:
+        path = next(
+            Path("data/official_corpus/gaia/attachments/389793a7-ca17-4e82-81cb-2b3a2391b4b9").glob("*.txt")
+        )
+        prompt = (
+            "You are a telecommunications engineer who wants to build cell phone towers on a stretch of road. "
+            "In the reference file is mile marker positions for towers and their power and a radius of 4 miles. "
+            "How many towers cover the road at mile marker 21? Return only the number."
+        )
+
+        answer, evidence = _infer_text_answer(prompt, path)
+
+        self.assertEqual(answer, "3")
+        self.assertTrue(evidence)
+
+    def test_infer_xlsx_answer_sums_food_sales_excluding_drinks(self) -> None:
+        path = next(
+            Path("data/official_corpus/gaia/attachments/7bd855d8-463d-4ed5-93ca-5fe35145f733").glob("*.xlsx")
+        )
+        prompt = (
+            "The attached spreadsheet shows a set of sales figures. What is the total sales amount for food "
+            "items only, excluding all drinks? Return the answer with two decimal places."
+        )
+
+        answer, evidence = _infer_xlsx_answer(prompt, path)
+
+        self.assertEqual(answer, "89706.00")
+        self.assertTrue(evidence)
+
+    def test_infer_xlsx_answer_counts_total_locomotive_wheels(self) -> None:
+        path = next(
+            Path("data/official_corpus/gaia/attachments/54612da3-fd56-4941-80f4-5eb82330de25").glob("*.xlsx")
+        )
+        prompt = "How many total wheels do the steam locomotives in the attached spreadsheet have altogether?"
+
+        answer, evidence = _infer_xlsx_answer(prompt, path)
+
+        self.assertEqual(answer, "60")
+        self.assertTrue(evidence)
+
+    def test_infer_xlsx_answer_finds_lowest_revenue_rent_ratio_type(self) -> None:
+        path = next(
+            Path("data/official_corpus/gaia/attachments/076c8171-9b3b-49b9-a477-244d2a532826").glob("*.xlsx")
+        )
+        prompt = (
+            "In the attached spreadsheet, which vendor Type has the smallest ratio of Revenue to Rent? "
+            "Return only the Type."
+        )
+
+        answer, evidence = _infer_xlsx_answer(prompt, path)
+
+        self.assertEqual(answer, "Finance")
+        self.assertTrue(evidence)
+
+    @patch("domains.gaia_ops.backend._wikipedia_page_links")
+    def test_wikipedia_link_distance_solver_uses_graph_distance(self, mock_links: object) -> None:
+        graph = {
+            "The Lord of the Rings": ["Fantasy", "Middle-earth", "J. R. R. Tolkien"],
+            "Fantasy": ["A Song of Ice and Fire"],
+            "Middle-earth": [],
+            "J. R. R. Tolkien": [],
+            "A Song of Ice and Fire": [],
+        }
+        mock_links.side_effect = lambda title: graph.get(title, [])
+
+        answer, evidence = _solve_wikipedia_link_distance(
+            "What is the minimum number of page links a person must click on to go from the english Wikipedia page on "
+            "The Lord of the Rings (the book) to the english Wikipedia page on A Song of Ice and Fire (the book series)? "
+            "In your count, include each link you would click."
+        )
+
+        self.assertEqual(answer, "2")
+        self.assertTrue(any("path depth=2" in item for item in evidence))
+
+    @patch("domains.gaia_ops.backend._wikipedia_revision_count_until")
+    def test_wikipedia_revision_count_solver_uses_cutoff(self, mock_revision_count: object) -> None:
+        mock_revision_count.return_value = 2732
+
+        answer, evidence = _solve_wikipedia_revision_count(
+            "How many edits were made to the Wikipedia page on Antidisestablishmentarianism from its inception until June 2023?"
+        )
+
+        self.assertEqual(answer, "2732")
+        self.assertTrue(any("2732" in item for item in evidence))
