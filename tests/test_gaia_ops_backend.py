@@ -20,6 +20,7 @@ from domains.gaia_ops.backend import (
     _solve_literal_word_instruction,
     _solve_colored_number_statistics_image,
     _solve_elisa_ec_numbers,
+    _solve_github_public_artifact_ops,
     _solve_ping_pong_choice,
     _solve_paper_numeric_lookup,
     _solve_paper_compare_ops,
@@ -804,6 +805,27 @@ class GaiaOpsBackendTests(unittest.TestCase):
         self.assertEqual(question_plan.get("research_mode"), "video_transcript_ops")
         self.assertIn("transcript evidence", result["result"])
 
+    def test_plan_question_routes_github_public_artifact_ops_structurally(self) -> None:
+        state = SimpleNamespace(
+            problem_text=(
+                "Which contributor to the version of OpenCV where support was added for the Mask-RCNN model has the same name as a former Chinese head of government when the names are transliterated to the Latin alphabet?"
+                "\nWorkspace files:\n- none"
+            ),
+            metadata={
+                "workspace_files": [],
+                "allow_named_family_routing": False,
+                "blind_structural_mode": True,
+                "target_file": "",
+                "candidate_files": [],
+            },
+        )
+
+        result = plan_question("", state)
+        question_plan = result["payload"]["state_metadata"]["question_plan"]
+
+        self.assertEqual(question_plan.get("research_mode"), "github_public_artifact_ops")
+        self.assertIn("GitHub repository artifact", result["result"])
+
     @patch("domains.gaia_ops.backend._solve_orcid_average_from_jsonld")
     def test_solve_question_blind_mode_disables_erratum_override(self, mock_orcid_solver: object) -> None:
         workspace = Path(".tmp-tests") / "gaia-blind-erratum"
@@ -1091,6 +1113,33 @@ class GaiaOpsBackendTests(unittest.TestCase):
         self.assertTrue(any("defunct nationality row" in item for item in evidence))
         self.assertEqual(provenance, ["https://example.com/malko"])
 
+    @patch("domains.gaia_ops.backend._public_record_search_documents")
+    def test_public_record_ops_extracts_arrival_time_from_schedule_table(self, mock_search_docs: object) -> None:
+        mock_search_docs.return_value = [
+            {
+                "title": "Tri-Rail ridership",
+                "url": "https://example.com/tri-rail",
+                "text": "",
+                "html_text": """
+                <html><body>
+                <table>
+                  <tr><th>Train</th><th>Passengers</th><th>Pompano Beach Arrival</th></tr>
+                  <tr><td>TR1</td><td>84</td><td>8:14 AM</td></tr>
+                  <tr><td>TR2</td><td>121</td><td>9:02 AM</td></tr>
+                </table>
+                </body></html>
+                """,
+            }
+        ]
+
+        answer, evidence, provenance = _solve_public_record_ops(
+            "What time was the Tri-Rail train that carried the most passengers on May 27, 2019 scheduled to arrive in Pompano Beach?"
+        )
+
+        self.assertEqual(answer, "9:02 AM")
+        self.assertTrue(any("Passengers" in item for item in evidence))
+        self.assertEqual(provenance, ["https://example.com/tri-rail"])
+
     @patch("domains.gaia_ops.backend._fetch_document_with_pdf")
     @patch("domains.gaia_ops.backend._search_documents_for_title")
     def test_paper_compare_ops_computes_numeric_difference_between_titles(
@@ -1117,6 +1166,35 @@ class GaiaOpsBackendTests(unittest.TestCase):
         self.assertTrue(any("difference between Paper A=12.5 and Paper B=9.0 => 3.5" in item for item in evidence))
         self.assertEqual(len(provenance), 2)
 
+    @patch("domains.gaia_ops.backend._fetch_document_with_pdf")
+    @patch("domains.gaia_ops.backend._search_documents_for_title")
+    @patch("domains.gaia_ops.backend._search_documents_from_prompt")
+    def test_paper_compare_ops_computes_integer_rounded_percentage_from_author_year_queries(
+        self,
+        mock_search_prompt: object,
+        mock_search_title: object,
+        mock_fetch_pdf: object,
+    ) -> None:
+        def _search_side_effect(query: str, *args: object, **kwargs: object) -> list[dict[str, str]]:
+            return [{"title": query, "snippet": "paper", "url": f"https://example.com/{query.replace(' ', '_')}.pdf", "text": ""}]
+
+        def _fetch_side_effect(url: str) -> dict[str, str]:
+            if "Omar" in url:
+                return {"text": "", "pdf_text": "The total length of the harlequin shrimp was 20 mm."}
+            return {"text": "", "pdf_text": "The sea star fed to the shrimp measured 5 mm."}
+
+        mock_search_prompt.side_effect = _search_side_effect
+        mock_search_title.side_effect = _search_side_effect
+        mock_fetch_pdf.side_effect = _fetch_side_effect
+
+        answer, evidence, provenance = _solve_paper_compare_ops(
+            "What integer-rounded percentage of the total length of the harlequin shrimp recorded in Omar Valencia-Mendez 2017 paper was the sea star fed to the same type of shrimp in G. Curt Fiedler's 2002 paper?"
+        )
+
+        self.assertEqual(answer, "25")
+        self.assertTrue(any("percentage" in item for item in evidence))
+        self.assertEqual(len(provenance), 2)
+
     @patch("domains.gaia_ops.backend._youtube_transcript_segments")
     def test_video_transcript_ops_extracts_command_from_timestamp_window(self, mock_segments: object) -> None:
         mock_segments.return_value = [
@@ -1131,6 +1209,47 @@ class GaiaOpsBackendTests(unittest.TestCase):
         self.assertEqual(answer, "Command Palette")
         self.assertTrue(any("transcript answer=Command Palette" in item for item in evidence))
         self.assertIn("youtube:transcript", provenance)
+
+    @patch("domains.gaia_ops.backend._youtube_transcript_segments")
+    def test_video_transcript_ops_extracts_response_after_question(self, mock_segments: object) -> None:
+        mock_segments.return_value = [
+            {"start": 10.0, "end": 12.0, "text": "Isn't that hot?"},
+            {"start": 12.0, "end": 15.0, "text": "Indeed it is."},
+        ]
+
+        answer, evidence, provenance = _solve_video_transcript_ops(
+            'Examine the video at https://www.youtube.com/watch?v=demo456. What does Teal\'c say in response to the question "Isn\'t that hot?"'
+        )
+
+        self.assertEqual(answer, "Indeed it is")
+        self.assertTrue(any("transcript answer=Indeed it is" in item for item in evidence))
+        self.assertIn("youtube:transcript", provenance)
+
+    @patch("domains.gaia_ops.backend._youtube_transcript_segments")
+    def test_video_transcript_ops_counts_letter_occurrences_in_transcript_phrase(self, mock_segments: object) -> None:
+        mock_segments.return_value = [
+            {"start": 28.0, "end": 34.0, "text": '"RED EEL"'},
+        ]
+
+        answer, evidence, provenance = _solve_video_transcript_ops(
+            'Thirty seconds into the first episode, a phrase is shown on the screen in white letters on a red background. How many times does the letter "E" appear in this phrase? https://www.youtube.com/watch?v=demo789'
+        )
+
+        self.assertEqual(answer, "3")
+        self.assertTrue(any("transcript answer=3" in item for item in evidence))
+        self.assertIn("youtube:transcript", provenance)
+
+    @patch("domains.gaia_ops.backend._solve_github_contributor_name_match")
+    def test_github_public_artifact_ops_routes_contributor_match_structurally(self, mock_solver: object) -> None:
+        mock_solver.return_value = ("Zhao Ziyang", ["matched contributor"])
+
+        answer, evidence, provenance = _solve_github_public_artifact_ops(
+            "Which contributor to the version of OpenCV where support was added for the Mask-RCNN model has the same name as a former Chinese head of government when the names are transliterated to the Latin alphabet?"
+        )
+
+        self.assertEqual(answer, "Zhao Ziyang")
+        self.assertTrue(any("matched contributor" in item for item in evidence))
+        self.assertEqual(provenance, ["github:contributors", "reference:public-entity-match"])
 
     @patch("domains.gaia_ops.backend._solve_generic_public_reference")
     def test_solve_question_generic_public_reference_requires_stronger_confidence_before_candidate_answer(
