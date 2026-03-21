@@ -22,12 +22,16 @@ from domains.gaia_ops.backend import (
     _solve_elisa_ec_numbers,
     _solve_ping_pong_choice,
     _solve_paper_numeric_lookup,
+    _solve_paper_compare_ops,
     _solve_pubchem_food_additive_transformations,
+    _solve_public_record_ops,
+    _solve_public_reference_history_ops,
     _solve_reversed_instruction,
     _solve_thinking_machine_prediction,
     _solve_unlambda_missing_token,
     _solve_generic_public_reference,
     _solve_usda_standards_supersession,
+    _solve_video_transcript_ops,
     _solve_wikipedia_link_distance,
     _solve_wikipedia_revision_count,
     _solve_youtube_bird_species_count,
@@ -716,6 +720,90 @@ class GaiaOpsBackendTests(unittest.TestCase):
 
         self.assertEqual(question_plan.get("research_mode"), "wikipedia_revision_count")
 
+    def test_plan_question_routes_public_reference_history_ops_structurally(self) -> None:
+        state = SimpleNamespace(
+            problem_text=(
+                "Who nominated the featured article candidacy for the latest 2022 English Wikipedia article about Lego?"
+                "\nWorkspace files:\n- none"
+            ),
+            metadata={
+                "workspace_files": [],
+                "allow_named_family_routing": False,
+                "blind_structural_mode": True,
+                "target_file": "",
+                "candidate_files": [],
+            },
+        )
+
+        result = plan_question("", state)
+        question_plan = result["payload"]["state_metadata"]["question_plan"]
+
+        self.assertEqual(question_plan.get("research_mode"), "public_reference_history_ops")
+        self.assertIn("revision/history sources", result["result"])
+
+    def test_plan_question_routes_public_record_ops_structurally(self) -> None:
+        state = SimpleNamespace(
+            problem_text=(
+                "What country had the least number of athletes at the 1928 Summer Olympics? If there's a tie for a number of athletes, return the first in alphabetical order. Give the IOC country code as your answer."
+                "\nWorkspace files:\n- none"
+            ),
+            metadata={
+                "workspace_files": [],
+                "allow_named_family_routing": False,
+                "blind_structural_mode": True,
+                "target_file": "",
+                "candidate_files": [],
+            },
+        )
+
+        result = plan_question("", state)
+        question_plan = result["payload"]["state_metadata"]["question_plan"]
+
+        self.assertEqual(question_plan.get("research_mode"), "public_record_ops")
+        self.assertIn("public records", result["result"])
+
+    def test_plan_question_routes_paper_compare_ops_structurally(self) -> None:
+        state = SimpleNamespace(
+            problem_text=(
+                'What is the difference in measured time span between the papers "Paper A" and "Paper B"?'
+                "\nWorkspace files:\n- none"
+            ),
+            metadata={
+                "workspace_files": [],
+                "allow_named_family_routing": False,
+                "blind_structural_mode": True,
+                "target_file": "",
+                "candidate_files": [],
+            },
+        )
+
+        result = plan_question("", state)
+        question_plan = result["payload"]["state_metadata"]["question_plan"]
+
+        self.assertEqual(question_plan.get("research_mode"), "paper_compare_ops")
+        self.assertIn("referenced papers", result["result"])
+
+    def test_plan_question_routes_video_transcript_ops_structurally(self) -> None:
+        state = SimpleNamespace(
+            problem_text=(
+                "In the video https://www.youtube.com/watch?v=demo123, what command is clicked at 30 seconds?"
+                "\nWorkspace files:\n- none"
+            ),
+            metadata={
+                "workspace_files": [],
+                "allow_named_family_routing": False,
+                "blind_structural_mode": True,
+                "target_file": "",
+                "candidate_files": [],
+            },
+        )
+
+        result = plan_question("", state)
+        question_plan = result["payload"]["state_metadata"]["question_plan"]
+
+        self.assertEqual(question_plan.get("research_mode"), "video_transcript_ops")
+        self.assertIn("transcript evidence", result["result"])
+
     @patch("domains.gaia_ops.backend._solve_orcid_average_from_jsonld")
     def test_solve_question_blind_mode_disables_erratum_override(self, mock_orcid_solver: object) -> None:
         workspace = Path(".tmp-tests") / "gaia-blind-erratum"
@@ -896,6 +984,153 @@ class GaiaOpsBackendTests(unittest.TestCase):
         self.assertEqual(answer, "CUB")
         self.assertTrue(any("url=https://example.com/olympics" in item for item in evidence))
         self.assertEqual(provenance, ["https://example.com/olympics"])
+
+    @patch("domains.gaia_ops.backend._public_reference_search_documents")
+    @patch("domains.gaia_ops.backend._wikipedia_revision_snapshots_around")
+    @patch("domains.gaia_ops.backend._public_reference_title_candidates")
+    def test_public_reference_history_ops_extracts_removed_phrase_from_revision_snapshots(
+        self,
+        mock_titles: object,
+        mock_snapshots: object,
+        mock_search_docs: object,
+    ) -> None:
+        mock_titles.return_value = ["Example Dragon"]
+        mock_snapshots.return_value = [
+            {"timestamp": "2023-06-10T10:00:00Z", "content": "* Silly dragon joke\n* Stable line"},
+            {"timestamp": "2023-06-12T10:00:00Z", "content": "* Stable line"},
+        ]
+        mock_search_docs.return_value = []
+
+        answer, evidence, provenance = _solve_public_reference_history_ops(
+            "What phrase was removed from the Wikipedia page on Example Dragon on June 11, 2023?"
+        )
+
+        self.assertEqual(answer, "Silly dragon joke")
+        self.assertTrue(any("removed phrase" in item for item in evidence))
+        self.assertEqual(provenance, ["wikipedia:Example Dragon", "wikipedia:revisions"])
+
+    @patch("domains.gaia_ops.backend._public_reference_search_documents")
+    @patch("domains.gaia_ops.backend._public_reference_title_candidates")
+    def test_public_reference_history_ops_extracts_featured_article_nominator(
+        self,
+        mock_titles: object,
+        mock_search_docs: object,
+    ) -> None:
+        mock_titles.return_value = []
+        mock_search_docs.return_value = [
+            {
+                "title": "Featured article candidate",
+                "url": "https://en.wikipedia.org/wiki/Wikipedia:Featured_article_candidates/Lego/archive1",
+                "text": "Nominated by Jane Smith on 12 May 2022.",
+                "html_text": "<html><body><p>Nominated by Jane Smith on 12 May 2022.</p></body></html>",
+            }
+        ]
+
+        answer, evidence, provenance = _solve_public_reference_history_ops(
+            "Who nominated the featured article candidacy for the latest 2022 English Wikipedia article about Lego?"
+        )
+
+        self.assertEqual(answer, "Jane Smith")
+        self.assertTrue(any("nominator" in item for item in evidence))
+        self.assertEqual(provenance, ["https://en.wikipedia.org/wiki/Wikipedia:Featured_article_candidates/Lego/archive1"])
+
+    @patch("domains.gaia_ops.backend._public_record_search_documents")
+    def test_public_record_ops_counts_stops_between_named_stations(self, mock_search_docs: object) -> None:
+        mock_search_docs.return_value = [
+            {
+                "title": "Franklin/Foxboro Line",
+                "url": "https://example.com/franklin-line",
+                "text": "South Station | Back Bay | Ruggles | Forest Hills | Windsor Gardens",
+                "html_text": """
+                <html><body>
+                <table>
+                  <tr><th>Station</th></tr>
+                  <tr><td>South Station</td></tr>
+                  <tr><td>Back Bay</td></tr>
+                  <tr><td>Ruggles</td></tr>
+                  <tr><td>Forest Hills</td></tr>
+                  <tr><td>Windsor Gardens</td></tr>
+                </table>
+                </body></html>
+                """,
+            }
+        ]
+
+        answer, evidence, provenance = _solve_public_record_ops(
+            "How many stations are between South Station and Windsor Gardens on the Franklin/Foxboro Line?"
+        )
+
+        self.assertEqual(answer, "3")
+        self.assertTrue(any("ordered" in item for item in evidence))
+        self.assertEqual(provenance, ["https://example.com/franklin-line"])
+
+    @patch("domains.gaia_ops.backend._public_record_search_documents")
+    def test_public_record_ops_extracts_first_name_for_defunct_nationality(self, mock_search_docs: object) -> None:
+        mock_search_docs.return_value = [
+            {
+                "title": "Competition winners",
+                "url": "https://example.com/malko",
+                "text": "",
+                "html_text": """
+                <html><body>
+                <table>
+                  <tr><th>Year</th><th>Recipient</th><th>Nationality</th></tr>
+                  <tr><td>1980</td><td>Alexei Petrov</td><td>Soviet Union</td></tr>
+                  <tr><td>1988</td><td>Maria Jensen</td><td>Denmark</td></tr>
+                </table>
+                </body></html>
+                """,
+            }
+        ]
+
+        answer, evidence, provenance = _solve_public_record_ops(
+            "What was the first name of the only recipient after 1977 with a defunct nationality in the 20th century?"
+        )
+
+        self.assertEqual(answer, "Alexei")
+        self.assertTrue(any("defunct nationality row" in item for item in evidence))
+        self.assertEqual(provenance, ["https://example.com/malko"])
+
+    @patch("domains.gaia_ops.backend._fetch_document_with_pdf")
+    @patch("domains.gaia_ops.backend._search_documents_for_title")
+    def test_paper_compare_ops_computes_numeric_difference_between_titles(
+        self,
+        mock_search_title: object,
+        mock_fetch_pdf: object,
+    ) -> None:
+        def _search_side_effect(title: str, *args: object, **kwargs: object) -> list[dict[str, str]]:
+            return [{"title": title, "snippet": "Journal article", "url": f"https://example.com/{title.replace(' ', '_')}.pdf", "text": ""}]
+
+        def _fetch_side_effect(url: str) -> dict[str, str]:
+            if "Paper_A" in url:
+                return {"text": "", "pdf_text": "Paper A reports a measured time span of 12.5 milliseconds."}
+            return {"text": "", "pdf_text": "Paper B reports a measured time span of 9.0 milliseconds."}
+
+        mock_search_title.side_effect = _search_side_effect
+        mock_fetch_pdf.side_effect = _fetch_side_effect
+
+        answer, evidence, provenance = _solve_paper_compare_ops(
+            'What is the difference in measured time span between the papers "Paper A" and "Paper B"?'
+        )
+
+        self.assertEqual(answer, "3.5")
+        self.assertTrue(any("difference between Paper A=12.5 and Paper B=9.0 => 3.5" in item for item in evidence))
+        self.assertEqual(len(provenance), 2)
+
+    @patch("domains.gaia_ops.backend._youtube_transcript_segments")
+    def test_video_transcript_ops_extracts_command_from_timestamp_window(self, mock_segments: object) -> None:
+        mock_segments.return_value = [
+            {"start": 28.0, "end": 33.0, "text": "Now click Command Palette to open the menu."},
+            {"start": 33.0, "end": 36.0, "text": "Then choose the extension."},
+        ]
+
+        answer, evidence, provenance = _solve_video_transcript_ops(
+            "In the video https://www.youtube.com/watch?v=demo123, what command is clicked at 30 seconds?"
+        )
+
+        self.assertEqual(answer, "Command Palette")
+        self.assertTrue(any("transcript answer=Command Palette" in item for item in evidence))
+        self.assertIn("youtube:transcript", provenance)
 
     @patch("domains.gaia_ops.backend._solve_generic_public_reference")
     def test_solve_question_generic_public_reference_requires_stronger_confidence_before_candidate_answer(
