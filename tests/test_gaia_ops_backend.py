@@ -14,6 +14,7 @@ from domains.gaia_ops.backend import (
     _infer_xlsx_answer,
     _nature_article_type_counts,
     _pdf_text_from_url,
+    _solve_advanced_spreadsheet_ops,
     _solve_arxiv_overlap,
     _solve_author_prior_publication,
     _solve_benjerry_background_rhyme,
@@ -680,6 +681,89 @@ class GaiaOpsBackendTests(unittest.TestCase):
         self.assertEqual(answer, "Finance")
         self.assertTrue(evidence)
 
+    @patch("domains.gaia_ops.backend._load_xlsx_workbook")
+    def test_advanced_spreadsheet_ops_aggregates_across_sheets(self, mock_workbook: object) -> None:
+        mock_workbook.return_value = {
+            "sheets": [
+                {
+                    "name": "Alpha",
+                    "rows": [
+                        ["Project", "Score"],
+                        ["Atlas", "72"],
+                        ["Boreal", "88"],
+                    ],
+                    "cells": {},
+                },
+                {
+                    "name": "Beta",
+                    "rows": [
+                        ["Project", "Score"],
+                        ["Nimbus", "93"],
+                        ["Sol", "81"],
+                    ],
+                    "cells": {},
+                },
+            ],
+            "sheet_map": {},
+        }
+
+        answer, evidence = _solve_advanced_spreadsheet_ops(
+            "Across all sheets in the attached workbook, which project has the highest score?",
+            Path("scores.xlsx"),
+        )
+
+        self.assertEqual(answer, "Nimbus")
+        self.assertTrue(any("used table metric column Score" in item for item in evidence))
+
+    @patch("domains.gaia_ops.backend._load_xlsx_workbook")
+    def test_advanced_spreadsheet_ops_reads_explicit_cell_value(self, mock_workbook: object) -> None:
+        summary_sheet = {
+            "name": "Summary",
+            "rows": [["Label", "Value"], ["Result", "42"]],
+            "cells": {
+                "C2": {"ref": "C2", "row": 2, "col": 3, "value": "42", "formula": "", "fill": ""},
+            },
+        }
+        mock_workbook.return_value = {
+            "sheets": [summary_sheet],
+            "sheet_map": {"summary": summary_sheet},
+        }
+
+        answer, evidence = _solve_advanced_spreadsheet_ops(
+            "What value appears in cell C2 on the Summary sheet?",
+            Path("summary.xlsx"),
+        )
+
+        self.assertEqual(answer, "42")
+        self.assertTrue(any("Summary!C2 value=42" in item for item in evidence))
+
+    @patch("domains.gaia_ops.backend._load_xlsx_workbook")
+    def test_advanced_spreadsheet_ops_solves_colored_path_count(self, mock_workbook: object) -> None:
+        mock_workbook.return_value = {
+            "sheets": [
+                {
+                    "name": "Grid",
+                    "rows": [],
+                    "cells": {
+                        "A1": {"ref": "A1", "row": 1, "col": 1, "value": "START", "formula": "", "fill": "red"},
+                        "B1": {"ref": "B1", "row": 1, "col": 2, "value": "", "formula": "", "fill": "red"},
+                        "C1": {"ref": "C1", "row": 1, "col": 3, "value": "", "formula": "", "fill": "red"},
+                        "C2": {"ref": "C2", "row": 2, "col": 3, "value": "END", "formula": "", "fill": "red"},
+                        "B2": {"ref": "B2", "row": 2, "col": 2, "value": "", "formula": "", "fill": "blue"},
+                    },
+                }
+            ],
+            "sheet_map": {},
+        }
+
+        answer, evidence = _solve_advanced_spreadsheet_ops(
+            "How many red cells are on the shortest orthogonal path from START to END in the attached spreadsheet?",
+            Path("grid.xlsx"),
+        )
+
+        self.assertEqual(answer, "4")
+        self.assertTrue(any("path cells=" in item for item in evidence))
+
     def test_plan_question_blind_mode_routes_public_species_lookup_structurally(self) -> None:
         state = SimpleNamespace(
             problem_text=(
@@ -848,6 +932,27 @@ class GaiaOpsBackendTests(unittest.TestCase):
 
         self.assertEqual(question_plan.get("research_mode"), "image_vision_ops")
         self.assertIn("OCR-visible text", result["result"])
+
+    def test_plan_question_routes_advanced_spreadsheet_ops_structurally(self) -> None:
+        state = SimpleNamespace(
+            problem_text=(
+                "Across all sheets in the attached workbook, which project has the highest score?"
+                "\nWorkspace files:\n- scores.xlsx"
+            ),
+            metadata={
+                "workspace_files": ["scores.xlsx"],
+                "allow_named_family_routing": False,
+                "blind_structural_mode": True,
+                "target_file": "scores.xlsx",
+                "candidate_files": ["scores.xlsx"],
+            },
+        )
+
+        result = plan_question("", state)
+        question_plan = result["payload"]["state_metadata"]["question_plan"]
+
+        self.assertEqual(question_plan.get("research_mode"), "advanced_spreadsheet_ops")
+        self.assertIn("workbook sheets", result["result"])
 
     def test_plan_question_routes_github_public_artifact_ops_structurally(self) -> None:
         state = SimpleNamespace(

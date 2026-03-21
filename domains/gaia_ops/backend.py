@@ -1829,6 +1829,313 @@ def _load_xlsx_rows(path: Path) -> List[List[str]]:
     return rows
 
 
+def _xlsx_column_to_index(column: str) -> int:
+    index = 0
+    for char in str(column or "").upper():
+        if "A" <= char <= "Z":
+            index = index * 26 + (ord(char) - ord("A") + 1)
+    return index
+
+
+def _xlsx_split_cell_ref(ref: str) -> tuple[int, int]:
+    rendered = str(ref or "").strip().upper()
+    column = re.sub(r"[^A-Z]", "", rendered)
+    row_text = re.sub(r"[^0-9]", "", rendered)
+    return (_safe_int(row_text) or 0, _xlsx_column_to_index(column))
+
+
+def _xlsx_style_fill_names(archive: zipfile.ZipFile) -> tuple[List[str], List[int]]:
+    ns = {"x": "http://schemas.openxmlformats.org/spreadsheetml/2006/main"}
+    if "xl/styles.xml" not in archive.namelist():
+        return ([""], [0])
+
+    def _fill_name_from_rgb(rgb: str) -> str:
+        value = str(rgb or "").strip().lstrip("#")
+        if len(value) == 8:
+            value = value[2:]
+        value = value.upper()
+        if len(value) != 6:
+            return ""
+        red = int(value[0:2], 16)
+        green = int(value[2:4], 16)
+        blue = int(value[4:6], 16)
+        channels = {"red": red, "green": green, "blue": blue}
+        dominant = max(channels, key=channels.get)
+        sorted_channels = sorted(channels.values(), reverse=True)
+        if sorted_channels[0] < 80:
+            return ""
+        if sorted_channels[0] - sorted_channels[1] < 30:
+            if dominant in {"red", "green"} and blue < 80:
+                return "yellow"
+            return ""
+        return dominant
+
+    root = ET.fromstring(archive.read("xl/styles.xml"))
+    fills: List[str] = [""]
+    fill_nodes = root.findall("x:fills/x:fill", ns)
+    if fill_nodes:
+        fills = []
+        for fill in fill_nodes:
+            fg = fill.find("x:patternFill/x:fgColor", ns)
+            rgb = ""
+            if fg is not None:
+                rgb = str(fg.attrib.get("rgb", "")).strip()
+            fills.append(_fill_name_from_rgb(rgb))
+    xf_fill_ids: List[int] = [0]
+    xf_nodes = root.findall("x:cellXfs/x:xf", ns)
+    if xf_nodes:
+        xf_fill_ids = [int(node.attrib.get("fillId", "0") or "0") for node in xf_nodes]
+    return (fills, xf_fill_ids)
+
+
+def _load_xlsx_workbook(path: Path) -> Dict[str, Any]:
+    ns = {"x": "http://schemas.openxmlformats.org/spreadsheetml/2006/main"}
+    rel_ns = {"r": "http://schemas.openxmlformats.org/package/2006/relationships"}
+    workbook_ns = {"r": "http://schemas.openxmlformats.org/officeDocument/2006/relationships"}
+    with zipfile.ZipFile(path) as archive:
+        shared_strings: List[str] = []
+        if "xl/sharedStrings.xml" in archive.namelist():
+            root = ET.fromstring(archive.read("xl/sharedStrings.xml"))
+            for si in root.findall("x:si", ns):
+                parts = [node.text or "" for node in si.findall(".//x:t", ns)]
+                shared_strings.append("".join(parts))
+        fills, xf_fill_ids = _xlsx_style_fill_names(archive)
+        sheet_entries: List[tuple[str, str]] = []
+        if "xl/workbook.xml" in archive.namelist():
+            workbook_root = ET.fromstring(archive.read("xl/workbook.xml"))
+            rel_map: Dict[str, str] = {}
+            rels_path = "xl/_rels/workbook.xml.rels"
+            if rels_path in archive.namelist():
+                rel_root = ET.fromstring(archive.read(rels_path))
+                for relation in rel_root.findall("r:Relationship", rel_ns):
+                    relation_id = str(relation.attrib.get("Id", "")).strip()
+                    target = str(relation.attrib.get("Target", "")).strip()
+                    if relation_id and target:
+                        rel_map[relation_id] = target
+            for sheet in workbook_root.findall("x:sheets/x:sheet", ns):
+                name = str(sheet.attrib.get("name", "")).strip()
+                rel_id = str(sheet.attrib.get(f"{{{workbook_ns['r']}}}id", "")).strip()
+                target = rel_map.get(rel_id, "")
+                if target and not target.startswith("xl/"):
+                    target = f"xl/{target.lstrip('/')}"
+                if name and target:
+                    sheet_entries.append((name, target))
+        if not sheet_entries and "xl/worksheets/sheet1.xml" in archive.namelist():
+            sheet_entries.append(("Sheet1", "xl/worksheets/sheet1.xml"))
+
+        sheets: List[Dict[str, Any]] = []
+        sheet_map: Dict[str, Dict[str, Any]] = {}
+        for sheet_name, target in sheet_entries:
+            if target not in archive.namelist():
+                continue
+            sheet_root = ET.fromstring(archive.read(target))
+            cells: Dict[str, Dict[str, Any]] = {}
+            rows_by_index: Dict[int, Dict[int, str]] = {}
+            max_row = 0
+            max_col = 0
+            for cell in sheet_root.findall(".//x:sheetData/x:row/x:c", ns):
+                ref = str(cell.attrib.get("r", "")).strip().upper()
+                if not ref:
+                    continue
+                row_index, col_index = _xlsx_split_cell_ref(ref)
+                if row_index <= 0 or col_index <= 0:
+                    continue
+                cell_type = str(cell.attrib.get("t", "")).strip()
+                raw_value = str(cell.findtext("x:v", default="", namespaces=ns))
+                formula = str(cell.findtext("x:f", default="", namespaces=ns)).strip()
+                if cell_type == "s" and raw_value:
+                    rendered = shared_strings[int(raw_value)]
+                elif cell_type == "inlineStr":
+                    rendered = "".join(node.text or "" for node in cell.findall(".//x:is//x:t", ns))
+                else:
+                    rendered = raw_value
+                if rendered.endswith(".0"):
+                    rendered = rendered[:-2]
+                style_index = int(cell.attrib.get("s", "0") or "0")
+                fill_name = ""
+                if 0 <= style_index < len(xf_fill_ids):
+                    fill_id = xf_fill_ids[style_index]
+                    if 0 <= fill_id < len(fills):
+                        fill_name = fills[fill_id]
+                cells[ref] = {
+                    "ref": ref,
+                    "row": row_index,
+                    "col": col_index,
+                    "value": rendered,
+                    "formula": formula,
+                    "fill": fill_name,
+                }
+                rows_by_index.setdefault(row_index, {})[col_index] = rendered
+                max_row = max(max_row, row_index)
+                max_col = max(max_col, col_index)
+            rows: List[List[str]] = []
+            for row_index in range(1, max_row + 1):
+                current = rows_by_index.get(row_index, {})
+                if current:
+                    rows.append([current.get(col_index, "") for col_index in range(1, max_col + 1)])
+            sheet_info = {
+                "name": sheet_name,
+                "rows": rows,
+                "cells": cells,
+                "max_row": max_row,
+                "max_col": max_col,
+            }
+            sheets.append(sheet_info)
+            sheet_map[sheet_name.lower()] = sheet_info
+    return {"sheets": sheets, "sheet_map": sheet_map}
+
+
+def _xlsx_tables_from_workbook(workbook: Dict[str, Any]) -> List[Dict[str, Any]]:
+    tables_by_headers: Dict[tuple[str, ...], Dict[str, Any]] = {}
+    for sheet in workbook.get("sheets", []):
+        rows = [list(row) for row in sheet.get("rows", [])]
+        if not rows:
+            continue
+        header_row = next(
+            (
+                [str(cell).strip() for cell in row]
+                for row in rows
+                if len([cell for cell in row if str(cell).strip()]) >= 2 and any(_parse_numeric_value(cell) is None for cell in row if str(cell).strip())
+            ),
+            [],
+        )
+        if not header_row:
+            continue
+        header_index = next(index for index, row in enumerate(rows) if [str(cell).strip() for cell in row] == header_row)
+        headers = [header for header in header_row if header]
+        if not headers:
+            continue
+        table_rows: List[Dict[str, str]] = []
+        for row in rows[header_index + 1 :]:
+            normalized = [str(cell).strip() for cell in row[: len(header_row)]]
+            if not any(normalized):
+                continue
+            record = {header_row[idx]: normalized[idx] for idx in range(min(len(header_row), len(normalized))) if header_row[idx]}
+            record["Sheet"] = str(sheet.get("name", ""))
+            table_rows.append(record)
+        if table_rows:
+            merged_headers = tuple(headers + ["Sheet"])
+            table = tables_by_headers.setdefault(merged_headers, {"headers": list(merged_headers), "rows": []})
+            table["rows"].extend(table_rows)
+    return list(tables_by_headers.values())
+
+
+def _solve_advanced_spreadsheet_cell_lookup(prompt: str, workbook: Dict[str, Any]) -> tuple[str, List[str]]:
+    lowered = str(prompt or "").lower()
+    refs = re.findall(r"\b([A-Z]{1,3}\d{1,5})\b", prompt or "")
+    if not refs:
+        return ("", [])
+    sheet_name = ""
+    sheet_match = re.search(r"(?:sheet|worksheet|tab)\s+[\"“]?([^\"”\n]+?)[\"”]?(?:\s|$)", prompt or "", flags=re.IGNORECASE)
+    if sheet_match:
+        sheet_name = str(sheet_match.group(1)).strip().strip(".,:;")
+    sheets: List[Dict[str, Any]]
+    if sheet_name:
+        sheet = workbook.get("sheet_map", {}).get(sheet_name.lower())
+        sheets = [sheet] if sheet else []
+    else:
+        sheets = list(workbook.get("sheets", []))
+    evidence: List[str] = []
+    for ref in refs:
+        for sheet in sheets:
+            if not sheet:
+                continue
+            cell = dict(sheet.get("cells", {})).get(ref.upper())
+            if not cell:
+                continue
+            value = str(cell.get("value", "")).strip()
+            formula = str(cell.get("formula", "")).strip()
+            if "formula" in lowered and formula:
+                evidence.append(f"{sheet.get('name')}!{ref} formula={formula}")
+                return (formula, evidence)
+            if value:
+                evidence.append(f"{sheet.get('name')}!{ref} value={value}")
+                return (value, evidence)
+    return ("", evidence)
+
+
+def _solve_advanced_spreadsheet_color_path(prompt: str, workbook: Dict[str, Any]) -> tuple[str, List[str]]:
+    lowered = str(prompt or "").lower()
+    if "path" not in lowered and "steps" not in lowered and "moves" not in lowered:
+        return ("", [])
+    color_match = re.search(r"\b(red|green|blue|yellow)\b", lowered)
+    target_color = str(color_match.group(1)).strip() if color_match else ""
+    for sheet in workbook.get("sheets", []):
+        cells = list(sheet.get("cells", {}).values())
+        if not cells:
+            continue
+        start = next((cell for cell in cells if "start" in str(cell.get("value", "")).lower()), None)
+        end = next((cell for cell in cells if "end" in str(cell.get("value", "")).lower()), None)
+        if start is None or end is None:
+            continue
+        passable: set[tuple[int, int]] = set()
+        for cell in cells:
+            value = str(cell.get("value", "")).strip()
+            fill = str(cell.get("fill", "")).strip().lower()
+            coords = (int(cell.get("row", 0)), int(cell.get("col", 0)))
+            if coords == (int(start.get("row", 0)), int(start.get("col", 0))) or coords == (int(end.get("row", 0)), int(end.get("col", 0))):
+                passable.add(coords)
+                continue
+            if target_color:
+                if fill == target_color:
+                    passable.add(coords)
+            elif value or fill:
+                passable.add(coords)
+        start_coords = (int(start.get("row", 0)), int(start.get("col", 0)))
+        end_coords = (int(end.get("row", 0)), int(end.get("col", 0)))
+        if start_coords not in passable or end_coords not in passable:
+            continue
+        frontier = [start_coords]
+        parents: Dict[tuple[int, int], tuple[int, int] | None] = {start_coords: None}
+        while frontier:
+            current = frontier.pop(0)
+            if current == end_coords:
+                break
+            for delta_row, delta_col in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                neighbor = (current[0] + delta_row, current[1] + delta_col)
+                if neighbor in passable and neighbor not in parents:
+                    parents[neighbor] = current
+                    frontier.append(neighbor)
+        if end_coords not in parents:
+            continue
+        path_cells: List[tuple[int, int]] = []
+        cursor: tuple[int, int] | None = end_coords
+        while cursor is not None:
+            path_cells.append(cursor)
+            cursor = parents.get(cursor)
+        path_cells.reverse()
+        if "step" in lowered or "move" in lowered:
+            answer = str(max(0, len(path_cells) - 1))
+        else:
+            answer = str(len(path_cells))
+        evidence = [
+            f"sheet={sheet.get('name')} color={target_color or 'any'}",
+            f"path cells={path_cells}",
+        ]
+        return (answer, evidence)
+    return ("", [])
+
+
+def _solve_advanced_spreadsheet_ops(prompt: str, path: Path) -> tuple[str, List[str]]:
+    workbook = _load_xlsx_workbook(path)
+    for solver in (
+        _solve_advanced_spreadsheet_cell_lookup,
+        _solve_advanced_spreadsheet_color_path,
+    ):
+        candidate, evidence = solver(prompt, workbook)
+        if candidate:
+            return (candidate, evidence)
+    tables = _xlsx_tables_from_workbook(workbook)
+    if tables:
+        candidate, evidence = _solve_public_reference_argextreme(prompt, tables)
+        if candidate:
+            return (candidate, evidence)
+        candidate, evidence = _solve_public_reference_adjacent(prompt, tables)
+        if candidate:
+            return (candidate, evidence)
+    return ("", [])
+
+
 def _parse_numeric_value(text: str) -> float | None:
     rendered = str(text or "").strip().replace(",", "")
     if not rendered:
@@ -4517,6 +4824,34 @@ def _is_image_vision_prompt(prompt: str, evidence_files: Sequence[str]) -> bool:
     return False
 
 
+def _is_advanced_spreadsheet_prompt(prompt: str, evidence_files: Sequence[str]) -> bool:
+    lowered = str(prompt or "").lower()
+    has_spreadsheet = any(str(name).lower().endswith((".xlsx", ".xlsm", ".xls")) for name in evidence_files)
+    if not has_spreadsheet:
+        return False
+    markers = (
+        "worksheet",
+        "sheet ",
+        "sheets",
+        "tab ",
+        "cell ",
+        "cells",
+        "formula",
+        "grid",
+        "path",
+        "orthogonal",
+        "adjacent",
+        "across all sheets",
+        "across the sheets",
+        "across worksheets",
+        "start",
+        "end",
+        "color",
+        "colored",
+    )
+    return any(marker in lowered for marker in markers)
+
+
 def _is_github_public_artifact_prompt(prompt: str) -> bool:
     lowered = str(prompt or "").lower()
     if "github" not in lowered and "opencv" not in lowered and "mask-rcnn" not in lowered:
@@ -4586,6 +4921,8 @@ def _extract_special_research_plan(prompt: str, evidence_files: Sequence[str]) -
         return {"research_mode": "citation_quote_match"}
     if "support was added for the mask-rcnn model" in lowered and "former chinese head of government" in lowered:
         return {"research_mode": "github_contributor_entity_match"}
+    if _is_advanced_spreadsheet_prompt(prompt, evidence_files):
+        return {"research_mode": "advanced_spreadsheet_ops"}
     if evidence_files and any(str(name).lower().endswith((".xlsx", ".xlsm", ".xls")) for name in evidence_files):
         return {"research_mode": "spreadsheet_lookup"}
     if evidence_files and any(str(name).lower().endswith(".txt") for name in evidence_files) and "cell phone towers" in lowered:
@@ -4644,6 +4981,7 @@ STRUCTURAL_RESEARCH_MODES = {
     "arxiv_ps_listing_count",
     "citation_quote_match",
     "github_contributor_entity_match",
+    "advanced_spreadsheet_ops",
     "spreadsheet_lookup",
     "text_interval_cover",
     "public_species_location_lookup",
@@ -4934,6 +5272,10 @@ def plan_question(arg: str, state: Any = None) -> Dict[str, Any]:
     elif research_mode == "github_contributor_entity_match":
         plan = "find the relevant GitHub change, identify the contributor, compare that name against the referenced public-figure roster, then return the shared match"
         ambiguity_score = 0.18
+    elif research_mode == "advanced_spreadsheet_ops":
+        target_label = ", ".join(candidate_files[:2]) if candidate_files else (target_file or "the workbook")
+        plan = f"inspect {target_label}, normalize workbook sheets, cells, formulas, and fills, then apply the requested cross-sheet, cell, or path operator"
+        ambiguity_score = 0.20
     elif research_mode == "spreadsheet_lookup":
         target_label = ", ".join(candidate_files[:2]) if candidate_files else (target_file or "the spreadsheet")
         plan = f"inspect {target_label} then solve spreadsheet question"
@@ -5298,6 +5640,10 @@ def solve_question(arg: str, state: Any = None) -> Dict[str, Any]:
         elif research_mode == "github_contributor_entity_match":
             candidate, evidence = _solve_github_contributor_name_match(prompt)
             answer_provenance = ["github:contributors", "reference:former-chinese-heads-of-government"]
+        elif research_mode == "advanced_spreadsheet_ops" and existing_paths:
+            resolved_target, path = existing_paths[0]
+            candidate, evidence = _solve_advanced_spreadsheet_ops(prompt, path)
+            answer_provenance = [f"spreadsheet:{resolved_target}"]
         elif research_mode == "public_species_location_lookup":
             candidate, evidence = _solve_finding_nemo_usgs_zip()
             answer_provenance = ["usgs:collection", "osm:nominatim"]
