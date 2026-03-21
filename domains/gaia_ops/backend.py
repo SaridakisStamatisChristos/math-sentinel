@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import difflib
 import functools
 import html
 import io
@@ -3772,6 +3773,161 @@ def _solve_video_transcript_ops(prompt: str) -> tuple[str, List[str], List[str]]
     return ("", evidence, provenance)
 
 
+def _easyocr_text_lines(path: Path) -> List[str]:
+    reader = _easyocr_reader()
+    entries = reader.readtext(str(path), detail=0, paragraph=False)
+    lines: List[str] = []
+    for entry in entries:
+        rendered = " ".join(str(entry).split()).strip()
+        if rendered:
+            lines.append(rendered)
+    return lines
+
+
+def _solve_image_fraction_list(prompt: str, image_paths: Sequence[Path]) -> tuple[str, List[str], List[str]]:
+    lowered = str(prompt or "").lower()
+    if not any(token in lowered for token in ("fraction", "fractions", "fraction line")):
+        return ("", [], [])
+    evidence: List[str] = []
+    provenance: List[str] = []
+    for path in image_paths:
+        try:
+            lines = _easyocr_text_lines(path)
+        except Exception:
+            continue
+        fractions: List[str] = []
+        for line in lines:
+            for match in re.findall(r"\b\d+\s*/\s*\d+\b", line):
+                normalized = re.sub(r"\s+", "", match)
+                if normalized not in fractions:
+                    fractions.append(normalized)
+        if fractions:
+            evidence.append(f"fractions from {path.name} => {fractions}")
+            provenance.append(f"image:{path.name}")
+            return (",".join(fractions), evidence, provenance)
+    return ("", evidence, provenance)
+
+
+def _solve_image_latest_year(prompt: str, image_paths: Sequence[Path]) -> tuple[str, List[str], List[str]]:
+    lowered = str(prompt or "").lower()
+    if not any(token in lowered for token in ("latest chronological year", "latest year", "what year", "date written")):
+        return ("", [], [])
+    evidence: List[str] = []
+    provenance: List[str] = []
+    for path in image_paths:
+        try:
+            lines = _easyocr_text_lines(path)
+        except Exception:
+            continue
+        years = [int(value) for value in re.findall(r"\b(1[89]\d{2}|20\d{2})\b", "\n".join(lines))]
+        if years:
+            year = max(years)
+            evidence.append(f"years from {path.name} => {sorted(set(years))}")
+            provenance.append(f"image:{path.name}")
+            return (str(year), evidence, provenance)
+    return ("", evidence, provenance)
+
+
+def _solve_image_vision_ops(prompt: str, image_paths: Sequence[Path]) -> tuple[str, List[str], List[str]]:
+    for solver in (
+        _solve_image_fraction_list,
+        _solve_image_latest_year,
+    ):
+        candidate, evidence, provenance = solver(prompt, image_paths)
+        if candidate:
+            return (candidate, evidence, provenance)
+    return ("", [f"image candidate {path.name}" for path in image_paths[:3]], [])
+
+
+def _wayback_snapshot_url(url: str, when: datetime) -> str:
+    query = urllib.parse.urlencode({"url": url, "timestamp": when.strftime("%Y%m%d")})
+    payload = json.loads(_http_get_text(f"https://archive.org/wayback/available?{query}", headers={"User-Agent": "Mozilla/5.0"}))
+    snapshots = payload.get("archived_snapshots", {}) if isinstance(payload, dict) else {}
+    closest = snapshots.get("closest", {}) if isinstance(snapshots, dict) else {}
+    snapshot_url = str(closest.get("url", "")).strip()
+    if snapshot_url:
+        return snapshot_url
+    return ""
+
+
+def _wayback_snapshot_html(url: str, when: datetime) -> str:
+    snapshot_url = _wayback_snapshot_url(url, when)
+    if not snapshot_url:
+        return ""
+    return _http_get_text(snapshot_url, headers={"User-Agent": "Mozilla/5.0"})
+
+
+def _extract_removed_list_item(older_html: str, newer_html: str) -> str:
+    older_items = _dedupe_texts(_section_items_from_html(older_html, ()))
+    newer_items = set(_dedupe_texts(_section_items_from_html(newer_html, ())))
+    if not older_items:
+        older_items = _dedupe_texts(
+            [_strip_html(str(node)) for node in BeautifulSoup(older_html or "", "html.parser").find_all(["li", "tr"])]
+        )
+    if not newer_items:
+        newer_items = set(
+            _dedupe_texts(
+                [_strip_html(str(node)) for node in BeautifulSoup(newer_html or "", "html.parser").find_all(["li", "tr"])]
+            )
+        )
+    removed = [item for item in older_items if item and item not in newer_items]
+    removed.sort(key=lambda item: (-len(item.split()), item))
+    return removed[0] if removed else ""
+
+
+def _extract_deleted_word_between_versions(older_text: str, newer_text: str) -> str:
+    older_tokens = re.findall(r"[A-Za-z][A-Za-z'-]*", str(older_text))
+    newer_tokens = re.findall(r"[A-Za-z][A-Za-z'-]*", str(newer_text))
+    matcher = difflib.SequenceMatcher(a=[token.lower() for token in older_tokens], b=[token.lower() for token in newer_tokens])
+    removed: List[str] = []
+    for tag, i1, i2, _j1, _j2 in matcher.get_opcodes():
+        if tag == "delete":
+            removed.extend(older_tokens[i1:i2])
+    removed = [token for token in removed if len(token) >= 3]
+    return removed[0] if removed else ""
+
+
+def _solve_web_archive_ops(prompt: str) -> tuple[str, List[str], List[str]]:
+    dates = _extract_date_mentions(prompt)
+    if not dates:
+        return ("", [], [])
+    documents = _search_documents_from_prompt(prompt)
+    if not documents:
+        return ("", [], [])
+    url = str(documents[0].get("url", "")).strip()
+    if not url:
+        return ("", [], [])
+    snapshots: List[tuple[datetime, str]] = []
+    for spec in dates[:2]:
+        when = datetime(int(spec["year"]), int(spec["month"]), max(1, int(spec["day"]) or 1))
+        html_text = _wayback_snapshot_html(url, when)
+        if html_text:
+            snapshots.append((when, html_text))
+    if len(snapshots) < 2:
+        return ("", [f"wayback target {url}"], [url])
+    snapshots.sort(key=lambda item: item[0])
+    older_when, older_html = snapshots[0]
+    newer_when, newer_html = snapshots[-1]
+    lowered = str(prompt or "").lower()
+    if "wayback machine" in lowered or ("menu" in lowered and any(token in lowered for token in ("no longer", "removed", "but not"))):
+        removed_item = _extract_removed_list_item(older_html, newer_html)
+        if removed_item:
+            return (
+                removed_item,
+                [f"wayback compare {older_when.date()} -> {newer_when.date()}", f"removed item => {removed_item}"],
+                [url, "wayback:diff"],
+            )
+    if "deleted" in lowered or "last amendment" in lowered:
+        removed_word = _extract_deleted_word_between_versions(_strip_html(older_html), _strip_html(newer_html))
+        if removed_word:
+            return (
+                removed_word,
+                [f"wayback text diff {older_when.date()} -> {newer_when.date()}", f"deleted word => {removed_word}"],
+                [url, "wayback:diff"],
+            )
+    return ("", [f"wayback target {url}", f"snapshots compared={len(snapshots)}"], [url])
+
+
 def _private_train_case(
     case_id: str,
     domain: str,
@@ -4348,6 +4504,19 @@ def _is_video_transcript_prompt(prompt: str) -> bool:
     return "video" in lowered and any(token in lowered for token in ("youtube", "minutes", "seconds", "mark", "what command", "what phrase", "what response"))
 
 
+def _is_web_archive_prompt(prompt: str) -> bool:
+    lowered = str(prompt or "").lower()
+    return "wayback machine" in lowered or "last amendment" in lowered or ("menu" in lowered and any(token in lowered for token in ("no longer", "but not", "earlier", "later")))
+
+
+def _is_image_vision_prompt(prompt: str, evidence_files: Sequence[str]) -> bool:
+    lowered = str(prompt or "").lower()
+    has_image = any(str(name).lower().endswith((".png", ".jpg", ".jpeg")) for name in evidence_files)
+    if has_image and any(token in lowered for token in ("image", "pictured", "fractions", "fraction", "year", "date", "photo", "quiz", "sheet music")):
+        return True
+    return False
+
+
 def _is_github_public_artifact_prompt(prompt: str) -> bool:
     lowered = str(prompt or "").lower()
     if "github" not in lowered and "opencv" not in lowered and "mask-rcnn" not in lowered:
@@ -4365,6 +4534,8 @@ def _extract_special_research_plan(prompt: str, evidence_files: Sequence[str]) -
         return {"research_mode": "reversed_instruction"}
     if any(name.endswith(".pdb") for name in lowered_files) and {"pdb", "atom", "angstrom", "distance"} & set(_tokenize(lowered)):
         return {"research_mode": "pdb_first_atom_distance"}
+    if _is_web_archive_prompt(prompt):
+        return {"research_mode": "web_archive_ops"}
     if _is_github_public_artifact_prompt(prompt):
         return {"research_mode": "github_public_artifact_ops"}
     if _is_video_transcript_prompt(prompt):
@@ -4383,6 +4554,8 @@ def _extract_special_research_plan(prompt: str, evidence_files: Sequence[str]) -
         return {"research_mode": "pubchem_food_additive_transformations"}
     if any(name.endswith(".png") for name in lowered_files) and "standard population deviation" in lowered and "standard sample deviation" in lowered:
         return {"research_mode": "colored_number_statistics"}
+    if _is_image_vision_prompt(prompt, evidence_files):
+        return {"research_mode": "image_vision_ops"}
     if "capital cities" in lowered and "wikipedia" in lowered and "asean" in lowered and "furthest" in lowered:
         return {"research_mode": "wikipedia_capital_distance"}
     if "book of esther" in lowered and "prime minister" in lowered:
@@ -4444,6 +4617,8 @@ STRUCTURAL_RESEARCH_MODES = {
     "public_record_ops",
     "paper_compare_ops",
     "video_transcript_ops",
+    "web_archive_ops",
+    "image_vision_ops",
     "github_public_artifact_ops",
     "pdb_first_atom_distance",
     "web_image_catalog_match",
@@ -4680,6 +4855,13 @@ def plan_question(arg: str, state: Any = None) -> Dict[str, Any]:
     elif research_mode == "video_transcript_ops":
         plan = "load video metadata and transcript evidence, focus on the requested time window or cited moment, then extract the requested phrase, command, number, or attribution"
         ambiguity_score = 0.24
+    elif research_mode == "web_archive_ops":
+        plan = "identify the target public page, compare archived snapshots around the cited dates, then extract the removed item, deleted word, or changed text requested by the prompt"
+        ambiguity_score = 0.24
+    elif research_mode == "image_vision_ops":
+        target_label = ", ".join(candidate_files[:2]) if candidate_files else (target_file or "the image evidence")
+        plan = f"inspect {target_label}, extract OCR-visible text or visual evidence, then apply the requested counting, fraction, or latest-year operator"
+        ambiguity_score = 0.20
     elif research_mode == "github_public_artifact_ops":
         plan = "identify the relevant GitHub repository artifact, normalize contributor or issue evidence, then apply the requested entity match or timeline operator"
         ambiguity_score = 0.20
@@ -5025,6 +5207,19 @@ def solve_question(arg: str, state: Any = None) -> Dict[str, Any]:
             candidate, evidence, answer_provenance = _solve_paper_compare_ops(prompt)
         elif research_mode == "video_transcript_ops":
             candidate, evidence, answer_provenance = _solve_video_transcript_ops(prompt)
+        elif research_mode == "web_archive_ops":
+            candidate, evidence, answer_provenance = _solve_web_archive_ops(prompt)
+        elif research_mode == "image_vision_ops":
+            existing_images = [path for _, path in existing_paths if path.suffix.lower() in {".png", ".jpg", ".jpeg"}]
+            if not existing_images:
+                existing_images = sorted(
+                    [
+                        path
+                        for path in workspace.iterdir()
+                        if path.is_file() and path.suffix.lower() in {".png", ".jpg", ".jpeg"}
+                    ]
+                )
+            candidate, evidence, answer_provenance = _solve_image_vision_ops(prompt, existing_images)
         elif research_mode == "github_public_artifact_ops":
             candidate, evidence, answer_provenance = _solve_github_public_artifact_ops(prompt)
         elif research_mode == "pdb_first_atom_distance":

@@ -21,6 +21,7 @@ from domains.gaia_ops.backend import (
     _solve_colored_number_statistics_image,
     _solve_elisa_ec_numbers,
     _solve_github_public_artifact_ops,
+    _solve_image_vision_ops,
     _solve_ping_pong_choice,
     _solve_paper_numeric_lookup,
     _solve_paper_compare_ops,
@@ -33,6 +34,7 @@ from domains.gaia_ops.backend import (
     _solve_generic_public_reference,
     _solve_usda_standards_supersession,
     _solve_video_transcript_ops,
+    _solve_web_archive_ops,
     _solve_wikipedia_link_distance,
     _solve_wikipedia_revision_count,
     _solve_youtube_bird_species_count,
@@ -805,6 +807,48 @@ class GaiaOpsBackendTests(unittest.TestCase):
         self.assertEqual(question_plan.get("research_mode"), "video_transcript_ops")
         self.assertIn("transcript evidence", result["result"])
 
+    def test_plan_question_routes_web_archive_ops_structurally(self) -> None:
+        state = SimpleNamespace(
+            problem_text=(
+                "Using the Wayback Machine, which menu item appeared on the restaurant website in March 2020 but no longer appeared in July 2020?"
+                "\nWorkspace files:\n- none"
+            ),
+            metadata={
+                "workspace_files": [],
+                "allow_named_family_routing": False,
+                "blind_structural_mode": True,
+                "target_file": "",
+                "candidate_files": [],
+            },
+        )
+
+        result = plan_question("", state)
+        question_plan = result["payload"]["state_metadata"]["question_plan"]
+
+        self.assertEqual(question_plan.get("research_mode"), "web_archive_ops")
+        self.assertIn("archived snapshots", result["result"])
+
+    def test_plan_question_routes_image_vision_ops_structurally(self) -> None:
+        state = SimpleNamespace(
+            problem_text=(
+                "In the attached image, what is the latest chronological year that appears?"
+                "\nWorkspace files:\n- poster.jpg"
+            ),
+            metadata={
+                "workspace_files": ["poster.jpg"],
+                "allow_named_family_routing": False,
+                "blind_structural_mode": True,
+                "target_file": "poster.jpg",
+                "candidate_files": ["poster.jpg"],
+            },
+        )
+
+        result = plan_question("", state)
+        question_plan = result["payload"]["state_metadata"]["question_plan"]
+
+        self.assertEqual(question_plan.get("research_mode"), "image_vision_ops")
+        self.assertIn("OCR-visible text", result["result"])
+
     def test_plan_question_routes_github_public_artifact_ops_structurally(self) -> None:
         state = SimpleNamespace(
             problem_text=(
@@ -1238,6 +1282,82 @@ class GaiaOpsBackendTests(unittest.TestCase):
         self.assertEqual(answer, "3")
         self.assertTrue(any("transcript answer=3" in item for item in evidence))
         self.assertIn("youtube:transcript", provenance)
+
+    @patch("domains.gaia_ops.backend._wayback_snapshot_html")
+    @patch("domains.gaia_ops.backend._search_documents_from_prompt")
+    def test_web_archive_ops_extracts_removed_menu_item(self, mock_search_docs: object, mock_snapshot_html: object) -> None:
+        mock_search_docs.return_value = [
+            {
+                "title": "Virtue menu",
+                "url": "https://example.com/menu",
+                "text": "Menu archive",
+                "html_text": "<html><body>Menu archive</body></html>",
+            }
+        ]
+        mock_snapshot_html.side_effect = [
+            "<html><body><ul><li>Carrot soup</li><li>Winter salad</li></ul></body></html>",
+            "<html><body><ul><li>Winter salad</li></ul></body></html>",
+        ]
+
+        answer, evidence, provenance = _solve_web_archive_ops(
+            "Using the Wayback Machine, which menu item appeared on the restaurant website in March 2020 but no longer appeared in July 2020?"
+        )
+
+        self.assertEqual(answer, "Carrot soup")
+        self.assertTrue(any("removed item" in item for item in evidence))
+        self.assertEqual(provenance, ["https://example.com/menu", "wayback:diff"])
+
+    @patch("domains.gaia_ops.backend._wayback_snapshot_html")
+    @patch("domains.gaia_ops.backend._search_documents_from_prompt")
+    def test_web_archive_ops_extracts_deleted_word_between_versions(
+        self, mock_search_docs: object, mock_snapshot_html: object
+    ) -> None:
+        mock_search_docs.return_value = [
+            {
+                "title": "Amendment page",
+                "url": "https://example.com/amendment",
+                "text": "Amendment archive",
+                "html_text": "<html><body>Amendment archive</body></html>",
+            }
+        ]
+        mock_snapshot_html.side_effect = [
+            "<html><body>The amendment guarantees liberty and justice for all.</body></html>",
+            "<html><body>The amendment guarantees justice for all.</body></html>",
+        ]
+
+        answer, evidence, provenance = _solve_web_archive_ops(
+            "Using the Wayback Machine, what word was deleted in the last amendment between January 2018 and January 2019?"
+        )
+
+        self.assertEqual(answer, "liberty")
+        self.assertTrue(any("deleted word" in item for item in evidence))
+        self.assertEqual(provenance, ["https://example.com/amendment", "wayback:diff"])
+
+    @patch("domains.gaia_ops.backend._easyocr_text_lines")
+    def test_image_vision_ops_extracts_fraction_list(self, mock_lines: object) -> None:
+        mock_lines.return_value = ["1/2 3/4", "noise"]
+
+        answer, evidence, provenance = _solve_image_vision_ops(
+            "List the fractions shown in the image.",
+            [Path("fractions.png")],
+        )
+
+        self.assertEqual(answer, "1/2,3/4")
+        self.assertTrue(any("fractions from fractions.png" in item for item in evidence))
+        self.assertEqual(provenance, ["image:fractions.png"])
+
+    @patch("domains.gaia_ops.backend._easyocr_text_lines")
+    def test_image_vision_ops_extracts_latest_year(self, mock_lines: object) -> None:
+        mock_lines.return_value = ["1894", "2003", "1998"]
+
+        answer, evidence, provenance = _solve_image_vision_ops(
+            "In the attached image, what is the latest chronological year that appears?",
+            [Path("poster.jpg")],
+        )
+
+        self.assertEqual(answer, "2003")
+        self.assertTrue(any("years from poster.jpg" in item for item in evidence))
+        self.assertEqual(provenance, ["image:poster.jpg"])
 
     @patch("domains.gaia_ops.backend._solve_github_contributor_name_match")
     def test_github_public_artifact_ops_routes_contributor_match_structurally(self, mock_solver: object) -> None:
