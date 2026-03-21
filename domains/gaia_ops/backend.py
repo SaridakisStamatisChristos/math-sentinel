@@ -265,6 +265,8 @@ def _pdf_text_from_url(url: str) -> str:
     req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
     with urllib.request.urlopen(req, timeout=60) as response:
         payload = response.read()
+    if not payload.lstrip().startswith(b"%PDF-"):
+        return ""
     reader = PdfReader(io.BytesIO(payload))
     return "\n".join(page.extract_text() or "" for page in reader.pages)
 
@@ -496,6 +498,7 @@ def _extract_public_reference_entities(prompt: str) -> List[str]:
         r"\b[A-Z][A-Za-z]+(?:\s+[A-Z][A-Za-z]+)* Competition\b",
         r"\b[A-Z][A-Za-z]+(?:\s+[A-Z][A-Za-z]+)* Museum\b",
         r"\b[A-Z][A-Za-z]+(?:\s+[A-Z][A-Za-z]+)* Wikipedia page\b",
+        r"\b([A-Z][A-Za-z0-9'&-]+(?:\s+[A-Z][A-Za-z0-9'&-]+)*)\s+(?:English\s+)?Wikipedia article\b",
     ):
         for match in re.findall(pattern, prompt or ""):
             _add(str(match).replace(" Wikipedia page", ""))
@@ -539,6 +542,53 @@ def _public_reference_title_candidates(prompt: str) -> List[str]:
             for title in _wikipedia_search_titles(f"{entity} discography", limit=2):
                 _add(title)
     return candidates[:8]
+
+
+def _public_reference_allowed_domains(prompt: str) -> tuple[str, ...]:
+    lowered = str(prompt or "").lower()
+    domains: List[str] = []
+    if "wikipedia" in lowered:
+        domains.extend(["wikipedia.org", "wikimedia.org"])
+    if "base" in lowered or "bielefeld university library" in lowered:
+        domains.extend(["base-search.net", "uni-bielefeld.de"])
+    if "library" in lowered:
+        domains.extend(["library"])
+    return tuple(domains)
+
+
+def _public_reference_search_documents(prompt: str, titles: Sequence[str]) -> List[Dict[str, str]]:
+    queries: List[str] = []
+    lowered = str(prompt or "").lower()
+    if titles:
+        queries.extend(titles[:3])
+    if "latest 2022" in lowered and titles:
+        queries.extend(f"{title} wikipedia 2022" for title in titles[:2])
+    queries.append(prompt)
+    allow_domains = _public_reference_allowed_domains(prompt)
+    documents: List[Dict[str, str]] = []
+    seen_urls: set[str] = set()
+    for query in queries:
+        for document in _fetch_search_documents(query, max_results=5, allow_domains=allow_domains):
+            url = str(document.get("url", "")).strip()
+            if not url or url in seen_urls:
+                continue
+            seen_urls.add(url)
+            html_text = ""
+            try:
+                html_text = _http_get_text(url, headers={"User-Agent": "Mozilla/5.0"})
+            except Exception:
+                html_text = ""
+            documents.append(
+                {
+                    "title": str(document.get("title", "")),
+                    "url": url,
+                    "text": str(document.get("text", "")),
+                    "html_text": html_text,
+                }
+            )
+            if len(documents) >= 8:
+                return documents
+    return documents
 
 
 def _extract_html_tables(html_text: str) -> List[Dict[str, Any]]:
@@ -747,6 +797,46 @@ def _section_items_from_html(html_text: str, section_terms: Sequence[str]) -> Li
     return items
 
 
+def _count_content_images(html_text: str) -> int:
+    soup = BeautifulSoup(html_text or "", "html.parser")
+    parser_output = soup.select_one(".mw-parser-output")
+    scope = parser_output if parser_output is not None else soup
+    seen_sources: set[str] = set()
+    count = 0
+    for image in scope.find_all("img"):
+        source = str(image.get("src", "")).strip()
+        if not source or source in seen_sources:
+            continue
+        lowered = source.lower()
+        alt_text = str(image.get("alt", "")).strip().lower()
+        classes = " ".join(image.get("class", [])).lower()
+        if any(token in lowered for token in ("wiktionary-logo", "wikipedia-logo", "site-logo")):
+            continue
+        if "flagicon" in classes and not alt_text:
+            continue
+        seen_sources.add(source)
+        count += 1
+    return count
+
+
+def _solve_public_reference_image_count(prompt: str, documents: Sequence[Dict[str, Any]]) -> tuple[str, List[str]]:
+    lowered = str(prompt or "").lower()
+    if not ("how many" in lowered and "image" in lowered):
+        return ("", [])
+    evidence: List[str] = []
+    for document in documents:
+        html_text = str(document.get("html_text", "")).strip()
+        if not html_text:
+            continue
+        count = _count_content_images(html_text)
+        if count <= 0:
+            continue
+        title = str(document.get("title", "")).strip() or str(document.get("url", "")).strip()
+        evidence.append(f"image count from {title} => {count}")
+        return (str(count), evidence)
+    return ("", evidence)
+
+
 def _solve_public_reference_year_count(prompt: str, titles: Sequence[str]) -> tuple[str, List[str]]:
     lowered = str(prompt or "").lower()
     if not any(token in lowered for token in ("how many", "count")):
@@ -818,18 +908,22 @@ def _count_between_in_order(prompt: str, text: str) -> tuple[str, List[str]]:
 def _solve_generic_public_reference(prompt: str) -> tuple[str, List[str], List[str]]:
     titles = _public_reference_title_candidates(prompt)
     evidence: List[str] = []
+    wikipedia_docs: List[Dict[str, Any]] = []
     if titles:
         candidate, more = _solve_public_reference_year_count(prompt, titles)
         if candidate:
             return (candidate, more, [f"wikipedia:{titles[0]}"])
-        docs: List[Dict[str, Any]] = []
         for title in titles[:4]:
             try:
                 html_text = _wikipedia_rendered_html(title)
             except Exception:
                 continue
-            docs.append({"title": title, "html_text": html_text, "text": _strip_html(html_text)})
-        for doc in docs:
+            wikipedia_docs.append({"title": title, "html_text": html_text, "text": _strip_html(html_text)})
+        candidate, more = _solve_public_reference_image_count(prompt, wikipedia_docs)
+        if candidate:
+            title = str(wikipedia_docs[0].get("title", "")).strip()
+            return (candidate, more, [f"wikipedia:{title}"] if title else [])
+        for doc in wikipedia_docs:
             tables = _extract_html_tables(str(doc.get("html_text", "")))
             candidate, more = _solve_public_reference_adjacent(prompt, tables)
             if candidate:
@@ -841,6 +935,26 @@ def _solve_generic_public_reference(prompt: str) -> tuple[str, List[str], List[s
             if candidate:
                 return (candidate, [f"title={doc.get('title')}"] + more, [f"wikipedia:{doc.get('title')}"])
         evidence.extend([f"title candidate {title}" for title in titles[:3]])
+    search_docs = _public_reference_search_documents(prompt, titles)
+    candidate, more = _solve_public_reference_image_count(prompt, search_docs)
+    if candidate:
+        url = str(search_docs[0].get("url", "")).strip()
+        return (candidate, more, [url] if url else [])
+    for doc in search_docs:
+        html_text = str(doc.get("html_text", ""))
+        if not html_text:
+            continue
+        tables = _extract_html_tables(html_text)
+        candidate, more = _solve_public_reference_adjacent(prompt, tables)
+        if candidate:
+            return (candidate, [f"url={doc.get('url', '')}"] + more, [str(doc.get("url", "")).strip()])
+        candidate, more = _solve_public_reference_argextreme(prompt, tables)
+        if candidate:
+            return (candidate, [f"url={doc.get('url', '')}"] + more, [str(doc.get("url", "")).strip()])
+        candidate, more = _count_between_in_order(prompt, str(doc.get("text", "")))
+        if candidate:
+            return (candidate, [f"url={doc.get('url', '')}"] + more, [str(doc.get("url", "")).strip()])
+    evidence.extend([f"search doc {doc.get('url', '')}" for doc in search_docs[:3]])
     return ("", evidence, [])
 
 

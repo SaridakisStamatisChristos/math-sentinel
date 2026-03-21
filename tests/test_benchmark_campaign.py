@@ -29,8 +29,10 @@ class BenchmarkCampaignTests(unittest.TestCase):
     @patch("benchmarks.campaign.load_benchmark_runtime")
     def test_campaign_writes_summary_report_and_ledger(self, mock_load_runtime: object, mock_run_suite_target: object) -> None:
         mock_load_runtime.return_value = (object(), object(), object())
+        seen_max_cases: list[object] = []
 
         def fake_run_suite_target(target_kind: str, target_name: str, *args: object, **kwargs: object) -> BenchmarkSuiteResult:  # noqa: ARG001
+            seen_max_cases.append(kwargs.get("max_cases"))
             backend = "swebench_ops" if target_name == "swebench_verified_smoke" else "gaia_ops" if target_name == "gaia_smoke" else "math"
             return BenchmarkSuiteResult(
                 suite=target_name if target_kind == "public" else f"internal_{target_name}",
@@ -62,6 +64,7 @@ class BenchmarkCampaignTests(unittest.TestCase):
             safe_override=True,
             repeat=2,
             campaign_name="unit_campaign",
+            max_cases=7,
         )
 
         campaign_root = results_dir / "campaigns" / "unit_campaign"
@@ -75,6 +78,8 @@ class BenchmarkCampaignTests(unittest.TestCase):
         self.assertTrue((campaign_root / "campaign_report.md").exists())
         self.assertEqual(len([line for line in ledger_path.read_text(encoding="utf-8").splitlines() if line.strip()]), 4)
         self.assertTrue(all(variant["stable"] for variant in summary.variants))
+        self.assertEqual(seen_max_cases, [7] * 12)
+        self.assertEqual(summary.metadata.get("max_cases"), 7)
 
     @patch("benchmarks.campaign.run_suite_target")
     @patch("benchmarks.campaign.load_benchmark_runtime")

@@ -31,6 +31,11 @@ def default_campaign_profile_for_suite(suite_spec: str) -> str:
     return "smoke_tiny"
 
 
+def should_use_campaign_mode(profile_spec: str, ablations: str, repeat: int, campaign_name: str) -> bool:
+    requested_profiles = [item.strip() for item in str(profile_spec or "").split(",") if item.strip()]
+    return bool(ablations or repeat > 1 or campaign_name or len(requested_profiles) > 1)
+
+
 def cli_cfg_overrides(args: argparse.Namespace) -> Dict[str, Any]:
     overrides: Dict[str, Any] = {}
     if args.model_provider is not None:
@@ -81,19 +86,22 @@ def main() -> None:
     benchmark_source_cfg = cfg
     overrides = cli_cfg_overrides(args)
     targets = resolve_suite_targets(args.suite, args.backends)
-    campaign_mode = bool(args.profile or args.ablations or args.repeat > 1 or args.campaign_name)
+    campaign_mode = should_use_campaign_mode(args.profile, args.ablations, args.repeat, args.campaign_name)
     auto_profile = ""
+    selected_profile = args.profile.strip()
     config_path = str(Path(args.config).as_posix())
     if not campaign_mode and config_path == "config/default.yaml" and any(kind in {"public", "manifest", "official"} for kind, _ in targets):
         auto_profile = default_campaign_profile_for_suite(args.suite)
-    if auto_profile:
-        cfg = apply_benchmark_profile(cfg, resolve_benchmark_profiles(auto_profile, args.profiles_config)[0])
+    if not selected_profile and auto_profile:
+        selected_profile = auto_profile
+    if not campaign_mode and selected_profile:
+        cfg = apply_benchmark_profile(cfg, resolve_benchmark_profiles(selected_profile, args.profiles_config)[0])
     if overrides:
         for section, values in overrides.items():
             cfg.setdefault(section, {}).update(values)
 
     if campaign_mode:
-        profiles = resolve_benchmark_profiles(args.profile or default_campaign_profile_for_suite(args.suite), args.profiles_config)
+        profiles = resolve_benchmark_profiles(selected_profile or default_campaign_profile_for_suite(args.suite), args.profiles_config)
         ablations = resolve_benchmark_ablations(args.ablations or "baseline", args.ablation_config)
         summary = run_benchmark_campaign(
             base_cfg=cfg,
@@ -109,6 +117,7 @@ def main() -> None:
             safe_override=(True if args.safe_runtime else None),
             repeat=max(1, int(args.repeat)),
             campaign_name=args.campaign_name,
+            max_cases=(int(args.max_cases) if int(args.max_cases) > 0 else None),
         )
         print(json.dumps(summary.to_dict(), ensure_ascii=True))
         return

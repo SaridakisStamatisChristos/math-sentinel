@@ -13,6 +13,7 @@ from domains.gaia_ops.backend import (
     _infer_text_answer,
     _infer_xlsx_answer,
     _nature_article_type_counts,
+    _pdf_text_from_url,
     _solve_arxiv_overlap,
     _solve_author_prior_publication,
     _solve_benjerry_background_rhyme,
@@ -38,6 +39,25 @@ from engine.task import ReasoningTask
 
 
 class GaiaOpsBackendTests(unittest.TestCase):
+    @patch("domains.gaia_ops.backend.urllib.request.urlopen")
+    def test_pdf_text_from_url_ignores_non_pdf_payloads(self, mock_urlopen: object) -> None:
+        class _FakeResponse:
+            def __enter__(self) -> "_FakeResponse":
+                return self
+
+            def __exit__(self, exc_type: object, exc: object, tb: object) -> bool:
+                return False
+
+            def read(self) -> bytes:
+                return b"\xff\xd8\xff\xe0\x00not-a-pdf"
+
+        mock_urlopen.return_value = _FakeResponse()
+        _pdf_text_from_url.cache_clear()
+        try:
+            self.assertEqual(_pdf_text_from_url("https://example.com/not-pdf"), "")
+        finally:
+            _pdf_text_from_url.cache_clear()
+
     def test_evidence_driven_fallback_loop_solves_csv_case_without_oracle_tool_hints(self) -> None:
         backend = GaiaOpsReasoningDomain()
         task = backend.benchmark_tasks()[0]
@@ -823,6 +843,59 @@ class GaiaOpsBackendTests(unittest.TestCase):
         self.assertEqual(answer, "Yoshida, Uehara")
         self.assertTrue(any("number=19" in item for item in evidence))
         self.assertEqual(provenance, ["wikipedia:Hokkaido Nippon-Ham Fighters"])
+
+    @patch("domains.gaia_ops.backend._public_reference_title_candidates")
+    @patch("domains.gaia_ops.backend._wikipedia_rendered_html")
+    def test_generic_public_reference_counts_images_on_public_page(self, mock_html: object, mock_titles: object) -> None:
+        mock_titles.return_value = ["Lego"]
+        mock_html.return_value = """
+        <html><body>
+        <div class="mw-parser-output">
+          <img src="https://example.com/a.jpg" alt="brick" />
+          <img src="https://example.com/b.jpg" alt="set" />
+          <img src="https://example.com/c.jpg" alt="logo" />
+        </div>
+        </body></html>
+        """
+
+        answer, evidence, provenance = _solve_generic_public_reference(
+            "How many images are there in the latest 2022 Lego english wikipedia article?"
+        )
+
+        self.assertEqual(answer, "3")
+        self.assertTrue(any("image count" in item for item in evidence))
+        self.assertEqual(provenance, ["wikipedia:Lego"])
+
+    @patch("domains.gaia_ops.backend._public_reference_search_documents")
+    @patch("domains.gaia_ops.backend._public_reference_title_candidates")
+    def test_generic_public_reference_uses_search_document_tables_when_title_candidates_are_empty(
+        self, mock_titles: object, mock_search_docs: object
+    ) -> None:
+        mock_titles.return_value = []
+        mock_search_docs.return_value = [
+            {
+                "title": "Olympics mirror",
+                "url": "https://example.com/olympics",
+                "text": "mirror page",
+                "html_text": """
+                <html><body>
+                <table>
+                  <tr><th>Nation</th><th>IOC code</th><th>Athletes</th></tr>
+                  <tr><td>Cuba</td><td>CUB</td><td>1</td></tr>
+                  <tr><td>United States</td><td>USA</td><td>100</td></tr>
+                </table>
+                </body></html>
+                """,
+            }
+        ]
+
+        answer, evidence, provenance = _solve_generic_public_reference(
+            "What country had the least number of athletes at the 1928 Summer Olympics? Give the IOC country code as your answer."
+        )
+
+        self.assertEqual(answer, "CUB")
+        self.assertTrue(any("url=https://example.com/olympics" in item for item in evidence))
+        self.assertEqual(provenance, ["https://example.com/olympics"])
 
     @patch("domains.gaia_ops.backend._solve_generic_public_reference")
     def test_solve_question_generic_public_reference_requires_stronger_confidence_before_candidate_answer(

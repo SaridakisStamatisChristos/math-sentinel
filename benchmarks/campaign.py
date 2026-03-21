@@ -314,6 +314,7 @@ def run_benchmark_campaign(
     safe_override: bool | None,
     repeat: int,
     campaign_name: str,
+    max_cases: int | None = None,
 ) -> BenchmarkCampaignSummary:
     targets = resolve_suite_targets(suite_spec, backends_spec)
     if not targets:
@@ -358,6 +359,7 @@ def run_benchmark_campaign(
                         device,
                         checker_plugin,
                         event_logger,
+                        max_cases=max_cases,
                     )
                     result.metadata.update(
                         {
@@ -401,6 +403,7 @@ def run_benchmark_campaign(
                         "repeat_index": repeat_index,
                         "suite_spec": suite_spec,
                         "targets": [f"{kind}:{name}" for kind, name in targets],
+                        "max_cases": max_cases,
                         "git": git_context,
                         "model_runtime": model_runtime,
                     },
@@ -431,6 +434,7 @@ def run_benchmark_campaign(
             "git": git_context,
             "profile_names": [profile.name for profile in profiles],
             "ablation_names": [ablation.name for ablation in ablations],
+            "max_cases": max_cases,
             "runtime_fingerprints": sorted(
                 {
                     json.dumps(

@@ -4,7 +4,7 @@ import unittest
 
 from benchmarks.ablations import available_benchmark_ablations, resolve_benchmark_ablations
 from benchmarks.profiles import apply_benchmark_profile, available_benchmark_profiles, resolve_benchmark_profiles
-from benchmark_v7 import default_campaign_profile_for_suite
+from benchmark_v7 import default_campaign_profile_for_suite, should_use_campaign_mode
 from sentinel.config import load_runtime_config
 
 
@@ -92,6 +92,12 @@ class BenchmarkProfileTests(unittest.TestCase):
             default_campaign_profile_for_suite("manifest:benchmarks/manifests/gaia_medium_official_style.json"),
             "public_claim_no_repairs",
         )
+
+    def test_single_profile_run_does_not_force_campaign_mode(self) -> None:
+        self.assertFalse(should_use_campaign_mode("public_claim_blind_structural", "", 1, ""))
+        self.assertTrue(should_use_campaign_mode("public_claim_blind_structural,smoke_tiny", "", 1, ""))
+        self.assertTrue(should_use_campaign_mode("public_claim_blind_structural", "baseline", 1, ""))
+        self.assertTrue(should_use_campaign_mode("public_claim_blind_structural", "", 2, ""))
 
     def test_strict_and_search_assisted_public_profiles_diverge_on_guided_rollout(self) -> None:
         blind_cfg = load_runtime_config("config/benchmarks/profile_public_claim_blind_structural.yaml", search_config_path="")
