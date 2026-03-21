@@ -23,6 +23,7 @@ from domains.gaia_ops.backend import (
     _solve_elisa_ec_numbers,
     _solve_github_public_artifact_ops,
     _solve_image_vision_ops,
+    _solve_audio_transcription_ops,
     _solve_office_document_ops,
     _solve_ping_pong_choice,
     _solve_paper_numeric_lookup,
@@ -811,6 +812,53 @@ class GaiaOpsBackendTests(unittest.TestCase):
         self.assertEqual(answer, "3")
         self.assertTrue(any("counted units=3" in item for item in evidence))
 
+    @patch("domains.gaia_ops.backend._audio_transcript_segments")
+    def test_audio_transcription_ops_extracts_phrase_from_timestamp_window(self, mock_segments: object) -> None:
+        mock_segments.return_value = [
+            {"start": 28.0, "end": 32.0, "text": '"BLUE APPLE"'},
+            {"start": 32.0, "end": 36.0, "text": "continues"},
+        ]
+
+        answer, evidence, provenance = _solve_audio_transcription_ops(
+            "In the attached audio clip, what phrase is spoken at 30 seconds?",
+            [Path("clip.mp3")],
+        )
+
+        self.assertEqual(answer, "BLUE APPLE")
+        self.assertTrue(any("audio transcript answer=BLUE APPLE" in item for item in evidence))
+        self.assertEqual(provenance, ["audio:clip.mp3", "audio:transcript"])
+
+    @patch("domains.gaia_ops.backend._audio_transcript_segments")
+    def test_audio_transcription_ops_counts_letter_occurrences(self, mock_segments: object) -> None:
+        mock_segments.return_value = [
+            {"start": 0.0, "end": 4.0, "text": '"RED EEL"'},
+        ]
+
+        answer, evidence, provenance = _solve_audio_transcription_ops(
+            'In the attached recording, how many times does the letter "E" appear in the spoken phrase?',
+            [Path("letters.wav")],
+        )
+
+        self.assertEqual(answer, "3")
+        self.assertTrue(any("audio transcript answer=3" in item for item in evidence))
+        self.assertEqual(provenance, ["audio:letters.wav", "audio:transcript"])
+
+    @patch("domains.gaia_ops.backend._audio_transcript_segments")
+    def test_audio_transcription_ops_extracts_response_after_question(self, mock_segments: object) -> None:
+        mock_segments.return_value = [
+            {"start": 10.0, "end": 12.0, "text": "Isn't that hot?"},
+            {"start": 12.0, "end": 15.0, "text": "Indeed it is."},
+        ]
+
+        answer, evidence, provenance = _solve_audio_transcription_ops(
+            'In the attached audio, what is said in response to the question "Isn\'t that hot?"',
+            [Path("dialogue.m4a")],
+        )
+
+        self.assertEqual(answer, "Indeed it is")
+        self.assertTrue(any("audio transcript answer=Indeed it is" in item for item in evidence))
+        self.assertEqual(provenance, ["audio:dialogue.m4a", "audio:transcript"])
+
     def test_plan_question_blind_mode_routes_public_species_lookup_structurally(self) -> None:
         state = SimpleNamespace(
             problem_text=(
@@ -1021,6 +1069,27 @@ class GaiaOpsBackendTests(unittest.TestCase):
 
         self.assertEqual(question_plan.get("research_mode"), "office_document_ops")
         self.assertIn("document units", result["result"])
+
+    def test_plan_question_routes_audio_transcription_ops_structurally(self) -> None:
+        state = SimpleNamespace(
+            problem_text=(
+                "In the attached audio clip, what phrase is spoken at 30 seconds?"
+                "\nWorkspace files:\n- clip.mp3"
+            ),
+            metadata={
+                "workspace_files": ["clip.mp3"],
+                "allow_named_family_routing": False,
+                "blind_structural_mode": True,
+                "target_file": "clip.mp3",
+                "candidate_files": ["clip.mp3"],
+            },
+        )
+
+        result = plan_question("", state)
+        question_plan = result["payload"]["state_metadata"]["question_plan"]
+
+        self.assertEqual(question_plan.get("research_mode"), "audio_transcription_ops")
+        self.assertIn("transcribe", result["result"])
 
     def test_plan_question_routes_github_public_artifact_ops_structurally(self) -> None:
         state = SimpleNamespace(

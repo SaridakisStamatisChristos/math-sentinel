@@ -4192,6 +4192,99 @@ def _extract_video_transcript_answer(prompt: str, transcript_text: str) -> str:
     return ""
 
 
+def _audio_transcript_segments(path: Path) -> List[Dict[str, Any]]:
+    rendered_path = str(path)
+    try:
+        from faster_whisper import WhisperModel  # type: ignore
+
+        model = WhisperModel("tiny", device="cuda" if torch.cuda.is_available() else "cpu", compute_type="int8")
+        segments, _info = model.transcribe(rendered_path, beam_size=1)
+        parsed: List[Dict[str, Any]] = []
+        for segment in segments:
+            text = " ".join(str(getattr(segment, "text", "")).split()).strip()
+            if text:
+                parsed.append(
+                    {
+                        "start": float(getattr(segment, "start", 0.0) or 0.0),
+                        "end": float(getattr(segment, "end", 0.0) or 0.0),
+                        "text": text,
+                    }
+                )
+        if parsed:
+            return parsed
+    except Exception:
+        pass
+    try:
+        import whisper  # type: ignore
+
+        model = whisper.load_model("tiny", device="cuda" if torch.cuda.is_available() else "cpu")
+        payload = model.transcribe(rendered_path)
+        segments = payload.get("segments", []) if isinstance(payload, dict) else []
+        parsed = []
+        for segment in segments:
+            text = " ".join(str(segment.get("text", "")).split()).strip()
+            if text:
+                parsed.append(
+                    {
+                        "start": float(segment.get("start", 0.0) or 0.0),
+                        "end": float(segment.get("end", 0.0) or 0.0),
+                        "text": text,
+                    }
+                )
+        if parsed:
+            return parsed
+        text = " ".join(str(payload.get("text", "")).split()).strip() if isinstance(payload, dict) else ""
+        if text:
+            return [{"start": 0.0, "end": 0.0, "text": text}]
+    except Exception:
+        pass
+    return []
+
+
+def _extract_audio_transcript_answer(prompt: str, transcript_text: str) -> str:
+    candidate = _extract_video_transcript_answer(prompt, transcript_text)
+    if candidate:
+        return candidate
+    lowered_prompt = str(prompt or "").lower()
+    rendered = re.sub(r"\s+", " ", str(transcript_text or "")).strip()
+    if not rendered:
+        return ""
+    if "anagram" in lowered_prompt or "spelled" in lowered_prompt:
+        letters = re.findall(r"\b([A-Za-z])\b", rendered)
+        if letters:
+            return "".join(letters)
+    if any(token in lowered_prompt for token in ("what word", "what phrase", "spoken", "audio says", "heard in the clip")):
+        sentences = [part.strip() for part in re.split(r"(?<=[.!?])\s+", rendered) if part.strip()]
+        if sentences:
+            return sentences[0].strip(" .,:;")
+    return ""
+
+
+def _solve_audio_transcription_ops(prompt: str, audio_paths: Sequence[Path]) -> tuple[str, List[str], List[str]]:
+    evidence: List[str] = []
+    provenance: List[str] = []
+    timestamp = _extract_prompt_timestamp_seconds(prompt)
+    for path in audio_paths:
+        try:
+            segments = _audio_transcript_segments(path)
+        except Exception:
+            continue
+        if not segments:
+            continue
+        transcript_text = _transcript_window_text(segments, timestamp) if timestamp is not None else " ".join(
+            str(segment.get("text", "")).strip() for segment in segments if str(segment.get("text", "")).strip()
+        )
+        candidate = _extract_audio_transcript_answer(prompt, transcript_text)
+        if candidate:
+            if timestamp is not None:
+                evidence.append(f"audio transcript window around {timestamp:.0f}s")
+            evidence.append(f"audio transcript answer={candidate}")
+            return (candidate, evidence, [f"audio:{path.name}", "audio:transcript"])
+        evidence.append(f"loaded audio transcript segments={len(segments)} from {path.name}")
+        provenance.append(f"audio:{path.name}")
+    return ("", evidence, provenance)
+
+
 def _solve_video_transcript_ops(prompt: str) -> tuple[str, List[str], List[str]]:
     lowered = str(prompt or "").lower()
     urls = _extract_prompt_urls(prompt)
@@ -4970,6 +5063,29 @@ def _is_video_transcript_prompt(prompt: str) -> bool:
     return "video" in lowered and any(token in lowered for token in ("youtube", "minutes", "seconds", "mark", "what command", "what phrase", "what response"))
 
 
+def _is_audio_transcription_prompt(prompt: str, evidence_files: Sequence[str]) -> bool:
+    lowered = str(prompt or "").lower()
+    has_audio = any(str(name).lower().endswith((".mp3", ".wav", ".m4a", ".ogg", ".flac")) for name in evidence_files)
+    if not has_audio:
+        return False
+    markers = (
+        "audio",
+        "mp3",
+        "wav",
+        "transcript",
+        "spoken",
+        "heard",
+        "recording",
+        "clip",
+        "what word",
+        "what phrase",
+        "response",
+        "letter",
+        "anagram",
+    )
+    return any(marker in lowered for marker in markers)
+
+
 def _is_web_archive_prompt(prompt: str) -> bool:
     lowered = str(prompt or "").lower()
     return "wayback machine" in lowered or "last amendment" in lowered or ("menu" in lowered and any(token in lowered for token in ("no longer", "but not", "earlier", "later")))
@@ -5057,6 +5173,8 @@ def _extract_special_research_plan(prompt: str, evidence_files: Sequence[str]) -
         return {"research_mode": "github_public_artifact_ops"}
     if _is_video_transcript_prompt(prompt):
         return {"research_mode": "video_transcript_ops"}
+    if _is_audio_transcription_prompt(prompt, evidence_files):
+        return {"research_mode": "audio_transcription_ops"}
     if _is_paper_compare_prompt(prompt):
         return {"research_mode": "paper_compare_ops"}
     if _is_public_reference_history_prompt(prompt):
@@ -5138,6 +5256,7 @@ STRUCTURAL_RESEARCH_MODES = {
     "public_record_ops",
     "paper_compare_ops",
     "video_transcript_ops",
+    "audio_transcription_ops",
     "web_archive_ops",
     "image_vision_ops",
     "github_public_artifact_ops",
@@ -5378,6 +5497,10 @@ def plan_question(arg: str, state: Any = None) -> Dict[str, Any]:
     elif research_mode == "video_transcript_ops":
         plan = "load video metadata and transcript evidence, focus on the requested time window or cited moment, then extract the requested phrase, command, number, or attribution"
         ambiguity_score = 0.24
+    elif research_mode == "audio_transcription_ops":
+        target_label = ", ".join(candidate_files[:2]) if candidate_files else (target_file or "the audio evidence")
+        plan = f"transcribe {target_label}, focus on the requested spoken segment or full clip, then extract the requested phrase, response, number, or spelled letters from the transcript"
+        ambiguity_score = 0.22
     elif research_mode == "web_archive_ops":
         plan = "identify the target public page, compare archived snapshots around the cited dates, then extract the removed item, deleted word, or changed text requested by the prompt"
         ambiguity_score = 0.24
@@ -5645,6 +5768,15 @@ def inspect_file(arg: str, state: Any = None) -> Dict[str, Any]:
             f"{unit.get('kind')} {unit.get('index')}: {str(unit.get('text', ''))[:200]}"
             for unit in units[:8]
         )
+    elif file_kind in {"mp3", "wav", "m4a", "ogg", "flac"}:
+        segments = _audio_transcript_segments(path)
+        summary = f"audio transcript segments: {len(segments)}"
+        if segments:
+            preview = [str(segment.get("text", "")).strip() for segment in segments[:3] if str(segment.get("text", "")).strip()]
+            payload["audio_preview"] = preview
+            if preview:
+                summary = f"{summary}; preview: {', '.join(preview[:2])}"
+        text = "\n".join(str(segment.get("text", "")).strip() for segment in segments[:8] if str(segment.get("text", "")).strip())
     else:
         text = path.read_text(encoding="utf-8")
         summary = text[:200]
@@ -5751,6 +5883,21 @@ def solve_question(arg: str, state: Any = None) -> Dict[str, Any]:
             candidate, evidence, answer_provenance = _solve_paper_compare_ops(prompt)
         elif research_mode == "video_transcript_ops":
             candidate, evidence, answer_provenance = _solve_video_transcript_ops(prompt)
+        elif research_mode == "audio_transcription_ops":
+            audio_paths = [
+                path
+                for _, path in existing_paths
+                if path.suffix.lower() in {".mp3", ".wav", ".m4a", ".ogg", ".flac"}
+            ]
+            if not audio_paths:
+                audio_paths = sorted(
+                    [
+                        path
+                        for path in workspace.iterdir()
+                        if path.is_file() and path.suffix.lower() in {".mp3", ".wav", ".m4a", ".ogg", ".flac"}
+                    ]
+                )
+            candidate, evidence, answer_provenance = _solve_audio_transcription_ops(prompt, audio_paths)
         elif research_mode == "web_archive_ops":
             candidate, evidence, answer_provenance = _solve_web_archive_ops(prompt)
         elif research_mode == "image_vision_ops":
