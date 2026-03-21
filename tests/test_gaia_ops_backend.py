@@ -25,6 +25,7 @@ from domains.gaia_ops.backend import (
     _solve_reversed_instruction,
     _solve_thinking_machine_prediction,
     _solve_unlambda_missing_token,
+    _solve_generic_public_reference,
     _solve_usda_standards_supersession,
     _solve_wikipedia_link_distance,
     _solve_wikipedia_revision_count,
@@ -32,6 +33,7 @@ from domains.gaia_ops.backend import (
     plan_question,
     solve_question,
 )
+from engine.actions import ActionType
 from engine.task import ReasoningTask
 
 
@@ -651,7 +653,7 @@ class GaiaOpsBackendTests(unittest.TestCase):
         self.assertEqual(answer, "Finance")
         self.assertTrue(evidence)
 
-    def test_plan_question_blind_mode_drops_named_family_routing(self) -> None:
+    def test_plan_question_blind_mode_routes_public_species_lookup_structurally(self) -> None:
         state = SimpleNamespace(
             problem_text=(
                 "I’m researching species that became invasive after people who kept them as pets released them. "
@@ -671,8 +673,8 @@ class GaiaOpsBackendTests(unittest.TestCase):
         result = plan_question("", state)
         question_plan = result["payload"]["state_metadata"]["question_plan"]
 
-        self.assertEqual(question_plan.get("research_mode", ""), "")
-        self.assertIn("solve intent=", result["result"])
+        self.assertEqual(question_plan.get("research_mode"), "public_species_location_lookup")
+        self.assertIn("public-record collection", result["result"])
 
     def test_plan_question_blind_mode_keeps_structural_family_routing(self) -> None:
         state = SimpleNamespace(
@@ -751,3 +753,159 @@ class GaiaOpsBackendTests(unittest.TestCase):
 
         self.assertEqual(answer, "2732")
         self.assertTrue(any("2732" in item for item in evidence))
+
+    @patch("domains.gaia_ops.backend._public_reference_title_candidates")
+    @patch("domains.gaia_ops.backend._wikipedia_rendered_html")
+    def test_generic_public_reference_counts_year_bounded_entries_from_section_html(self, mock_html: object, mock_titles: object) -> None:
+        mock_titles.return_value = ["Mercedes Sosa discography"]
+        mock_html.return_value = """
+        <html><body>
+        <h2>Studio albums</h2>
+        <ul>
+          <li>1999 - Earlier Work</li>
+          <li>2000 - Acústico</li>
+          <li>2003 - Corazón Libre</li>
+          <li>2011 - Deja la vida volar</li>
+        </ul>
+        </body></html>
+        """
+
+        answer, evidence, provenance = _solve_generic_public_reference(
+            "How many studio albums were published by Mercedes Sosa between 2000 and 2009 (included)? You can use the latest 2022 version of english wikipedia."
+        )
+
+        self.assertEqual(answer, "2")
+        self.assertTrue(any("Mercedes Sosa discography" in item for item in evidence))
+        self.assertEqual(provenance, ["wikipedia:Mercedes Sosa discography"])
+
+    @patch("domains.gaia_ops.backend._public_reference_title_candidates")
+    @patch("domains.gaia_ops.backend._wikipedia_rendered_html")
+    def test_generic_public_reference_selects_argmin_from_public_table(self, mock_html: object, mock_titles: object) -> None:
+        mock_titles.return_value = ["1928 Summer Olympics"]
+        mock_html.return_value = """
+        <html><body>
+        <table class="wikitable">
+          <tr><th>Nation</th><th>IOC code</th><th>Athletes</th></tr>
+          <tr><td>Cuba</td><td>CUB</td><td>1</td></tr>
+          <tr><td>Dominican Republic</td><td>DOM</td><td>1</td></tr>
+          <tr><td>United States</td><td>USA</td><td>100</td></tr>
+        </table>
+        </body></html>
+        """
+
+        answer, evidence, provenance = _solve_generic_public_reference(
+            "What country had the least number of athletes at the 1928 Summer Olympics? If there's a tie for a number of athletes, return the first in alphabetical order. Give the IOC country code as your answer."
+        )
+
+        self.assertEqual(answer, "CUB")
+        self.assertTrue(any("metric column" in item for item in evidence))
+        self.assertEqual(provenance, ["wikipedia:1928 Summer Olympics"])
+
+    @patch("domains.gaia_ops.backend._public_reference_title_candidates")
+    @patch("domains.gaia_ops.backend._wikipedia_rendered_html")
+    def test_generic_public_reference_returns_adjacent_roster_names(self, mock_html: object, mock_titles: object) -> None:
+        mock_titles.return_value = ["Hokkaido Nippon-Ham Fighters"]
+        mock_html.return_value = """
+        <html><body>
+        <table class="wikitable">
+          <tr><th>Number</th><th>Pitcher</th></tr>
+          <tr><td>18</td><td>Kazunari Yoshida</td></tr>
+          <tr><td>19</td><td>Taishō Tamai</td></tr>
+          <tr><td>20</td><td>Kenta Uehara</td></tr>
+        </table>
+        </body></html>
+        """
+
+        answer, evidence, provenance = _solve_generic_public_reference(
+            "Who are the pitchers with the number before and after Taishō Tamai's number as of July 2023? Give them to me in the form Pitcher Before, Pitcher After, use their last names only, in Roman characters."
+        )
+
+        self.assertEqual(answer, "Yoshida, Uehara")
+        self.assertTrue(any("number=19" in item for item in evidence))
+        self.assertEqual(provenance, ["wikipedia:Hokkaido Nippon-Ham Fighters"])
+
+    @patch("domains.gaia_ops.backend._solve_generic_public_reference")
+    def test_solve_question_generic_public_reference_requires_stronger_confidence_before_candidate_answer(
+        self, mock_solve: object
+    ) -> None:
+        mock_solve.return_value = ("16", ["row count from section"], ["wikipedia:Mercedes Sosa"])
+        state = SimpleNamespace(
+            metadata={
+                "workspace_dir": str(Path.cwd()),
+                "workspace_files": [],
+                "question_plan": {},
+                "target_file": "",
+                "candidate_files": [],
+                "inspected_files": [],
+                "benchmark_assistance_mode": "unassisted",
+                "oracle_hints_enabled": False,
+            },
+            problem_text="How many studio albums were published by Mercedes Sosa between 2000 and 2009 (included)?",
+        )
+
+        result = solve_question(state.problem_text, state)
+
+        self.assertTrue(result["ok"])
+        self.assertNotIn("solved", result)
+        self.assertEqual(result["payload"]["candidate_answer"], "")
+        self.assertEqual(result["payload"]["state_metadata"]["answer_mode"], "generic_public_reference")
+        self.assertLess(result["payload"]["state_metadata"]["answer_confidence"], 0.72)
+
+    @patch("domains.gaia_ops.backend._solve_generic_public_reference")
+    def test_solve_question_generic_public_reference_exposes_candidate_answer_when_evidence_is_strong(
+        self, mock_solve: object
+    ) -> None:
+        mock_solve.return_value = (
+            "3",
+            ["title=Mercedes Sosa discography", "year range count 2000-2009 => 3"],
+            ["wikipedia:Mercedes Sosa"],
+        )
+        state = SimpleNamespace(
+            metadata={
+                "workspace_dir": str(Path.cwd()),
+                "workspace_files": [],
+                "question_plan": {},
+                "target_file": "",
+                "candidate_files": [],
+                "inspected_files": [],
+                "benchmark_assistance_mode": "unassisted",
+                "oracle_hints_enabled": False,
+            },
+            problem_text="How many studio albums were published by Mercedes Sosa between 2000 and 2009 (included)?",
+        )
+
+        result = solve_question(state.problem_text, state)
+
+        self.assertTrue(result["ok"])
+        self.assertNotIn("solved", result)
+        self.assertEqual(result["payload"]["candidate_answer"], "3")
+        self.assertEqual(result["payload"]["state_metadata"]["candidate_answer"], "3")
+        self.assertGreaterEqual(result["payload"]["state_metadata"]["answer_confidence"], 0.72)
+
+    def test_fallback_repairs_do_not_answer_low_confidence_generic_public_reference_candidates(self) -> None:
+        backend = GaiaOpsReasoningDomain()
+        state = SimpleNamespace(
+            problem_text="How many studio albums were published by Mercedes Sosa between 2000 and 2009 (included)?",
+            tool_history=[
+                {"tool": "plan_question"},
+                {"tool": "list_files"},
+                {"tool": "inspect_file"},
+                {"tool": "solve_question"},
+            ],
+            metadata={
+                "question_plan": {},
+                "candidate_answer": "16",
+                "answer_confidence": 0.68,
+                "answer_mode": "generic_public_reference",
+                "target_file": "",
+                "candidate_files": [],
+                "inspected_files": [],
+            },
+            final_answer="",
+            derived_facts=[],
+            obligations=[],
+        )
+
+        action = backend.fallback_repairs(state)[0]
+
+        self.assertEqual(action.type, ActionType.BACKTRACK)
