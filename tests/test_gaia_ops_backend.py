@@ -23,6 +23,7 @@ from domains.gaia_ops.backend import (
     _solve_elisa_ec_numbers,
     _solve_github_public_artifact_ops,
     _solve_image_vision_ops,
+    _solve_office_document_ops,
     _solve_ping_pong_choice,
     _solve_paper_numeric_lookup,
     _solve_paper_compare_ops,
@@ -764,6 +765,52 @@ class GaiaOpsBackendTests(unittest.TestCase):
         self.assertEqual(answer, "4")
         self.assertTrue(any("path cells=" in item for item in evidence))
 
+    @patch("domains.gaia_ops.backend._load_office_document_units")
+    def test_office_document_ops_reads_explicit_slide_title(self, mock_units: object) -> None:
+        mock_units.return_value = [
+            {"kind": "slide", "index": 1, "text": "Opening Overview", "source": "deck.pptx"},
+            {"kind": "slide", "index": 2, "text": "Budget Forecast 2024\nRevenue outlook", "source": "deck.pptx"},
+        ]
+
+        answer, evidence = _solve_office_document_ops(
+            "In the attached presentation, what is the title on slide 2?",
+            Path("deck.pptx"),
+        )
+
+        self.assertEqual(answer, "Budget Forecast 2024")
+        self.assertTrue(any("slide 2 title=" in item for item in evidence))
+
+    @patch("domains.gaia_ops.backend._load_office_document_units")
+    def test_office_document_ops_extracts_latest_year_across_units(self, mock_units: object) -> None:
+        mock_units.return_value = [
+            {"kind": "page", "index": 1, "text": "Historical summary 1998 2007", "source": "report.pdf"},
+            {"kind": "page", "index": 2, "text": "Forward plan for 2023 and 2025", "source": "report.pdf"},
+        ]
+
+        answer, evidence = _solve_office_document_ops(
+            "What is the latest chronological year that appears in the attached report?",
+            Path("report.pdf"),
+        )
+
+        self.assertEqual(answer, "2025")
+        self.assertTrue(any("years=" in item for item in evidence))
+
+    @patch("domains.gaia_ops.backend._load_office_document_units")
+    def test_office_document_ops_counts_pages(self, mock_units: object) -> None:
+        mock_units.return_value = [
+            {"kind": "page", "index": 1, "text": "One", "source": "bundle.zip:doc.pdf"},
+            {"kind": "page", "index": 2, "text": "Two", "source": "bundle.zip:doc.pdf"},
+            {"kind": "page", "index": 3, "text": "Three", "source": "bundle.zip:doc.pdf"},
+        ]
+
+        answer, evidence = _solve_office_document_ops(
+            "How many pages are in the attached document bundle?",
+            Path("bundle.zip"),
+        )
+
+        self.assertEqual(answer, "3")
+        self.assertTrue(any("counted units=3" in item for item in evidence))
+
     def test_plan_question_blind_mode_routes_public_species_lookup_structurally(self) -> None:
         state = SimpleNamespace(
             problem_text=(
@@ -953,6 +1000,27 @@ class GaiaOpsBackendTests(unittest.TestCase):
 
         self.assertEqual(question_plan.get("research_mode"), "advanced_spreadsheet_ops")
         self.assertIn("workbook sheets", result["result"])
+
+    def test_plan_question_routes_office_document_ops_structurally(self) -> None:
+        state = SimpleNamespace(
+            problem_text=(
+                "In the attached presentation, what is the title on slide 2?"
+                "\nWorkspace files:\n- deck.pptx"
+            ),
+            metadata={
+                "workspace_files": ["deck.pptx"],
+                "allow_named_family_routing": False,
+                "blind_structural_mode": True,
+                "target_file": "deck.pptx",
+                "candidate_files": ["deck.pptx"],
+            },
+        )
+
+        result = plan_question("", state)
+        question_plan = result["payload"]["state_metadata"]["question_plan"]
+
+        self.assertEqual(question_plan.get("research_mode"), "office_document_ops")
+        self.assertIn("document units", result["result"])
 
     def test_plan_question_routes_github_public_artifact_ops_structurally(self) -> None:
         state = SimpleNamespace(

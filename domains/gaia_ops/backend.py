@@ -2136,6 +2136,165 @@ def _solve_advanced_spreadsheet_ops(prompt: str, path: Path) -> tuple[str, List[
     return ("", [])
 
 
+def _docx_units_from_bytes(payload: bytes, *, source: str) -> List[Dict[str, Any]]:
+    ns = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
+    units: List[Dict[str, Any]] = []
+    with zipfile.ZipFile(io.BytesIO(payload)) as archive:
+        if "word/document.xml" not in archive.namelist():
+            return []
+        root = ET.fromstring(archive.read("word/document.xml"))
+    for index, paragraph in enumerate(root.findall(".//w:body/w:p", ns), start=1):
+        text = " ".join(
+            str(node.text or "").strip()
+            for node in paragraph.findall(".//w:t", ns)
+            if str(node.text or "").strip()
+        ).strip()
+        if text:
+            units.append({"kind": "paragraph", "index": index, "text": text, "source": source})
+    return units
+
+
+def _pptx_units_from_bytes(payload: bytes, *, source: str) -> List[Dict[str, Any]]:
+    ns = {
+        "a": "http://schemas.openxmlformats.org/drawingml/2006/main",
+        "p": "http://schemas.openxmlformats.org/presentationml/2006/main",
+    }
+    units: List[Dict[str, Any]] = []
+    with zipfile.ZipFile(io.BytesIO(payload)) as archive:
+        slide_names = sorted(name for name in archive.namelist() if re.fullmatch(r"ppt/slides/slide\d+\.xml", name))
+        for index, name in enumerate(slide_names, start=1):
+            root = ET.fromstring(archive.read(name))
+            text = " ".join(
+                str(node.text or "").strip()
+                for node in root.findall(".//a:t", ns)
+                if str(node.text or "").strip()
+            ).strip()
+            if text:
+                units.append({"kind": "slide", "index": index, "text": text, "source": source})
+    return units
+
+
+def _pdf_units_from_bytes(payload: bytes, *, source: str) -> List[Dict[str, Any]]:
+    units: List[Dict[str, Any]] = []
+    reader = PdfReader(io.BytesIO(payload))
+    for index, page in enumerate(reader.pages, start=1):
+        text = " ".join((page.extract_text() or "").split()).strip()
+        if text:
+            units.append({"kind": "page", "index": index, "text": text, "source": source})
+    return units
+
+
+def _zip_embedded_document_units(payload: bytes, *, source: str) -> List[Dict[str, Any]]:
+    units: List[Dict[str, Any]] = []
+    with zipfile.ZipFile(io.BytesIO(payload)) as archive:
+        for name in sorted(archive.namelist()):
+            lowered = name.lower()
+            if lowered.endswith("/"):
+                continue
+            try:
+                data = archive.read(name)
+            except Exception:
+                continue
+            if lowered.endswith(".docx"):
+                units.extend(_docx_units_from_bytes(data, source=f"{source}:{name}"))
+            elif lowered.endswith(".pptx"):
+                units.extend(_pptx_units_from_bytes(data, source=f"{source}:{name}"))
+            elif lowered.endswith(".pdf"):
+                try:
+                    units.extend(_pdf_units_from_bytes(data, source=f"{source}:{name}"))
+                except Exception:
+                    continue
+            elif lowered.endswith((".txt", ".md", ".csv")):
+                try:
+                    text = data.decode("utf-8")
+                except Exception:
+                    continue
+                rendered = " ".join(text.split()).strip()
+                if rendered:
+                    units.append({"kind": "embedded_text", "index": len(units) + 1, "text": rendered, "source": f"{source}:{name}"})
+    return units
+
+
+def _load_office_document_units(path: Path) -> List[Dict[str, Any]]:
+    suffix = path.suffix.lower()
+    payload = path.read_bytes()
+    if suffix == ".docx":
+        return _docx_units_from_bytes(payload, source=path.name)
+    if suffix == ".pptx":
+        return _pptx_units_from_bytes(payload, source=path.name)
+    if suffix == ".pdf":
+        return _pdf_units_from_bytes(payload, source=path.name)
+    if suffix == ".zip":
+        return _zip_embedded_document_units(payload, source=path.name)
+    return []
+
+
+def _office_unit_title(text: str) -> str:
+    for line in re.split(r"[\r\n]+", str(text or "")):
+        rendered = " ".join(line.split()).strip(" -:\t")
+        if rendered:
+            return rendered
+    return " ".join(str(text or "").split())[:120].strip()
+
+
+def _solve_office_document_ops(prompt: str, path: Path) -> tuple[str, List[str]]:
+    lowered = str(prompt or "").lower()
+    units = _load_office_document_units(path)
+    if not units:
+        return ("", [])
+    evidence: List[str] = [f"document units={len(units)} source={path.name}"]
+
+    if ("how many slides" in lowered or "how many pages" in lowered or "how many sections" in lowered) and units:
+        return (str(len(units)), evidence + [f"counted units={len(units)}"])
+
+    explicit_match = re.search(r"\b(slide|page|paragraph)\s+(\d+)\b", prompt or "", flags=re.IGNORECASE)
+    if explicit_match:
+        target_index = int(explicit_match.group(2))
+        target_kind = explicit_match.group(1).lower()
+        matching = [unit for unit in units if int(unit.get("index", 0)) == target_index and str(unit.get("kind", "")).lower() in {target_kind, "embedded_text"}]
+        if not matching and 0 < target_index <= len(units):
+            matching = [units[target_index - 1]]
+        if matching:
+            unit = matching[0]
+            if any(token in lowered for token in ("title", "heading", "first line")):
+                title = _office_unit_title(str(unit.get("text", "")))
+                if title:
+                    return (title, evidence + [f"{unit.get('kind')} {target_index} title={title}"])
+            years = [int(value) for value in re.findall(r"\b(1[89]\d{2}|20\d{2})\b", str(unit.get("text", "")))]
+            if years and "year" in lowered:
+                year = max(years)
+                return (str(year), evidence + [f"{unit.get('kind')} {target_index} years={sorted(set(years))}"])
+            title = _office_unit_title(str(unit.get("text", "")))
+            if title:
+                return (title, evidence + [f"{unit.get('kind')} {target_index} title={title}"])
+
+    if any(token in lowered for token in ("first title", "first heading", "opening title", "first slide", "first page")):
+        title = _office_unit_title(str(units[0].get("text", "")))
+        if title:
+            return (title, evidence + [f"first unit title={title}"])
+
+    if any(token in lowered for token in ("latest year", "latest chronological year", "what year", "date written")):
+        years = [int(value) for unit in units for value in re.findall(r"\b(1[89]\d{2}|20\d{2})\b", str(unit.get("text", "")))]
+        if years:
+            year = max(years)
+            return (str(year), evidence + [f"years={sorted(set(years))}"])
+
+    quoted = re.findall(r"[\"“]([^\"”]+)[\"”]", prompt or "")
+    if quoted:
+        target = quoted[0].strip().lower()
+        for unit in units:
+            if target and target in str(unit.get("text", "")).lower():
+                title = _office_unit_title(str(unit.get("text", "")))
+                if title:
+                    return (title, evidence + [f"matched quoted text in {unit.get('kind')} {unit.get('index')}"])
+
+    for unit in units:
+        title = _office_unit_title(str(unit.get("text", "")))
+        if title:
+            return (title, evidence + [f"fallback unit={unit.get('kind')} {unit.get('index')}"])
+    return ("", evidence)
+
+
 def _parse_numeric_value(text: str) -> float | None:
     rendered = str(text or "").strip().replace(",", "")
     if not rendered:
@@ -4852,6 +5011,29 @@ def _is_advanced_spreadsheet_prompt(prompt: str, evidence_files: Sequence[str]) 
     return any(marker in lowered for marker in markers)
 
 
+def _is_office_document_prompt(prompt: str, evidence_files: Sequence[str]) -> bool:
+    lowered = str(prompt or "").lower()
+    has_office = any(str(name).lower().endswith((".docx", ".pptx", ".pdf", ".zip")) for name in evidence_files)
+    if not has_office:
+        return False
+    markers = (
+        "document",
+        "presentation",
+        "slide",
+        "slides",
+        "page",
+        "pages",
+        "heading",
+        "title",
+        "latest year",
+        "latest chronological year",
+        "zip",
+        "archive",
+        "first line",
+    )
+    return any(marker in lowered for marker in markers)
+
+
 def _is_github_public_artifact_prompt(prompt: str) -> bool:
     lowered = str(prompt or "").lower()
     if "github" not in lowered and "opencv" not in lowered and "mask-rcnn" not in lowered:
@@ -4921,6 +5103,8 @@ def _extract_special_research_plan(prompt: str, evidence_files: Sequence[str]) -
         return {"research_mode": "citation_quote_match"}
     if "support was added for the mask-rcnn model" in lowered and "former chinese head of government" in lowered:
         return {"research_mode": "github_contributor_entity_match"}
+    if _is_office_document_prompt(prompt, evidence_files):
+        return {"research_mode": "office_document_ops"}
     if _is_advanced_spreadsheet_prompt(prompt, evidence_files):
         return {"research_mode": "advanced_spreadsheet_ops"}
     if evidence_files and any(str(name).lower().endswith((".xlsx", ".xlsm", ".xls")) for name in evidence_files):
@@ -4981,6 +5165,7 @@ STRUCTURAL_RESEARCH_MODES = {
     "arxiv_ps_listing_count",
     "citation_quote_match",
     "github_contributor_entity_match",
+    "office_document_ops",
     "advanced_spreadsheet_ops",
     "spreadsheet_lookup",
     "text_interval_cover",
@@ -5272,6 +5457,10 @@ def plan_question(arg: str, state: Any = None) -> Dict[str, Any]:
     elif research_mode == "github_contributor_entity_match":
         plan = "find the relevant GitHub change, identify the contributor, compare that name against the referenced public-figure roster, then return the shared match"
         ambiguity_score = 0.18
+    elif research_mode == "office_document_ops":
+        target_label = ", ".join(candidate_files[:2]) if candidate_files else (target_file or "the office document bundle")
+        plan = f"inspect {target_label}, normalize pages, slides, or embedded files into document units, then apply the requested heading, year, or explicit page/slide operator"
+        ambiguity_score = 0.18
     elif research_mode == "advanced_spreadsheet_ops":
         target_label = ", ".join(candidate_files[:2]) if candidate_files else (target_file or "the workbook")
         plan = f"inspect {target_label}, normalize workbook sheets, cells, formulas, and fills, then apply the requested cross-sheet, cell, or path operator"
@@ -5443,6 +5632,19 @@ def inspect_file(arg: str, state: Any = None) -> Dict[str, Any]:
             if preview:
                 summary = f"{summary}; preview: {', '.join(preview)}"
         text = "\n".join(" | ".join(cell for cell in row if cell) for row in rows[:12])
+    elif file_kind in {"pdf", "docx", "pptx", "zip"}:
+        units = _load_office_document_units(path)
+        summary = f"{file_kind} units: {len(units)}"
+        if units:
+            preview = [_office_unit_title(str(unit.get("text", ""))) for unit in units[:3]]
+            preview = [item for item in preview if item]
+            payload["document_preview"] = preview
+            if preview:
+                summary = f"{summary}; preview: {', '.join(preview[:3])}"
+        text = "\n".join(
+            f"{unit.get('kind')} {unit.get('index')}: {str(unit.get('text', ''))[:200]}"
+            for unit in units[:8]
+        )
     else:
         text = path.read_text(encoding="utf-8")
         summary = text[:200]
@@ -5640,6 +5842,10 @@ def solve_question(arg: str, state: Any = None) -> Dict[str, Any]:
         elif research_mode == "github_contributor_entity_match":
             candidate, evidence = _solve_github_contributor_name_match(prompt)
             answer_provenance = ["github:contributors", "reference:former-chinese-heads-of-government"]
+        elif research_mode == "office_document_ops" and existing_paths:
+            resolved_target, path = existing_paths[0]
+            candidate, evidence = _solve_office_document_ops(prompt, path)
+            answer_provenance = [f"document:{resolved_target}"]
         elif research_mode == "advanced_spreadsheet_ops" and existing_paths:
             resolved_target, path = existing_paths[0]
             candidate, evidence = _solve_advanced_spreadsheet_ops(prompt, path)
