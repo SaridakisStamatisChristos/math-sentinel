@@ -25,6 +25,9 @@ def ensure_benchmark_config_defaults(cfg: Dict[str, Any]) -> Dict[str, Any]:
     benchmark_cfg.setdefault("fail_on_integrity_violation", True)
     benchmark_cfg.setdefault("holdout_enabled", True)
     benchmark_cfg.setdefault("claim_mode", False)
+    benchmark_cfg.setdefault("blind_structural_mode", False)
+    benchmark_cfg.setdefault("allow_named_family_routing", not bool(benchmark_cfg.get("blind_structural_mode", False)))
+    benchmark_cfg.setdefault("allow_errata_overrides", not bool(benchmark_cfg.get("blind_structural_mode", False)))
     return cfg
 
 

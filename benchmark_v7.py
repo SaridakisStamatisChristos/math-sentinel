@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
+from pathlib import Path
 from typing import Any, Dict
 
 from benchmarks.ablations import resolve_benchmark_ablations
@@ -82,7 +83,8 @@ def main() -> None:
     targets = resolve_suite_targets(args.suite, args.backends)
     campaign_mode = bool(args.profile or args.ablations or args.repeat > 1 or args.campaign_name)
     auto_profile = ""
-    if not campaign_mode and any(kind in {"public", "manifest", "official"} for kind, _ in targets):
+    config_path = str(Path(args.config).as_posix())
+    if not campaign_mode and config_path == "config/default.yaml" and any(kind in {"public", "manifest", "official"} for kind, _ in targets):
         auto_profile = default_campaign_profile_for_suite(args.suite)
     if auto_profile:
         cfg = apply_benchmark_profile(cfg, resolve_benchmark_profiles(auto_profile, args.profiles_config)[0])

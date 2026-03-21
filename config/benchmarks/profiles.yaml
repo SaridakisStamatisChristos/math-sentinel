@@ -7,6 +7,14 @@ profiles:
     metadata:
       scale: 1.5b
       purpose: public_claim_no_repairs
+  public_claim_blind_structural:
+    description: Blind structural public-claim profile that disables named GAIA family routing and errata overrides so only reusable structural solvers contribute.
+    config: profile_public_claim_blind_structural.yaml
+    suites: [public_smoke, public_medium]
+    tags: [public, strict, unassisted, claim, blind_structural, hf, qwen, local]
+    metadata:
+      scale: 1.5b
+      purpose: public_claim_blind_structural
   public_claim_coder_local_1p5b:
     description: SWE-bench-style public-claim profile using the local Qwen Coder 1.5B runtime with no repairs, no guided rollout, and no retrieval.
     config: profile_public_claim_coder_local_1p5b.yaml

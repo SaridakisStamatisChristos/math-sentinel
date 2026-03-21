@@ -29,6 +29,7 @@ from domains.gaia_ops.backend import (
     _solve_wikipedia_link_distance,
     _solve_wikipedia_revision_count,
     _solve_youtube_bird_species_count,
+    plan_question,
     solve_question,
 )
 from engine.task import ReasoningTask
@@ -649,6 +650,76 @@ class GaiaOpsBackendTests(unittest.TestCase):
 
         self.assertEqual(answer, "Finance")
         self.assertTrue(evidence)
+
+    def test_plan_question_blind_mode_drops_named_family_routing(self) -> None:
+        state = SimpleNamespace(
+            problem_text=(
+                "I’m researching species that became invasive after people who kept them as pets released them. "
+                "There’s a certain species of fish that was popularized as a pet by being the main character of the movie Finding Nemo. "
+                "According to the USGS, where was this fish found as a nonnative species, before the year 2020?"
+                "\nWorkspace files:\n- none"
+            ),
+            metadata={
+                "workspace_files": [],
+                "allow_named_family_routing": False,
+                "blind_structural_mode": True,
+                "target_file": "",
+                "candidate_files": [],
+            },
+        )
+
+        result = plan_question("", state)
+        question_plan = result["payload"]["state_metadata"]["question_plan"]
+
+        self.assertEqual(question_plan.get("research_mode", ""), "")
+        self.assertIn("solve intent=", result["result"])
+
+    def test_plan_question_blind_mode_keeps_structural_family_routing(self) -> None:
+        state = SimpleNamespace(
+            problem_text=(
+                "How many edits were made to the Wikipedia page on Antidisestablishmentarianism from its inception until June 2023?"
+                "\nWorkspace files:\n- none"
+            ),
+            metadata={
+                "workspace_files": [],
+                "allow_named_family_routing": False,
+                "blind_structural_mode": True,
+                "target_file": "",
+                "candidate_files": [],
+            },
+        )
+
+        result = plan_question("", state)
+        question_plan = result["payload"]["state_metadata"]["question_plan"]
+
+        self.assertEqual(question_plan.get("research_mode"), "wikipedia_revision_count")
+
+    @patch("domains.gaia_ops.backend._solve_orcid_average_from_jsonld")
+    def test_solve_question_blind_mode_disables_erratum_override(self, mock_orcid_solver: object) -> None:
+        workspace = Path(".tmp-tests") / "gaia-blind-erratum"
+        workspace.mkdir(parents=True, exist_ok=True)
+        jsonld_path = workspace / "bec74516-02fc-48dc-b202-55e78d0e17cf.jsonld"
+        jsonld_path.write_text("{}", encoding="utf-8")
+        mock_orcid_solver.return_value = ("17", ["mock average=17"])
+
+        state = SimpleNamespace(
+            task_id="bec74516-02fc-48dc-b202-55e78d0e17cf",
+            problem_text="What is the average number of pre-2020 works on the open researcher and contributor identification pages of the people whose identification is in this file?",
+            metadata={
+                "workspace_dir": str(workspace),
+                "workspace_files": [jsonld_path.name],
+                "question_plan": {"research_mode": "orcid_jsonld_average"},
+                "candidate_files": [jsonld_path.name],
+                "benchmark_assistance_mode": "unassisted",
+                "allow_errata_overrides": False,
+            },
+        )
+
+        result = solve_question("", state)
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["answer"], "17")
+        self.assertNotIn("benchmark:gaia-errata", result["payload"]["state_metadata"]["answer_provenance"])
 
     @patch("domains.gaia_ops.backend._wikipedia_page_links")
     def test_wikipedia_link_distance_solver_uses_graph_distance(self, mock_links: object) -> None:

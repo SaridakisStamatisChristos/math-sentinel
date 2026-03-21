@@ -110,6 +110,17 @@ search:
   transposition_capacity: 8192
   value_weight: 0.35
   novelty_weight: 0.08
+  prompt_compaction: true
+  prompt_problem_chars: 720
+  prompt_fact_limit: 4
+  prompt_subgoal_limit: 3
+  prompt_obligation_limit: 4
+  prompt_evidence_limit: 4
+  prompt_tool_limit: 3
+  prompt_action_limit: 2
+  prompt_file_limit: 5
+  prompt_retrieval_item_limit: 2
+  prompt_text_item_chars: 120
 
 memory:
   replay_capacity: 5000

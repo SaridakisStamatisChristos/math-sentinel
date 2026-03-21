@@ -1,0 +1,20 @@
+extends: profile_public_claim_no_repairs.yaml
+
+benchmark:
+  report_lane: claim_blind_structural
+  blind_structural_mode: true
+  allow_named_family_routing: false
+  allow_errata_overrides: false
+
+search:
+  prompt_compaction: true
+  prompt_problem_chars: 420
+  prompt_fact_limit: 3
+  prompt_subgoal_limit: 2
+  prompt_obligation_limit: 3
+  prompt_evidence_limit: 3
+  prompt_tool_limit: 1
+  prompt_action_limit: 1
+  prompt_file_limit: 4
+  prompt_retrieval_item_limit: 2
+  prompt_text_item_chars: 80

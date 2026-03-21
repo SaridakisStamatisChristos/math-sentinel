@@ -14,6 +14,7 @@ class BenchmarkProfileTests(unittest.TestCase):
 
         self.assertIn("smoke_tiny", profiles)
         self.assertIn("public_claim_no_repairs", profiles)
+        self.assertIn("public_claim_blind_structural", profiles)
         self.assertIn("public_claim_coder_local_1p5b", profiles)
         self.assertIn("public_unassisted_strict", profiles)
         self.assertIn("qwen_coder_flagship_32b", profiles)
@@ -93,6 +94,7 @@ class BenchmarkProfileTests(unittest.TestCase):
         )
 
     def test_strict_and_search_assisted_public_profiles_diverge_on_guided_rollout(self) -> None:
+        blind_cfg = load_runtime_config("config/benchmarks/profile_public_claim_blind_structural.yaml", search_config_path="")
         coder_claim_cfg = load_runtime_config("config/benchmarks/profile_public_claim_coder_local_1p5b.yaml", search_config_path="")
         claim_cfg = load_runtime_config("config/benchmarks/profile_public_claim_no_repairs.yaml", search_config_path="")
         strict_cfg = load_runtime_config("config/benchmarks/profile_public_unassisted_strict.yaml", search_config_path="")
@@ -106,6 +108,13 @@ class BenchmarkProfileTests(unittest.TestCase):
         self.assertFalse(claim_cfg["search"]["enable_fallback_repairs"])
         self.assertFalse(claim_cfg["search"]["guided_fallback_rollout"])
         self.assertEqual(claim_cfg["memory"]["retrieval_mode"], "none")
+        self.assertEqual(blind_cfg["benchmark"]["report_lane"], "claim_blind_structural")
+        self.assertTrue(blind_cfg["benchmark"]["blind_structural_mode"])
+        self.assertFalse(blind_cfg["benchmark"]["allow_named_family_routing"])
+        self.assertFalse(blind_cfg["benchmark"]["allow_errata_overrides"])
+        self.assertTrue(blind_cfg["search"]["prompt_compaction"])
+        self.assertEqual(blind_cfg["search"]["prompt_problem_chars"], 420)
+        self.assertEqual(blind_cfg["search"]["prompt_tool_limit"], 1)
         self.assertEqual(coder_claim_cfg["model"]["backbone"], "models/Qwen2.5-Coder-1.5B-Instruct")
         self.assertEqual(coder_claim_cfg["benchmark"]["report_lane"], "claim_no_repairs_coder")
         self.assertEqual(coder_claim_cfg["search"]["beam_width"], 8)

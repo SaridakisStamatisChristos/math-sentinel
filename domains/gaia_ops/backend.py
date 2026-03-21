@@ -2987,29 +2987,19 @@ def _extract_special_research_plan(prompt: str, evidence_files: Sequence[str]) -
     return {}
 
 
-DIRECT_RESEARCH_MODES = {
+STRUCTURAL_RESEARCH_MODES = {
     "pdb_first_atom_distance",
-    "benjerry_graveyard_background_rhyme",
     "orcid_jsonld_average",
     "pubchem_food_additive_transformations",
     "colored_number_statistics",
     "wikipedia_capital_distance",
-    "esther_prime_minister",
     "density_removal",
     "author_prior_publication_lookup",
     "quoted_paper_lookup",
     "elisa_ec_number_lookup",
     "usda_standards_supersession",
     "script_scene_heading",
-    "youtube_bird_species_count",
-    "thinking_machine_prediction",
-    "usgs_finding_nemo_zip",
-    "nature_2020_significance",
     "unlambda_missing_token",
-    "moon_kipchoge",
-    "wikipedia_discography_count",
-    "museum_science_advances_crossref",
-    "github_issue_timeline",
     "ping_pong_probability",
     "literal_word_instruction",
     "reversed_instruction",
@@ -3017,10 +3007,56 @@ DIRECT_RESEARCH_MODES = {
     "wikipedia_link_distance",
     "arxiv_ps_listing_count",
     "citation_quote_match",
-    "github_contributor_name_match",
     "spreadsheet_lookup",
     "text_interval_cover",
 }
+
+
+NAMED_RESEARCH_MODES = {
+    "benjerry_graveyard_background_rhyme",
+    "esther_prime_minister",
+    "youtube_bird_species_count",
+    "thinking_machine_prediction",
+    "usgs_finding_nemo_zip",
+    "nature_2020_significance",
+    "moon_kipchoge",
+    "wikipedia_discography_count",
+    "museum_science_advances_crossref",
+    "github_issue_timeline",
+    "github_contributor_name_match",
+}
+
+
+DIRECT_RESEARCH_MODES = STRUCTURAL_RESEARCH_MODES | NAMED_RESEARCH_MODES
+
+
+STRUCTURAL_ROUTING_MODES = set(STRUCTURAL_RESEARCH_MODES) | {"arxiv_cross_reference"}
+
+
+def _state_flag(state: Any, key: str, default: bool) -> bool:
+    metadata = getattr(state, "metadata", {})
+    if isinstance(metadata, dict) and key in metadata:
+        return bool(metadata.get(key))
+    return default
+
+
+def _allow_named_family_routing(state: Any) -> bool:
+    return _state_flag(state, "allow_named_family_routing", True)
+
+
+def _allow_errata_overrides(state: Any) -> bool:
+    return _state_flag(state, "allow_errata_overrides", True)
+
+
+def _filter_research_plan_for_state(plan: Dict[str, Any], state: Any) -> Dict[str, Any]:
+    if not plan:
+        return {}
+    if _allow_named_family_routing(state):
+        return dict(plan)
+    mode = str(plan.get("research_mode", "")).strip()
+    if mode in STRUCTURAL_ROUTING_MODES:
+        return dict(plan)
+    return {}
 
 
 def _arxiv_search(query: str, *, start_date: str = "", end_date: str = "", category: str = "", max_results: int = 5) -> List[Dict[str, Any]]:
@@ -3173,7 +3209,7 @@ def plan_question(arg: str, state: Any = None) -> Dict[str, Any]:
     prompt = str(getattr(state, "problem_text", "")).split("\nWorkspace files:\n", 1)[0].strip()
     files = list(state.metadata.get("workspace_files", []))
     evidence_files = [name for name in files if name != "TASK.md"]
-    research_plan = _extract_special_research_plan(prompt, evidence_files)
+    research_plan = _filter_research_plan_for_state(_extract_special_research_plan(prompt, evidence_files), state)
     target_file = _infer_target_file(prompt, files)
     candidate_files = _resolve_target_files(prompt, files, target_file)
     intent = _infer_question_intent(prompt)
@@ -3460,7 +3496,7 @@ def solve_question(arg: str, state: Any = None) -> Dict[str, Any]:
     if not candidate_files and target_file:
         candidate_files = [target_file]
     existing_paths = [(name, workspace / name) for name in candidate_files if (workspace / name).exists()]
-    erratum = _known_gaia_erratum(state)
+    erratum = _known_gaia_erratum(state) if _allow_errata_overrides(state) else {}
     if erratum:
         candidate = str(erratum.get("answer", "")).strip()
         evidence = [str(item) for item in erratum.get("evidence", []) if str(item).strip()]
@@ -3750,6 +3786,7 @@ class GaiaOpsReasoningDomain:
         self._train_cases = _private_train_cases()
         self._benchmark_cases = list(gaia_smoke_suite().cases) + list(gaia_medium_suite().cases)
         self._all_cases = self._train_cases + self._benchmark_cases
+        search_cfg = dict((runtime_config or {}).get("search", {}))
         runtime_cfg = dict((runtime_config or {}).get("runtime", {}))
         benchmark_cfg = dict((runtime_config or {}).get("benchmark", {}))
         self.deterministic_runtime = bool(runtime_cfg.get("deterministic", False))
@@ -3757,6 +3794,22 @@ class GaiaOpsReasoningDomain:
         self.oracle_hints_enabled = bool(benchmark_cfg.get("oracle_hints_enabled", False))
         self.holdout_enabled = bool(benchmark_cfg.get("holdout_enabled", True))
         self.claim_mode = bool(benchmark_cfg.get("claim_mode", False))
+        self.blind_structural_mode = bool(benchmark_cfg.get("blind_structural_mode", False))
+        self.allow_named_family_routing = bool(benchmark_cfg.get("allow_named_family_routing", not self.blind_structural_mode))
+        self.allow_errata_overrides = bool(benchmark_cfg.get("allow_errata_overrides", not self.blind_structural_mode))
+        self.prompt_compaction = {
+            "enabled": bool(search_cfg.get("prompt_compaction", True)),
+            "problem_chars": int(search_cfg.get("prompt_problem_chars", 720)),
+            "fact_limit": int(search_cfg.get("prompt_fact_limit", 4)),
+            "subgoal_limit": int(search_cfg.get("prompt_subgoal_limit", 3)),
+            "obligation_limit": int(search_cfg.get("prompt_obligation_limit", 4)),
+            "evidence_limit": int(search_cfg.get("prompt_evidence_limit", 4)),
+            "tool_limit": int(search_cfg.get("prompt_tool_limit", 3)),
+            "action_limit": int(search_cfg.get("prompt_action_limit", 2)),
+            "file_limit": int(search_cfg.get("prompt_file_limit", 5)),
+            "retrieval_item_limit": int(search_cfg.get("prompt_retrieval_item_limit", 2)),
+            "text_item_chars": int(search_cfg.get("prompt_text_item_chars", 120)),
+        }
 
     def _match_manual_case(self, prompt: str, domain: str) -> Optional[ReasoningTask]:
         text = f"{domain}\n{prompt}".lower()
@@ -3795,6 +3848,10 @@ class GaiaOpsReasoningDomain:
         metadata["benchmark_assistance_mode"] = self.assistance_mode
         metadata["oracle_hints_enabled"] = self.oracle_hints_enabled
         metadata["claim_mode"] = self.claim_mode
+        metadata["blind_structural_mode"] = self.blind_structural_mode
+        metadata["allow_named_family_routing"] = self.allow_named_family_routing
+        metadata["allow_errata_overrides"] = self.allow_errata_overrides
+        metadata["prompt_compaction"] = dict(self.prompt_compaction)
         metadata["benchmark_suite"] = str(raw_metadata.get("benchmark_suite", metadata.get("benchmark_suite", "")))
         metadata["holdout_group"] = str(raw_metadata.get("holdout_group", metadata.get("holdout_group", "")))
         metadata["source"] = str(raw_metadata.get("source", metadata.get("source", "")))
