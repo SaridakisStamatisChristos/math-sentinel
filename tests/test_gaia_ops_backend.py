@@ -31,6 +31,7 @@ from domains.gaia_ops.backend import (
     _solve_pubchem_food_additive_transformations,
     _solve_public_record_ops,
     _solve_public_reference_history_ops,
+    _solve_public_scalar_transform_ops,
     _solve_reversed_instruction,
     _solve_thinking_machine_prediction,
     _solve_unlambda_missing_token,
@@ -859,6 +860,61 @@ class GaiaOpsBackendTests(unittest.TestCase):
         self.assertTrue(any("audio transcript answer=Indeed it is" in item for item in evidence))
         self.assertEqual(provenance, ["audio:dialogue.m4a", "audio:transcript"])
 
+    @patch("domains.gaia_ops.backend._search_documents_for_title")
+    def test_public_scalar_transform_ops_computes_difference(self, mock_search_title: object) -> None:
+        def _search_side_effect(title: str, *args: object, **kwargs: object) -> list[dict[str, str]]:
+            if title == "Alpha City":
+                return [{"title": title, "snippet": "", "url": "https://example.com/alpha", "text": "Alpha City population 120"}]
+            return [{"title": title, "snippet": "", "url": "https://example.com/beta", "text": "Beta City population 90"}]
+
+        mock_search_title.side_effect = _search_side_effect
+
+        answer, evidence, provenance = _solve_public_scalar_transform_ops(
+            'What is the difference between the populations of "Alpha City" and "Beta City" according to public reference sources?'
+        )
+
+        self.assertEqual(answer, "30")
+        self.assertTrue(any("difference between Alpha City=120 and Beta City=90 => 30" in item for item in evidence))
+        self.assertEqual(len(provenance), 2)
+
+    @patch("domains.gaia_ops.backend._search_documents_for_title")
+    def test_public_scalar_transform_ops_computes_percentage_ratio(self, mock_search_title: object) -> None:
+        def _search_side_effect(title: str, *args: object, **kwargs: object) -> list[dict[str, str]]:
+            if title == "Alpha City":
+                return [{"title": title, "snippet": "", "url": "https://example.com/alpha", "text": "Alpha City population 200"}]
+            return [{"title": title, "snippet": "", "url": "https://example.com/beta", "text": "Beta City population 50"}]
+
+        mock_search_title.side_effect = _search_side_effect
+
+        answer, evidence, provenance = _solve_public_scalar_transform_ops(
+            'What integer-rounded percentage of the population of "Alpha City" is the population of "Beta City"?'
+        )
+
+        self.assertEqual(answer, "25")
+        self.assertTrue(any("percentage Beta City=50 / Alpha City=200 => 25" in item for item in evidence))
+        self.assertEqual(len(provenance), 2)
+
+    @patch("domains.gaia_ops.backend._search_documents_for_title")
+    def test_public_scalar_transform_ops_computes_average(self, mock_search_title: object) -> None:
+        def _search_side_effect(title: str, *args: object, **kwargs: object) -> list[dict[str, str]]:
+            mapping = {
+                "Peak Alpha": 100.0,
+                "Peak Beta": 200.0,
+                "Peak Gamma": 300.0,
+            }
+            value = mapping[title]
+            return [{"title": title, "snippet": "", "url": f"https://example.com/{title}", "text": f"{title} elevation {value}"}]
+
+        mock_search_title.side_effect = _search_side_effect
+
+        answer, evidence, provenance = _solve_public_scalar_transform_ops(
+            'What is the average elevation of "Peak Alpha", "Peak Beta", and "Peak Gamma" according to public reference sources?'
+        )
+
+        self.assertEqual(answer, "200")
+        self.assertTrue(any("average of 3 values => 200" in item for item in evidence))
+        self.assertEqual(len(provenance), 3)
+
     def test_plan_question_blind_mode_routes_public_species_lookup_structurally(self) -> None:
         state = SimpleNamespace(
             problem_text=(
@@ -1090,6 +1146,27 @@ class GaiaOpsBackendTests(unittest.TestCase):
 
         self.assertEqual(question_plan.get("research_mode"), "audio_transcription_ops")
         self.assertIn("transcribe", result["result"])
+
+    def test_plan_question_routes_public_scalar_transform_ops_structurally(self) -> None:
+        state = SimpleNamespace(
+            problem_text=(
+                'What is the difference between the populations of "Alpha City" and "Beta City" according to public reference sources?'
+                "\nWorkspace files:\n- none"
+            ),
+            metadata={
+                "workspace_files": [],
+                "allow_named_family_routing": False,
+                "blind_structural_mode": True,
+                "target_file": "",
+                "candidate_files": [],
+            },
+        )
+
+        result = plan_question("", state)
+        question_plan = result["payload"]["state_metadata"]["question_plan"]
+
+        self.assertEqual(question_plan.get("research_mode"), "public_scalar_transform_ops")
+        self.assertIn("scalar values", result["result"])
 
     def test_plan_question_routes_github_public_artifact_ops_structurally(self) -> None:
         state = SimpleNamespace(

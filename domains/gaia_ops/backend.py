@@ -879,6 +879,178 @@ def _solve_public_reference_year_count(prompt: str, titles: Sequence[str]) -> tu
     return ("", evidence)
 
 
+def _public_scalar_query_candidates(prompt: str) -> List[str]:
+    candidates: List[str] = []
+    for value in _extract_quoted_titles(prompt) + _extract_public_reference_entities(prompt):
+        rendered = " ".join(str(value or "").split()).strip()
+        if rendered and rendered not in candidates:
+            candidates.append(rendered)
+    return candidates[:8]
+
+
+def _render_scalar_value(value: float) -> str:
+    if float(value).is_integer():
+        return str(int(round(value)))
+    return f"{value:.6f}".rstrip("0").rstrip(".")
+
+
+def _scalar_candidates_from_text(prompt: str, text: str) -> List[tuple[float, str, str]]:
+    lowered_prompt = str(prompt or "").lower()
+    candidates: List[tuple[float, str, str]] = []
+    if any(token in lowered_prompt for token in ("time", "pace", "hours", "minutes", "seconds")):
+        for match in re.finditer(r"\b(\d{1,2}):(\d{2}):(\d{2})\b", text):
+            hours = int(match.group(1)) + int(match.group(2)) / 60.0 + int(match.group(3)) / 3600.0
+            context = text[max(0, match.start() - 180) : min(len(text), match.end() + 180)]
+            candidates.append((hours, match.group(0), context))
+    for match in re.finditer(r"\b\d+(?:\.\d+)?\b", text):
+        value = float(match.group(0))
+        context = text[max(0, match.start() - 180) : min(len(text), match.end() + 180)]
+        candidates.append((value, match.group(0), context))
+    return candidates
+
+
+def _best_scalar_from_public_documents(prompt: str, query: str, documents: Sequence[Dict[str, str]]) -> tuple[str, List[str], str]:
+    best_value = ""
+    best_score = float("-inf")
+    best_url = ""
+    evidence: List[str] = []
+    lowered_prompt = str(prompt or "").lower()
+    for document in documents:
+        combined = "\n".join(
+            part
+            for part in [
+                str(document.get("title", "")),
+                str(document.get("snippet", "")),
+                str(document.get("text", "")),
+                _strip_html(str(document.get("html_text", ""))),
+            ]
+            if part
+        )
+        if not combined:
+            continue
+        for value, rendered, context in _scalar_candidates_from_text(prompt, combined):
+            score = _score_numeric_context(prompt, context)
+            score += max(
+                _title_match_score(str(document.get("title", "")), query),
+                _title_match_score(str(document.get("snippet", "")), query),
+                _title_match_score(context, query),
+            )
+            lowered_context = context.lower()
+            for token in ("population", "distance", "length", "time", "pace", "elevation", "height", "perigee", "albums", "studio", "count", "years"):
+                if token in lowered_prompt and token in lowered_context:
+                    score += 0.8
+            if "percentage" in lowered_prompt and "%" in lowered_context:
+                score += 0.5
+            if "average" in lowered_prompt and any(token in lowered_context for token in ("average", "mean")):
+                score += 0.4
+            if 1800 <= value <= 2100 and not any(token in lowered_prompt for token in ("year", "date", "between")):
+                score -= 1.5
+            if score > best_score:
+                best_score = score
+                best_value = rendered
+                best_url = str(document.get("url", "")).strip()
+        if best_value:
+            evidence.append(f"query={query}")
+            evidence.append(f"scalar candidate={best_value}")
+    return (best_value, evidence, best_url)
+
+
+def _solve_public_scalar_difference(prompt: str, queries: Sequence[str]) -> tuple[str, List[str], List[str]]:
+    lowered = str(prompt or "").lower()
+    if len(queries) < 2 or not any(token in lowered for token in ("difference", "different", "gap", "more", "less", "higher", "lower")):
+        return ("", [], [])
+    evidence: List[str] = []
+    provenance: List[str] = []
+    values: List[tuple[str, str]] = []
+    for query in queries[:2]:
+        documents = _search_documents_for_title(query, suffix_terms=("wikipedia", "official"))
+        if not documents:
+            documents = _fetch_search_documents(query, max_results=5)
+        value, more, source = _best_scalar_from_public_documents(prompt, query, documents)
+        evidence.extend(more)
+        if source:
+            provenance.append(source)
+        if value:
+            values.append((query, value))
+    if len(values) < 2:
+        return ("", evidence, provenance)
+    rendered = _render_numeric_delta(values[0][1], values[1][1])
+    evidence.append(f"difference between {values[0][0]}={values[0][1]} and {values[1][0]}={values[1][1]} => {rendered}")
+    return (rendered, evidence, provenance)
+
+
+def _solve_public_scalar_ratio(prompt: str, queries: Sequence[str]) -> tuple[str, List[str], List[str]]:
+    lowered = str(prompt or "").lower()
+    if len(queries) < 2 or not any(token in lowered for token in ("percentage", "ratio")):
+        return ("", [], [])
+    evidence: List[str] = []
+    provenance: List[str] = []
+    values: List[tuple[str, str]] = []
+    for query in queries[:2]:
+        documents = _search_documents_for_title(query, suffix_terms=("wikipedia", "official"))
+        if not documents:
+            documents = _fetch_search_documents(query, max_results=5)
+        value, more, source = _best_scalar_from_public_documents(prompt, query, documents)
+        evidence.extend(more)
+        if source:
+            provenance.append(source)
+        if value:
+            values.append((query, value))
+    if len(values) < 2:
+        return ("", evidence, provenance)
+    denominator = float(values[0][1])
+    numerator = float(values[1][1])
+    if denominator == 0:
+        return ("", evidence, provenance)
+    percentage = (numerator / denominator) * 100.0
+    rendered = str(int(round(percentage))) if any(token in lowered for token in ("integer-rounded", "nearest percent")) else _render_scalar_value(percentage)
+    evidence.append(f"percentage {values[1][0]}={values[1][1]} / {values[0][0]}={values[0][1]} => {rendered}")
+    return (rendered, evidence, provenance)
+
+
+def _solve_public_scalar_average(prompt: str, queries: Sequence[str]) -> tuple[str, List[str], List[str]]:
+    lowered = str(prompt or "").lower()
+    if len(queries) < 2 or "average" not in lowered:
+        return ("", [], [])
+    evidence: List[str] = []
+    provenance: List[str] = []
+    numeric_values: List[float] = []
+    for query in queries:
+        documents = _search_documents_for_title(query, suffix_terms=("wikipedia", "official"))
+        if not documents:
+            documents = _fetch_search_documents(query, max_results=5)
+        value, more, source = _best_scalar_from_public_documents(prompt, query, documents)
+        evidence.extend(more)
+        if source:
+            provenance.append(source)
+        if value:
+            numeric_values.append(float(value))
+    if len(numeric_values) < 2:
+        return ("", evidence, provenance)
+    average = sum(numeric_values) / len(numeric_values)
+    rendered = _render_scalar_value(average)
+    evidence.append(f"average of {len(numeric_values)} values => {rendered}")
+    return (rendered, evidence, provenance)
+
+
+def _solve_public_scalar_transform_ops(prompt: str) -> tuple[str, List[str], List[str]]:
+    queries = _public_scalar_query_candidates(prompt)
+    candidate, evidence, provenance = _solve_public_scalar_difference(prompt, queries)
+    if candidate:
+        return (candidate, evidence, provenance)
+    candidate, evidence, provenance = _solve_public_scalar_ratio(prompt, queries)
+    if candidate:
+        return (candidate, evidence, provenance)
+    candidate, evidence, provenance = _solve_public_scalar_average(prompt, queries)
+    if candidate:
+        return (candidate, evidence, provenance)
+    titles = _public_reference_title_candidates(prompt)
+    candidate, evidence = _solve_public_reference_year_count(prompt, titles)
+    if candidate:
+        return (candidate, evidence, [f"wikipedia:{titles[0]}"] if titles else [])
+    return ("", [f"scalar queries: {', '.join(queries[:3])}" if queries else "scalar queries unresolved"], [])
+
+
 def _count_between_in_order(prompt: str, text: str) -> tuple[str, List[str]]:
     lowered = str(prompt or "").lower()
     if "between" not in lowered:
@@ -5086,6 +5258,26 @@ def _is_audio_transcription_prompt(prompt: str, evidence_files: Sequence[str]) -
     return any(marker in lowered for marker in markers)
 
 
+def _is_public_scalar_transform_prompt(prompt: str, evidence_files: Sequence[str]) -> bool:
+    if evidence_files:
+        return False
+    if _is_paper_compare_prompt(prompt) or _is_public_record_prompt(prompt) or _is_public_reference_history_prompt(prompt):
+        return False
+    lowered = str(prompt or "").lower()
+    markers = (
+        "difference",
+        "percentage",
+        "ratio",
+        "average",
+        "between 20",
+        "how many",
+        "count",
+    )
+    if not any(marker in lowered for marker in markers):
+        return False
+    return len(_public_scalar_query_candidates(prompt)) >= 1
+
+
 def _is_web_archive_prompt(prompt: str) -> bool:
     lowered = str(prompt or "").lower()
     return "wayback machine" in lowered or "last amendment" in lowered or ("menu" in lowered and any(token in lowered for token in ("no longer", "but not", "earlier", "later")))
@@ -5175,6 +5367,8 @@ def _extract_special_research_plan(prompt: str, evidence_files: Sequence[str]) -
         return {"research_mode": "video_transcript_ops"}
     if _is_audio_transcription_prompt(prompt, evidence_files):
         return {"research_mode": "audio_transcription_ops"}
+    if _is_public_scalar_transform_prompt(prompt, evidence_files):
+        return {"research_mode": "public_scalar_transform_ops"}
     if _is_paper_compare_prompt(prompt):
         return {"research_mode": "paper_compare_ops"}
     if _is_public_reference_history_prompt(prompt):
@@ -5257,6 +5451,7 @@ STRUCTURAL_RESEARCH_MODES = {
     "paper_compare_ops",
     "video_transcript_ops",
     "audio_transcription_ops",
+    "public_scalar_transform_ops",
     "web_archive_ops",
     "image_vision_ops",
     "github_public_artifact_ops",
@@ -5500,6 +5695,9 @@ def plan_question(arg: str, state: Any = None) -> Dict[str, Any]:
     elif research_mode == "audio_transcription_ops":
         target_label = ", ".join(candidate_files[:2]) if candidate_files else (target_file or "the audio evidence")
         plan = f"transcribe {target_label}, focus on the requested spoken segment or full clip, then extract the requested phrase, response, number, or spelled letters from the transcript"
+        ambiguity_score = 0.22
+    elif research_mode == "public_scalar_transform_ops":
+        plan = "identify the public reference entities, extract the relevant scalar values from public evidence, then apply the requested count, difference, ratio, percentage, or average operator"
         ambiguity_score = 0.22
     elif research_mode == "web_archive_ops":
         plan = "identify the target public page, compare archived snapshots around the cited dates, then extract the removed item, deleted word, or changed text requested by the prompt"
@@ -5898,6 +6096,8 @@ def solve_question(arg: str, state: Any = None) -> Dict[str, Any]:
                     ]
                 )
             candidate, evidence, answer_provenance = _solve_audio_transcription_ops(prompt, audio_paths)
+        elif research_mode == "public_scalar_transform_ops":
+            candidate, evidence, answer_provenance = _solve_public_scalar_transform_ops(prompt)
         elif research_mode == "web_archive_ops":
             candidate, evidence, answer_provenance = _solve_web_archive_ops(prompt)
         elif research_mode == "image_vision_ops":
