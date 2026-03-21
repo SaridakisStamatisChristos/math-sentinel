@@ -31,6 +31,7 @@ from domains.gaia_ops.backend import (
     _solve_paper_compare_ops,
     _solve_pubchem_food_additive_transformations,
     _solve_public_record_ops,
+    _solve_public_record_schedule_arrival_time,
     _solve_public_reference_history_ops,
     _solve_public_scalar_transform_ops,
     _solve_reversed_instruction,
@@ -952,6 +953,29 @@ class GaiaOpsBackendTests(unittest.TestCase):
         self.assertTrue(any("museum search" in item for item in evidence))
         self.assertEqual(provenance, ["web:museum-object", "paper:cross-source-search"])
 
+    def test_public_record_schedule_arrival_time_requires_clock_shaped_cell(self) -> None:
+        documents = [
+            {
+                "url": "https://example.com/tri-rail",
+                "html_text": """
+                    <table>
+                      <tr><th>Train</th><th>Passengers</th><th>Pompano Beach arrival</th></tr>
+                      <tr><td>101</td><td>52618</td><td>6:41 PM</td></tr>
+                      <tr><td>102</td><td>42000</td><td>51618</td></tr>
+                    </table>
+                """,
+            }
+        ]
+
+        answer, evidence, provenance = _solve_public_record_schedule_arrival_time(
+            "What time was the Tri-Rail train that carried the most passengers on May 27, 2019 scheduled to arrive in Pompano Beach?",
+            documents,
+        )
+
+        self.assertEqual(answer, "6:41 PM")
+        self.assertTrue(any("Pompano Beach arrival => 6:41 PM" in item for item in evidence))
+        self.assertEqual(provenance, ["https://example.com/tri-rail"])
+
     def test_plan_question_blind_mode_routes_public_species_lookup_structurally(self) -> None:
         state = SimpleNamespace(
             problem_text=(
@@ -1252,6 +1276,90 @@ class GaiaOpsBackendTests(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.assertEqual(result["answer"], "17")
         self.assertNotIn("benchmark:gaia-errata", result["payload"]["state_metadata"]["answer_provenance"])
+
+    @patch("domains.gaia_ops.backend._solve_public_record_ops")
+    def test_solve_question_quality_control_rejects_non_time_answer_for_time_prompt(self, mock_solver: object) -> None:
+        mock_solver.return_value = ("52618", ["max Passengers=52618"], ["https://example.com/tri-rail"])
+        state = SimpleNamespace(
+            problem_text="What time was the Tri-Rail train that carried the most passengers on May 27, 2019 scheduled to arrive in Pompano Beach?",
+            metadata={
+                "workspace_dir": str(Path.cwd()),
+                "workspace_files": [],
+                "question_plan": {"research_mode": "public_record_ops"},
+                "candidate_files": [],
+                "benchmark_assistance_mode": "unassisted",
+                "oracle_hints_enabled": False,
+            },
+        )
+
+        result = solve_question(state.problem_text, state)
+
+        self.assertFalse(result["ok"])
+        self.assertIn("quality checks", result["result"])
+
+    @patch("domains.gaia_ops.backend._solve_public_record_ops")
+    def test_solve_question_quality_control_accepts_valid_time_answer(self, mock_solver: object) -> None:
+        mock_solver.return_value = ("6:41 pm", ["Pompano Beach arrival => 6:41 pm"], ["https://example.com/tri-rail"])
+        state = SimpleNamespace(
+            problem_text="What time was the Tri-Rail train that carried the most passengers on May 27, 2019 scheduled to arrive in Pompano Beach? Express your answer in the 12-hour digital clock format with AM or PM.",
+            metadata={
+                "workspace_dir": str(Path.cwd()),
+                "workspace_files": [],
+                "question_plan": {"research_mode": "public_record_ops"},
+                "candidate_files": [],
+                "benchmark_assistance_mode": "unassisted",
+                "oracle_hints_enabled": False,
+            },
+        )
+
+        result = solve_question(state.problem_text, state)
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["answer"], "6:41 PM")
+
+    @patch("domains.gaia_ops.backend._solve_paper_numeric_lookup")
+    def test_solve_question_quality_control_rejects_numeric_answer_for_textual_prompt(self, mock_solver: object) -> None:
+        mock_solver.return_value = ("10.4324", ["targeted numeric match -> 10.4324"])
+        state = SimpleNamespace(
+            problem_text='In Valentina Re’s contribution to the 2017 book "World Building: Transmedia, Fans, Industries", what horror movie does the author cite as having popularized metalepsis between a dream world and waking life?',
+            metadata={
+                "workspace_dir": str(Path.cwd()),
+                "workspace_files": [],
+                "question_plan": {"research_mode": "quoted_paper_lookup"},
+                "candidate_files": [],
+                "benchmark_assistance_mode": "unassisted",
+                "oracle_hints_enabled": False,
+            },
+        )
+
+        result = solve_question(state.problem_text, state)
+
+        self.assertFalse(result["ok"])
+        self.assertIn("quality checks", result["result"])
+
+    @patch("domains.gaia_ops.backend._solve_public_record_ops")
+    def test_solve_question_quality_control_rejects_non_code_for_ioc_prompt(self, mock_solver: object) -> None:
+        mock_solver.return_value = (
+            "1896 1900 1904 1908 1912 1920 1924 1928",
+            ["selected answer column Year value=1896 1900 1904 1908 1912 1920 1924 1928"],
+            ["https://example.com/olympics"],
+        )
+        state = SimpleNamespace(
+            problem_text="What country had the least number of athletes at the 1928 Summer Olympics? If there's a tie for a number of athletes, return the first in alphabetical order. Give the IOC country code as your answer.",
+            metadata={
+                "workspace_dir": str(Path.cwd()),
+                "workspace_files": [],
+                "question_plan": {"research_mode": "public_record_ops"},
+                "candidate_files": [],
+                "benchmark_assistance_mode": "unassisted",
+                "oracle_hints_enabled": False,
+            },
+        )
+
+        result = solve_question(state.problem_text, state)
+
+        self.assertFalse(result["ok"])
+        self.assertIn("quality checks", result["result"])
 
     @patch("domains.gaia_ops.backend._wikipedia_page_links")
     def test_wikipedia_link_distance_solver_uses_graph_distance(self, mock_links: object) -> None:

@@ -95,3 +95,4 @@ results/*.json
 results/benchmark_ledger.jsonl
 results/campaigns/
 !results/README.md
+Investigation.md
