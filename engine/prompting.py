@@ -192,6 +192,49 @@ def _compact_metadata(state: ReasoningState, file_limit: int, text_item_chars: i
     return entries
 
 
+def _reasoning_schema_text(schema: Any, text_item_chars: int) -> str:
+    if not isinstance(schema, dict):
+        return ""
+    ordered_keys = ("intent", "source_family", "operator", "time_anchor", "output_contract", "target_scope")
+    parts: List[str] = []
+    for key in ordered_keys:
+        value = _truncate(schema.get(key, ""), text_item_chars)
+        if value:
+            parts.append(f"{key}={value}")
+    return " | ".join(parts)
+
+
+def _self_check_text(check: Any, text_item_chars: int) -> str:
+    if not isinstance(check, dict):
+        return ""
+    parts: List[str] = []
+    if "accepted" in check:
+        parts.append(f"accepted={bool(check.get('accepted'))}")
+    if "support" in check:
+        try:
+            parts.append(f"support={float(check.get('support')):.2f}")
+        except Exception:
+            pass
+    notes = check.get("notes", [])
+    if isinstance(notes, list) and notes:
+        rendered_notes = ", ".join(_truncate(item, max(24, text_item_chars // 2)) for item in notes[:3])
+        if rendered_notes:
+            parts.append(f"notes={rendered_notes}")
+    return " | ".join(parts)
+
+
+def _augmentation_text(layer: Any, text_item_chars: int) -> str:
+    if not isinstance(layer, dict):
+        return ""
+    ordered_keys = ("mode", "recursion", "motif", "source_order", "synthesis", "output_guard")
+    parts: List[str] = []
+    for key in ordered_keys:
+        value = _truncate(layer.get(key, ""), text_item_chars)
+        if value:
+            parts.append(f"{key}={value}")
+    return " | ".join(parts)
+
+
 def _prompt_compaction_options(state: ReasoningState) -> Dict[str, int | bool]:
     options: Dict[str, int | bool] = dict(DEFAULT_PROMPT_COMPACTION)
     metadata = getattr(state, "metadata", {}) or {}
@@ -232,6 +275,15 @@ def _render_search_state(state: ReasoningState) -> str:
     metadata_lines = _compact_metadata(state, int(options.get("file_limit", 5)), text_item_chars)
     if metadata_lines:
         lines.append(f"[FOCUS] {' | '.join(metadata_lines)}")
+    augmentation_text = _augmentation_text((getattr(state, "metadata", {}) or {}).get("augmentation_layer", {}), text_item_chars)
+    if augmentation_text:
+        lines.append(f"[AUGMENTATION] {augmentation_text}")
+    schema_text = _reasoning_schema_text((getattr(state, "metadata", {}) or {}).get("reasoning_schema", {}), text_item_chars)
+    if schema_text:
+        lines.append(f"[REASONING_SCHEMA] {schema_text}")
+    self_check_text = _self_check_text((getattr(state, "metadata", {}) or {}).get("answer_self_check", {}), text_item_chars)
+    if self_check_text:
+        lines.append(f"[SELF_CHECK] {self_check_text}")
 
     assumptions = _string_items(state.assumptions, int(options.get("subgoal_limit", 3)), text_item_chars)
     if assumptions:

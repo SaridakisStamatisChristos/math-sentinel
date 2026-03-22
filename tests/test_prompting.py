@@ -47,6 +47,29 @@ class PromptCompactionTests(unittest.TestCase):
                 "question_intent": "count and filter",
                 "candidate_answer": "alpha, beta",
                 "answer_confidence": 0.73,
+                "reasoning_schema": {
+                    "source_family": "public_reference",
+                    "operator": "count with date filter",
+                    "time_anchor": "latest 2022 version",
+                    "output_contract": "comma-separated list with no whitespace",
+                },
+                "augmentation_layer": {
+                    "mode": "trillion_structural",
+                    "recursion": "time -> source -> operator -> rival -> contract",
+                    "motif": "public_reference::count",
+                    "source_order": "page -> section/table -> rival answer check",
+                    "synthesis": "answer only when source/time/operator agree",
+                    "output_guard": "comma-separated list with no whitespace",
+                },
+                "answer_self_check": {
+                    "accepted": True,
+                    "support": 0.66,
+                    "notes": [
+                        "evidence trail present",
+                        "provenance present",
+                        "contract=comma-separated list with no whitespace",
+                    ],
+                },
                 "prompt_compaction": {
                     "enabled": True,
                     "problem_chars": 420,
@@ -79,10 +102,16 @@ class PromptCompactionTests(unittest.TestCase):
         self.assertIn("[FOCUS]", prompt)
         self.assertIn("[RECENT_TOOLS]", prompt)
         self.assertIn("[TACTIC_HINTS]", prompt)
+        self.assertIn("[AUGMENTATION]", prompt)
+        self.assertIn("[REASONING_SCHEMA]", prompt)
+        self.assertIn("[SELF_CHECK]", prompt)
         self.assertNotIn("[METADATA]", prompt)
         self.assertLess(len(prompt), len(state.serialize()) + 200)
         self.assertIn("target_file=report.xlsx", prompt)
         self.assertIn("candidate_answer=alpha, beta", prompt)
+        self.assertIn("mode=trillion_structural", prompt)
+        self.assertIn("source_family=public_reference", prompt)
+        self.assertIn("contract=comma-separated list with no whitespace", prompt)
         self.assertNotIn("fact one about the target entity | fact two about the supporting source | fact three with a candidate answer | fact four with a date filter | fact five should force truncation", prompt)
 
     def test_prompt_defaults_to_full_state_without_compaction(self) -> None:

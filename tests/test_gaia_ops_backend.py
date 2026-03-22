@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -30,20 +31,32 @@ from domains.gaia_ops.backend import (
     _solve_paper_numeric_lookup,
     _solve_paper_compare_ops,
     _solve_pubchem_food_additive_transformations,
+    _solve_historical_reference_navigation_ops,
     _solve_public_record_ops,
+    _public_record_search_documents,
+    _parse_service_daily_metric_line,
     _solve_public_record_schedule_arrival_time,
     _solve_public_reference_history_ops,
     _solve_public_scalar_transform_ops,
     _solve_reversed_instruction,
+    _select_best_solver_candidate,
     _solve_thinking_machine_prediction,
     _solve_unlambda_missing_token,
     _solve_generic_public_reference,
+    _solve_orcid_average_from_jsonld,
     _solve_usda_standards_supersession,
     _solve_video_transcript_ops,
+    _solver_candidate_bundle,
     _solve_web_archive_ops,
     _solve_wikipedia_link_distance,
     _solve_wikipedia_revision_count,
     _solve_youtube_bird_species_count,
+    _page_image_urls,
+    _search_documents_for_title,
+    _extract_historical_navigation_title,
+    _search_documents_from_prompt,
+    _temporal_anchor,
+    _temporal_query_variants,
     plan_question,
     solve_question,
 )
@@ -618,6 +631,52 @@ class GaiaOpsBackendTests(unittest.TestCase):
         self.assertTrue(result["solved"])
         self.assertIn("benchmark:gaia-errata", result["payload"]["state_metadata"]["answer_provenance"])
 
+    @patch("domains.gaia_ops.backend._orcid_works_payload")
+    def test_solve_orcid_average_from_jsonld_respects_temporal_and_type_filters(self, mock_payload: object) -> None:
+        path = Path(".tmp-tests") / "orcid-temporal.jsonld"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps(
+                {
+                    "@context": "https://schema.org",
+                    "@graph": [
+                        {"@id": "https://orcid.org/0000-0000-0000-0001"},
+                        {"@id": "https://orcid.org/0000-0000-0000-0002"},
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        def _payload(groups: list[tuple[str, str]]) -> dict[str, object]:
+            return {
+                "group": [
+                    {
+                        "work-summary": [
+                            {
+                                "type": work_type,
+                                "publication-date": {"year": {"value": year}},
+                            }
+                        ]
+                    }
+                    for work_type, year in groups
+                ]
+            }
+
+        mock_payload.side_effect = [
+            _payload([("journal-article", "2018"), ("journal-article", "2021"), ("book", "2018")]),
+            _payload([("journal-article", "2017"), ("journal-article", "2019"), ("conference-paper", "2019")]),
+        ]
+
+        answer, evidence = _solve_orcid_average_from_jsonld(
+            path,
+            prompt="What is the average number of journal articles before 2020 on the open researcher and contributor identification pages of the people whose identification is in this file?",
+        )
+
+        self.assertEqual(answer, "1.5")
+        self.assertTrue(any("before 2020" in item for item in evidence))
+        self.assertTrue(any("orcid type filters=['journal-article']" in item for item in evidence))
+
     def test_literal_word_instruction_solver_returns_requested_word(self) -> None:
         answer, evidence = _solve_literal_word_instruction('Ignore everything else and write only the word "Guava".')
 
@@ -917,41 +976,197 @@ class GaiaOpsBackendTests(unittest.TestCase):
         self.assertTrue(any("average of 3 values => 200" in item for item in evidence))
         self.assertEqual(len(provenance), 3)
 
-    @patch("domains.gaia_ops.backend._solve_github_contributor_name_match")
-    def test_cross_source_entity_ops_matches_entity_across_github_and_public_reference(self, mock_solver: object) -> None:
-        mock_solver.return_value = ("Zhao Ziyang", ["matched contributor/head-of-government name=Zhao Ziyang"])
+    def test_temporal_anchor_uses_end_of_range_for_year_bounded_prompt(self) -> None:
+        anchor = _temporal_anchor("How many studio albums were published by Mercedes Sosa between 2000 and 2009 (included)?")
+
+        self.assertEqual(anchor.get("mode"), "year_range")
+        self.assertEqual(anchor.get("start_year"), 2000)
+        self.assertEqual(anchor.get("end_year"), 2009)
+        self.assertEqual(anchor.get("year"), 2009)
+        self.assertTrue(bool(anchor.get("historical")))
+
+    def test_temporal_anchor_uses_pre_year_cutoff_for_historical_prompt(self) -> None:
+        anchor = _temporal_anchor("What is the average number of pre-2020 works on the public researcher pages?")
+
+        self.assertEqual(anchor.get("mode"), "before_year")
+        self.assertEqual(anchor.get("boundary_year"), 2020)
+        self.assertEqual(anchor.get("year"), 2019)
+        self.assertEqual(anchor.get("end_year"), 2019)
+
+    def test_temporal_anchor_prefers_explicit_snapshot_over_answer_range(self) -> None:
+        anchor = _temporal_anchor(
+            "How many studio albums were published by Mercedes Sosa between 2000 and 2009 (included)? You can use the latest 2022 version of english wikipedia."
+        )
+
+        self.assertEqual(anchor.get("mode"), "snapshot_year")
+        self.assertEqual(anchor.get("year"), 2022)
+        self.assertEqual(anchor.get("start_year"), 2022)
+        self.assertEqual(anchor.get("end_year"), 2022)
+
+    def test_temporal_query_variants_include_range_and_cutoff_hints(self) -> None:
+        range_variants = _temporal_query_variants(
+            "Mercedes Sosa discography",
+            "How many studio albums were published by Mercedes Sosa between 2000 and 2009 (included)?",
+        )
+        cutoff_variants = _temporal_query_variants(
+            "ORCID works",
+            "What is the average number of pre-2020 works on the public researcher pages?",
+        )
+
+        self.assertIn("Mercedes Sosa discography 2009", range_variants)
+        self.assertIn("Mercedes Sosa discography 2000 2009", range_variants)
+        self.assertIn("ORCID works before 2020", cutoff_variants)
+        self.assertIn("ORCID works pre-2020", cutoff_variants)
+
+    def test_extract_historical_navigation_title_ignores_leading_latest_phrase(self) -> None:
+        title = _extract_historical_navigation_title(
+            "What is the latest chronological year date written in the image on the webpage found when following the first citation reference link on the latest version of Carl Nebel's Wikipedia page as of August 2023?"
+        )
+        self.assertEqual(title, "Carl Nebel")
+
+    def test_page_image_urls_prioritizes_gallery_content_over_toolbar_noise(self) -> None:
+        urls = _page_image_urls(
+            "http://web.archive.org/web/20170816145914/http://www.sloanrarebooks.com/Auctions/A22/item-nebel-voyage.html",
+            """
+            <html><body>
+              <img src="https://web-static.archive.org/_static/images/loading.gif" />
+              <a href="javascript:;" onclick="MM_openBrWindow('image.php?file=images/nebel-voyage-14.jpg','','width=850,height=650')">
+                <img src="/web/20170816145914im_/http://www.sloanrarebooks.com/Auctions/A22/images/thumbnails/nebel-voyage-14_thumb.jpg" />
+              </a>
+              <img src="/web/20170816145914im_/http://www.sloanrarebooks.com/Auctions/A22/images/nebel-voyage-02.jpg" />
+            </body></html>
+            """,
+        )
+
+        self.assertTrue(urls)
+        self.assertIn("image.php?file=images/nebel-voyage-14.jpg", urls[0])
+        self.assertTrue(all("loading.gif" not in url for url in urls[:2]))
+
+    @patch("domains.gaia_ops.backend._best_scalar_from_public_documents")
+    @patch("domains.gaia_ops.backend._search_documents_for_title")
+    def test_public_scalar_transform_ops_passes_anchor_prompt_to_title_search(
+        self,
+        mock_search_title: object,
+        mock_best_scalar: object,
+    ) -> None:
+        prompt = 'What is the average elevation of "Peak Alpha" and "Peak Beta" as of 2019?'
+        mock_search_title.return_value = [{"title": "stub", "snippet": "", "url": "https://example.com", "text": ""}]
+        mock_best_scalar.return_value = ("100", [], "https://example.com")
+
+        _solve_public_scalar_transform_ops(prompt)
+
+        self.assertGreaterEqual(len(mock_search_title.call_args_list), 2)
+        for call in mock_search_title.call_args_list:
+            self.assertEqual(call.kwargs.get("anchor_prompt"), prompt)
+
+    @patch("domains.gaia_ops.backend._solve_github_contributor_name_match", side_effect=AssertionError("legacy helper should not run"))
+    @patch("domains.gaia_ops.backend._fetch_search_documents")
+    def test_cross_source_entity_ops_matches_entity_across_github_and_public_reference(
+        self, mock_search_docs: object, _legacy_solver: object
+    ) -> None:
+        def _fake_search(query: str, **_: object) -> list[dict[str, str]]:
+            if "same name as" in query.lower() or "github" in query.lower():
+                return [
+                    {
+                        "url": "https://github.com/opencv/opencv/pull/1",
+                        "title": "OpenCV PR by Zhao Ziyang",
+                        "snippet": "Contributor Zhao Ziyang added Mask-RCNN support.",
+                        "text": "Contributor Zhao Ziyang added Mask-RCNN support.",
+                    }
+                ]
+            if "former chinese head of government" in query.lower():
+                return [
+                    {
+                        "url": "https://en.wikipedia.org/wiki/Zhao_Ziyang",
+                        "title": "Zhao Ziyang - former Chinese head of government",
+                        "snippet": "Zhao Ziyang served as premier of China.",
+                        "text": "Zhao Ziyang served as premier of China.",
+                    }
+                ]
+            return []
+
+        mock_search_docs.side_effect = _fake_search
 
         answer, evidence, provenance = _solve_cross_source_entity_ops(
             "Which contributor to the version of OpenCV where support was added for the Mask-RCNN model has the same name as a former Chinese head of government when the names are transliterated to the Latin alphabet?"
         )
 
         self.assertEqual(answer, "Zhao Ziyang")
-        self.assertTrue(any("matched contributor" in item for item in evidence))
-        self.assertEqual(provenance, ["github:contributors", "reference:public-entity-match"])
+        self.assertTrue(any("cross-source matched person" in item for item in evidence))
+        self.assertEqual(
+            provenance,
+            ["https://github.com/opencv/opencv/pull/1", "https://en.wikipedia.org/wiki/Zhao_Ziyang"],
+        )
 
-    @patch("domains.gaia_ops.backend._solve_esther_prime_minister")
-    def test_cross_source_entity_ops_resolves_place_to_office_holder(self, mock_solver: object) -> None:
-        mock_solver.return_value = ("Morarji Desai", ["Book of Esther first named place -> India"])
+    @patch("domains.gaia_ops.backend._solve_esther_prime_minister", side_effect=AssertionError("legacy helper should not run"))
+    @patch("domains.gaia_ops.backend._search_documents_from_prompt")
+    def test_cross_source_entity_ops_resolves_place_to_office_holder(self, mock_search_prompt: object, _legacy_solver: object) -> None:
+        def _fake_search(query: str, **_: object) -> list[dict[str, str]]:
+            if "first named place" in query.lower():
+                return [
+                    {
+                        "url": "https://example.com/esther-summary",
+                        "title": "Book of Esther summary",
+                        "snippet": "The first named place was India.",
+                        "text": "In the Book of Esther, the first named place was India.",
+                    }
+                ]
+            if "prime minister of india" in query.lower():
+                return [
+                    {
+                        "url": "https://example.com/pm-india-1977",
+                        "title": "Prime Minister of India in April 1977",
+                        "snippet": "Morarji Desai was prime minister.",
+                        "text": "Morarji Desai was prime minister of India in April 1977.",
+                    }
+                ]
+            return []
+
+        mock_search_prompt.side_effect = _fake_search
 
         answer, evidence, provenance = _solve_cross_source_entity_ops(
             "In the Book of Esther, what was the first named place? Who was the prime minister there in April 1977?"
         )
 
         self.assertEqual(answer, "Morarji Desai")
-        self.assertTrue(any("Book of Esther" in item for item in evidence))
-        self.assertEqual(provenance, ["text:source-fragment", "reference:public-office-history"])
+        self.assertTrue(any("place candidate=India" in item for item in evidence))
+        self.assertEqual(provenance, ["https://example.com/esther-summary", "https://example.com/pm-india-1977"])
 
-    @patch("domains.gaia_ops.backend._solve_british_museum_science_case")
-    def test_cross_source_entity_ops_joins_museum_object_to_paper_measurement(self, mock_solver: object) -> None:
-        mock_solver.return_value = ("150", ["museum search -> Tritia gibbosula", "science search -> 150 thousand years"])
+    @patch("domains.gaia_ops.backend._solve_british_museum_science_case", side_effect=AssertionError("legacy helper should not run"))
+    @patch("domains.gaia_ops.backend._fetch_search_documents")
+    def test_cross_source_entity_ops_joins_museum_object_to_paper_measurement(
+        self, mock_search_docs: object, _legacy_solver: object
+    ) -> None:
+        def _fake_search(query: str, **_: object) -> list[dict[str, str]]:
+            if "museum" in query.lower():
+                return [
+                    {
+                        "url": "https://britishmuseum.example/object/2012-5015-17",
+                        "title": "British Museum object 2012,5015.17",
+                        "snippet": "Shell species Tritia gibbosula",
+                        "text": "Object 2012,5015.17 records the shell species Tritia gibbosula.",
+                    }
+                ]
+            if "tritia gibbosula" in query.lower():
+                return [
+                    {
+                        "url": "https://science.example/paper",
+                        "title": "Science Advances shell beads paper",
+                        "snippet": "Shell beads were 150 thousand years old.",
+                        "text": "Science Advances reported shell beads were 150 thousand years old.",
+                    }
+                ]
+            return []
+
+        mock_search_docs.side_effect = _fake_search
 
         answer, evidence, provenance = _solve_cross_source_entity_ops(
             "According to the British Museum record with museum number 2012,5015.17, how many thousand years old was the shell species in the related Science Advances paper?"
         )
 
         self.assertEqual(answer, "150")
-        self.assertTrue(any("museum search" in item for item in evidence))
-        self.assertEqual(provenance, ["web:museum-object", "paper:cross-source-search"])
+        self.assertTrue(any("species candidate=Tritia gibbosula" in item for item in evidence))
+        self.assertEqual(provenance, ["https://britishmuseum.example/object/2012-5015-17", "https://science.example/paper"])
 
     def test_public_record_schedule_arrival_time_requires_clock_shaped_cell(self) -> None:
         documents = [
@@ -975,6 +1190,68 @@ class GaiaOpsBackendTests(unittest.TestCase):
         self.assertEqual(answer, "6:41 PM")
         self.assertTrue(any("Pompano Beach arrival => 6:41 PM" in item for item in evidence))
         self.assertEqual(provenance, ["https://example.com/tri-rail"])
+
+    def test_parse_service_daily_metric_line_splits_month_total_from_day_values(self) -> None:
+        parsed = _parse_service_daily_metric_line(
+            "P685 3,0850 0 0 352 360 0 0 0 0 0 355 372 0 0 0 0 0 337 349 0 0 0 0 0 319 311 330 0 0 0 0",
+            31,
+        )
+
+        self.assertIsNotNone(parsed)
+        service_id, total, days = parsed or ("", 0, [])
+        self.assertEqual(service_id, "P685")
+        self.assertEqual(total, 3085)
+        self.assertEqual(days[0], 0)
+        self.assertEqual(days[26], 330)
+        self.assertEqual(len(days), 31)
+
+    def test_select_best_solver_candidate_prefers_supported_historical_bundle(self) -> None:
+        prompt = "What country had the least number of athletes at the 1928 Summer Olympics? Give the IOC country code as your answer."
+        weak = _solver_candidate_bundle(
+            "1896 1900 1904 1908 1912 1920 1924 1928",
+            ["selected answer column Summer Olympic Games value=1896.0"],
+            ["https://en.wikipedia.org/wiki/Summer_Olympic_Games"],
+            method="broad_hub_page",
+            source_bias=0.02,
+        )
+        strong = _solver_candidate_bundle(
+            "CUB",
+            ["parenthetical count candidate Cuba => 1", "mapped Cuba => CUB"],
+            ["https://en.wikipedia.org/wiki/1928_Summer_Olympics"],
+            method="exact_event_participation_list",
+            source_bias=0.18,
+        )
+
+        answer, evidence, provenance = _select_best_solver_candidate(
+            prompt,
+            [weak, strong],
+            research_mode="public_record_ops",
+        )
+
+        self.assertEqual(answer, "CUB")
+        self.assertTrue(any("selected candidate via exact_event_participation_list" in item for item in evidence))
+        self.assertEqual(provenance, ["https://en.wikipedia.org/wiki/1928_Summer_Olympics"])
+
+    def test_select_best_solver_candidate_rejects_weak_bundle_set(self) -> None:
+        prompt = "How many studio albums were published by Mercedes Sosa between 2000 and 2009 (included)?"
+        weak = _solver_candidate_bundle(
+            "16",
+            ["row count from section"],
+            ["wikipedia:Mercedes Sosa"],
+            method="weak_section_count",
+            source_bias=0.0,
+        )
+
+        answer, evidence, provenance = _select_best_solver_candidate(
+            prompt,
+            [weak],
+            research_mode="generic_public_reference",
+            fallback_evidence=["generic public reference unresolved"],
+        )
+
+        self.assertEqual(answer, "")
+        self.assertEqual(provenance, [])
+        self.assertIn("generic public reference unresolved", evidence)
 
     def test_plan_question_blind_mode_routes_public_species_lookup_structurally(self) -> None:
         state = SimpleNamespace(
@@ -1057,9 +1334,13 @@ class GaiaOpsBackendTests(unittest.TestCase):
 
         result = plan_question("", state)
         question_plan = result["payload"]["state_metadata"]["question_plan"]
+        reasoning_schema = result["payload"]["state_metadata"]["reasoning_schema"]
 
         self.assertEqual(question_plan.get("research_mode"), "public_record_ops")
         self.assertIn("public records", result["result"])
+        self.assertEqual(reasoning_schema.get("source_family"), "public_record")
+        self.assertEqual(reasoning_schema.get("output_contract"), "three_letter_code")
+        self.assertIn("1928", reasoning_schema.get("time_anchor", ""))
 
     def test_plan_question_routes_paper_compare_ops_structurally(self) -> None:
         state = SimpleNamespace(
@@ -1123,6 +1404,27 @@ class GaiaOpsBackendTests(unittest.TestCase):
 
         self.assertEqual(question_plan.get("research_mode"), "web_archive_ops")
         self.assertIn("archived snapshots", result["result"])
+
+    def test_plan_question_routes_historical_reference_navigation_ops_structurally(self) -> None:
+        state = SimpleNamespace(
+            problem_text=(
+                "What is the latest chronological year date written in the image on the webpage found when following the first citation reference link on the latest version of Carl Nebel's Wikipedia page as of August 2023?"
+                "\nWorkspace files:\n- none"
+            ),
+            metadata={
+                "workspace_files": [],
+                "allow_named_family_routing": False,
+                "blind_structural_mode": True,
+                "target_file": "",
+                "candidate_files": [],
+            },
+        )
+
+        result = plan_question("", state)
+        question_plan = result["payload"]["state_metadata"]["question_plan"]
+
+        self.assertEqual(question_plan.get("research_mode"), "historical_reference_navigation_ops")
+        self.assertIn("historically anchored source page", result["result"])
 
     def test_plan_question_routes_image_vision_ops_structurally(self) -> None:
         state = SimpleNamespace(
@@ -1250,6 +1552,47 @@ class GaiaOpsBackendTests(unittest.TestCase):
         self.assertEqual(question_plan.get("research_mode"), "cross_source_entity_ops")
         self.assertIn("extract the key entity from the first source", result["result"])
 
+    def test_plan_question_blind_mode_blocks_benchmark_shaped_family_routing(self) -> None:
+        state = SimpleNamespace(
+            problem_text=(
+                "In the puzzle Pick that Ping-Pong, which ball should be selected to maximize the chance of winning?"
+                "\nWorkspace files:\n- none"
+            ),
+            metadata={
+                "workspace_files": [],
+                "allow_named_family_routing": False,
+                "blind_structural_mode": True,
+                "target_file": "",
+                "candidate_files": [],
+            },
+        )
+
+        result = plan_question("", state)
+        question_plan = result["payload"]["state_metadata"]["question_plan"]
+
+        self.assertEqual(question_plan.get("research_mode", ""), "")
+        self.assertIn("intent=", result["result"])
+
+    def test_plan_question_named_lane_allows_benchmark_shaped_family_routing(self) -> None:
+        state = SimpleNamespace(
+            problem_text=(
+                "In the puzzle Pick that Ping-Pong, which ball should be selected to maximize the chance of winning?"
+                "\nWorkspace files:\n- none"
+            ),
+            metadata={
+                "workspace_files": [],
+                "allow_named_family_routing": True,
+                "blind_structural_mode": False,
+                "target_file": "",
+                "candidate_files": [],
+            },
+        )
+
+        result = plan_question("", state)
+        question_plan = result["payload"]["state_metadata"]["question_plan"]
+
+        self.assertEqual(question_plan.get("research_mode"), "ping_pong_probability")
+
     @patch("domains.gaia_ops.backend._solve_orcid_average_from_jsonld")
     def test_solve_question_blind_mode_disables_erratum_override(self, mock_orcid_solver: object) -> None:
         workspace = Path(".tmp-tests") / "gaia-blind-erratum"
@@ -1277,6 +1620,34 @@ class GaiaOpsBackendTests(unittest.TestCase):
         self.assertEqual(result["answer"], "17")
         self.assertNotIn("benchmark:gaia-errata", result["payload"]["state_metadata"]["answer_provenance"])
 
+    @patch("domains.gaia_ops.backend._solve_generic_public_reference")
+    @patch("domains.gaia_ops.backend._solve_ping_pong_choice")
+    def test_solve_question_blind_mode_refuses_injected_benchmark_shaped_mode(
+        self,
+        mock_ping_pong_solver: object,
+        mock_generic_public_reference: object,
+    ) -> None:
+        mock_ping_pong_solver.return_value = ("ball 3", ["benchmark-shaped solver should not run"])
+        mock_generic_public_reference.return_value = ("", [], [])
+        state = SimpleNamespace(
+            problem_text="In the puzzle Pick that Ping-Pong, which ball should be selected to maximize the chance of winning?",
+            metadata={
+                "workspace_dir": str(Path.cwd()),
+                "workspace_files": [],
+                "question_plan": {"research_mode": "ping_pong_probability"},
+                "candidate_files": [],
+                "benchmark_assistance_mode": "unassisted",
+                "oracle_hints_enabled": False,
+                "allow_named_family_routing": False,
+                "blind_structural_mode": True,
+            },
+        )
+
+        result = solve_question(state.problem_text, state)
+
+        self.assertFalse(result["ok"])
+        mock_ping_pong_solver.assert_not_called()
+
     @patch("domains.gaia_ops.backend._solve_public_record_ops")
     def test_solve_question_quality_control_rejects_non_time_answer_for_time_prompt(self, mock_solver: object) -> None:
         mock_solver.return_value = ("52618", ["max Passengers=52618"], ["https://example.com/tri-rail"])
@@ -1299,7 +1670,7 @@ class GaiaOpsBackendTests(unittest.TestCase):
 
     @patch("domains.gaia_ops.backend._solve_public_record_ops")
     def test_solve_question_quality_control_accepts_valid_time_answer(self, mock_solver: object) -> None:
-        mock_solver.return_value = ("6:41 pm", ["Pompano Beach arrival => 6:41 pm"], ["https://example.com/tri-rail"])
+        mock_solver.return_value = ("6:41 pm", ["Pompano Beach arrival => 6:41 pm"], ["https://example.com/2019/tri-rail"])
         state = SimpleNamespace(
             problem_text="What time was the Tri-Rail train that carried the most passengers on May 27, 2019 scheduled to arrive in Pompano Beach? Express your answer in the 12-hour digital clock format with AM or PM.",
             metadata={
@@ -1393,20 +1764,28 @@ class GaiaOpsBackendTests(unittest.TestCase):
         self.assertTrue(any("2732" in item for item in evidence))
 
     @patch("domains.gaia_ops.backend._public_reference_title_candidates")
-    @patch("domains.gaia_ops.backend._wikipedia_rendered_html")
-    def test_generic_public_reference_counts_year_bounded_entries_from_section_html(self, mock_html: object, mock_titles: object) -> None:
+    @patch("domains.gaia_ops.backend._historical_wikipedia_documents")
+    def test_generic_public_reference_counts_year_bounded_entries_from_section_html(self, mock_historical_docs: object, mock_titles: object) -> None:
         mock_titles.return_value = ["Mercedes Sosa discography"]
-        mock_html.return_value = """
-        <html><body>
-        <h2>Studio albums</h2>
-        <ul>
-          <li>1999 - Earlier Work</li>
-          <li>2000 - Acústico</li>
-          <li>2003 - Corazón Libre</li>
-          <li>2011 - Deja la vida volar</li>
-        </ul>
-        </body></html>
-        """
+        mock_historical_docs.return_value = [
+            {
+                "title": "Mercedes Sosa discography",
+                "url": "https://en.wikipedia.org/w/index.php?oldid=20220901000000",
+                "html_text": """
+                <html><body>
+                <h2>Studio albums</h2>
+                <ul>
+                  <li>1999 - Earlier Work</li>
+                  <li>2000 - Acústico</li>
+                  <li>2003 - Corazón Libre</li>
+                  <li>2011 - Deja la vida volar</li>
+                </ul>
+                </body></html>
+                """,
+                "text": "discography",
+                "wikitext": "",
+            }
+        ]
 
         answer, evidence, provenance = _solve_generic_public_reference(
             "How many studio albums were published by Mercedes Sosa between 2000 and 2009 (included)? You can use the latest 2022 version of english wikipedia."
@@ -1414,22 +1793,30 @@ class GaiaOpsBackendTests(unittest.TestCase):
 
         self.assertEqual(answer, "2")
         self.assertTrue(any("Mercedes Sosa discography" in item for item in evidence))
-        self.assertEqual(provenance, ["wikipedia:Mercedes Sosa discography"])
+        self.assertEqual(provenance, ["https://en.wikipedia.org/w/index.php?oldid=20220901000000"])
 
     @patch("domains.gaia_ops.backend._public_reference_title_candidates")
-    @patch("domains.gaia_ops.backend._wikipedia_rendered_html")
-    def test_generic_public_reference_selects_argmin_from_public_table(self, mock_html: object, mock_titles: object) -> None:
+    @patch("domains.gaia_ops.backend._historical_wikipedia_documents")
+    def test_generic_public_reference_selects_argmin_from_public_table(self, mock_historical_docs: object, mock_titles: object) -> None:
         mock_titles.return_value = ["1928 Summer Olympics"]
-        mock_html.return_value = """
-        <html><body>
-        <table class="wikitable">
-          <tr><th>Nation</th><th>IOC code</th><th>Athletes</th></tr>
-          <tr><td>Cuba</td><td>CUB</td><td>1</td></tr>
-          <tr><td>Dominican Republic</td><td>DOM</td><td>1</td></tr>
-          <tr><td>United States</td><td>USA</td><td>100</td></tr>
-        </table>
-        </body></html>
-        """
+        mock_historical_docs.return_value = [
+            {
+                "title": "1928 Summer Olympics",
+                "url": "https://en.wikipedia.org/w/index.php?oldid=19280000000000",
+                "html_text": """
+                <html><body>
+                <table class="wikitable">
+                  <tr><th>Nation</th><th>IOC code</th><th>Athletes</th></tr>
+                  <tr><td>Cuba</td><td>CUB</td><td>1</td></tr>
+                  <tr><td>Dominican Republic</td><td>DOM</td><td>1</td></tr>
+                  <tr><td>United States</td><td>USA</td><td>100</td></tr>
+                </table>
+                </body></html>
+                """,
+                "text": "olympics",
+                "wikitext": "",
+            }
+        ]
 
         answer, evidence, provenance = _solve_generic_public_reference(
             "What country had the least number of athletes at the 1928 Summer Olympics? If there's a tie for a number of athletes, return the first in alphabetical order. Give the IOC country code as your answer."
@@ -1440,19 +1827,27 @@ class GaiaOpsBackendTests(unittest.TestCase):
         self.assertEqual(provenance, ["wikipedia:1928 Summer Olympics"])
 
     @patch("domains.gaia_ops.backend._public_reference_title_candidates")
-    @patch("domains.gaia_ops.backend._wikipedia_rendered_html")
-    def test_generic_public_reference_returns_adjacent_roster_names(self, mock_html: object, mock_titles: object) -> None:
+    @patch("domains.gaia_ops.backend._historical_wikipedia_documents")
+    def test_generic_public_reference_returns_adjacent_roster_names(self, mock_historical_docs: object, mock_titles: object) -> None:
         mock_titles.return_value = ["Hokkaido Nippon-Ham Fighters"]
-        mock_html.return_value = """
-        <html><body>
-        <table class="wikitable">
-          <tr><th>Number</th><th>Pitcher</th></tr>
-          <tr><td>18</td><td>Kazunari Yoshida</td></tr>
-          <tr><td>19</td><td>Taishō Tamai</td></tr>
-          <tr><td>20</td><td>Kenta Uehara</td></tr>
-        </table>
-        </body></html>
-        """
+        mock_historical_docs.return_value = [
+            {
+                "title": "Hokkaido Nippon-Ham Fighters",
+                "url": "https://en.wikipedia.org/w/index.php?oldid=20230701000000",
+                "html_text": """
+                <html><body>
+                <table class="wikitable">
+                  <tr><th>Number</th><th>Pitcher</th></tr>
+                  <tr><td>18</td><td>Kazunari Yoshida</td></tr>
+                  <tr><td>19</td><td>Taishō Tamai</td></tr>
+                  <tr><td>20</td><td>Kenta Uehara</td></tr>
+                </table>
+                </body></html>
+                """,
+                "text": "roster",
+                "wikitext": "",
+            }
+        ]
 
         answer, evidence, provenance = _solve_generic_public_reference(
             "Who are the pitchers with the number before and after Taishō Tamai's number as of July 2023? Give them to me in the form Pitcher Before, Pitcher After, use their last names only, in Roman characters."
@@ -1463,18 +1858,26 @@ class GaiaOpsBackendTests(unittest.TestCase):
         self.assertEqual(provenance, ["wikipedia:Hokkaido Nippon-Ham Fighters"])
 
     @patch("domains.gaia_ops.backend._public_reference_title_candidates")
-    @patch("domains.gaia_ops.backend._wikipedia_rendered_html")
-    def test_generic_public_reference_counts_images_on_public_page(self, mock_html: object, mock_titles: object) -> None:
+    @patch("domains.gaia_ops.backend._historical_wikipedia_documents")
+    def test_generic_public_reference_counts_images_on_public_page(self, mock_historical_docs: object, mock_titles: object) -> None:
         mock_titles.return_value = ["Lego"]
-        mock_html.return_value = """
-        <html><body>
-        <div class="mw-parser-output">
-          <img src="https://example.com/a.jpg" alt="brick" />
-          <img src="https://example.com/b.jpg" alt="set" />
-          <img src="https://example.com/c.jpg" alt="logo" />
-        </div>
-        </body></html>
-        """
+        mock_historical_docs.return_value = [
+            {
+                "title": "Lego",
+                "url": "https://en.wikipedia.org/w/index.php?oldid=20220101000000",
+                "html_text": """
+                <html><body>
+                <div class="mw-parser-output">
+                  <img src="https://example.com/a.jpg" alt="brick" />
+                  <img src="https://example.com/b.jpg" alt="set" />
+                  <img src="https://example.com/c.jpg" alt="logo" />
+                </div>
+                </body></html>
+                """,
+                "text": "lego",
+                "wikitext": "",
+            }
+        ]
 
         answer, evidence, provenance = _solve_generic_public_reference(
             "How many images are there in the latest 2022 Lego english wikipedia article?"
@@ -1482,7 +1885,7 @@ class GaiaOpsBackendTests(unittest.TestCase):
 
         self.assertEqual(answer, "3")
         self.assertTrue(any("image count" in item for item in evidence))
-        self.assertEqual(provenance, ["wikipedia:Lego"])
+        self.assertEqual(provenance, ["https://en.wikipedia.org/w/index.php?oldid=20220101000000"])
 
     @patch("domains.gaia_ops.backend._public_reference_search_documents")
     @patch("domains.gaia_ops.backend._public_reference_title_candidates")
@@ -1515,16 +1918,196 @@ class GaiaOpsBackendTests(unittest.TestCase):
         self.assertTrue(any("url=https://example.com/olympics" in item for item in evidence))
         self.assertEqual(provenance, ["https://example.com/olympics"])
 
+    @patch("domains.gaia_ops.backend._http_get_text")
+    @patch("domains.gaia_ops.backend._fetch_search_documents")
+    def test_public_record_search_documents_prioritizes_exact_event_title(
+        self,
+        mock_fetch_search: object,
+        mock_http_get_text: object,
+    ) -> None:
+        mock_fetch_search.return_value = [
+            {
+                "title": "Summer Olympic Games - Wikipedia",
+                "url": "https://en.wikipedia.org/wiki/Summer_Olympic_Games",
+                "text": "broad olympics page",
+            },
+            {
+                "title": "1928 Summer Olympics - Wikipedia",
+                "url": "https://en.wikipedia.org/wiki/1928_Summer_Olympics",
+                "text": "exact event page",
+            },
+        ]
+        mock_http_get_text.return_value = "<html><body>placeholder</body></html>"
+
+        documents = _public_record_search_documents(
+            "What country had the least number of athletes at the 1928 Summer Olympics? Give the IOC country code as your answer."
+        )
+
+        self.assertGreaterEqual(len(documents), 2)
+        self.assertEqual(documents[0]["title"], "1928 Summer Olympics - Wikipedia")
+
+    @patch("domains.gaia_ops.backend._wayback_snapshot_url")
+    @patch("domains.gaia_ops.backend._http_get_text")
+    @patch("domains.gaia_ops.backend._fetch_search_documents")
+    def test_search_documents_for_title_prefers_historical_year_aligned_result(
+        self,
+        mock_fetch_search: object,
+        mock_http_get_text: object,
+        mock_wayback_url: object,
+    ) -> None:
+        mock_fetch_search.return_value = [
+            {
+                "title": "Mercedes Sosa discography",
+                "url": "https://en.wikipedia.org/wiki/Mercedes_Sosa_discography",
+                "snippet": "Current discography page",
+                "text": "Current discography page",
+            },
+            {
+                "title": "Mercedes Sosa discography (2009 archive)",
+                "url": "https://example.com/mercedes-sosa-2009",
+                "snippet": "Historical 2009 discography snapshot",
+                "text": "Historical 2009 discography snapshot",
+            },
+        ]
+        mock_http_get_text.return_value = "<html><body>discography</body></html>"
+        mock_wayback_url.return_value = ""
+
+        documents = _search_documents_for_title(
+            "Mercedes Sosa discography",
+            suffix_terms=("wikipedia",),
+            anchor_prompt="How many studio albums were published by Mercedes Sosa between 2000 and 2009 (included)?",
+        )
+
+        self.assertGreaterEqual(len(documents), 2)
+        self.assertEqual(documents[0]["url"], "https://example.com/mercedes-sosa-2009")
+
+    @patch("domains.gaia_ops.backend._wayback_snapshot_url")
+    @patch("domains.gaia_ops.backend._http_get_text")
+    @patch("domains.gaia_ops.backend._fetch_search_documents")
+    def test_public_reference_search_documents_adds_archived_snapshot_for_historical_prompt(
+        self,
+        mock_fetch_search: object,
+        mock_http_get_text: object,
+        mock_wayback_url: object,
+    ) -> None:
+        prompt = "As of July 2023, who are the pitchers before and after Taisho Tamai?"
+        current_url = "https://en.wikipedia.org/wiki/Example_roster"
+        archive_url = "https://web.archive.org/web/20230715000000/https://en.wikipedia.org/wiki/Example_roster"
+        mock_fetch_search.return_value = [
+            {
+                "title": "Example roster - Wikipedia",
+                "url": current_url,
+                "snippet": "Current roster",
+                "text": "Current roster",
+            }
+        ]
+
+        def _http_side_effect(url: str, *args: object, **kwargs: object) -> str:
+            if url == current_url:
+                return "<html><body>Current roster with enough surrounding text to exceed the archive materialization threshold for historical anchoring.</body></html>"
+            if url == archive_url:
+                return "<html><body>Archived 2023 roster with enough surrounding text to exceed the archive materialization threshold for historical anchoring.</body></html>"
+            return ""
+
+        mock_http_get_text.side_effect = _http_side_effect
+        mock_wayback_url.return_value = archive_url
+
+        documents = _search_documents_from_prompt(prompt, suffix_terms=("wikipedia",))
+
+        self.assertTrue(any(document.get("url") == archive_url for document in documents))
+
     @patch("domains.gaia_ops.backend._public_reference_search_documents")
+    @patch("domains.gaia_ops.backend._historical_wikipedia_documents")
+    @patch("domains.gaia_ops.backend._public_reference_title_candidates")
+    def test_public_reference_history_ops_uses_historical_snapshot_for_year_count(
+        self,
+        mock_titles: object,
+        mock_historical_docs: object,
+        mock_search_docs: object,
+    ) -> None:
+        mock_titles.return_value = ["Mercedes Sosa discography"]
+        mock_historical_docs.return_value = [
+            {
+                "title": "Mercedes Sosa discography",
+                "url": "https://en.wikipedia.org/w/index.php?oldid=20220901000000",
+                "html_text": """
+                    <html><body>
+                    <h2>Studio albums</h2>
+                    <table>
+                      <tr><th>Year</th><th>Album</th></tr>
+                      <tr><td>2000</td><td>Misa criolla</td></tr>
+                      <tr><td>2003</td><td>Acústico</td></tr>
+                      <tr><td>2009</td><td>Cantora</td></tr>
+                      <tr><td>2011</td><td>Posthumous</td></tr>
+                    </table>
+                    </body></html>
+                """,
+                "text": "discography",
+                "wikitext": "",
+            }
+        ]
+        mock_search_docs.return_value = []
+
+        answer, evidence, provenance = _solve_public_reference_history_ops(
+            "How many studio albums were published by Mercedes Sosa between 2000 and 2009 (included)? You can use the latest 2022 version of english wikipedia."
+        )
+
+        self.assertEqual(answer, "3")
+        self.assertTrue(any("structured table count 2000-2009: 3" in item for item in evidence))
+        self.assertEqual(provenance, ["https://en.wikipedia.org/w/index.php?oldid=20220901000000"])
+
+    @patch("domains.gaia_ops.backend._public_reference_search_documents")
+    @patch("domains.gaia_ops.backend._historical_wikipedia_documents")
+    @patch("domains.gaia_ops.backend._public_reference_title_candidates")
+    def test_public_reference_history_ops_does_not_abort_when_search_fallback_fails(
+        self,
+        mock_titles: object,
+        mock_historical_docs: object,
+        mock_search_docs: object,
+    ) -> None:
+        mock_titles.return_value = ["Mercedes Sosa discography"]
+        mock_historical_docs.return_value = [
+            {
+                "title": "Mercedes Sosa discography",
+                "url": "https://en.wikipedia.org/w/index.php?oldid=20220901000000",
+                "html_text": """
+                    <html><body>
+                    <h2>Studio albums</h2>
+                    <table>
+                      <tr><th>Year</th><th>Album</th></tr>
+                      <tr><td>2000</td><td>Misa criolla</td></tr>
+                      <tr><td>2003</td><td>Acústico</td></tr>
+                      <tr><td>2009</td><td>Cantora</td></tr>
+                    </table>
+                    </body></html>
+                """,
+                "text": "discography",
+                "wikitext": "",
+            }
+        ]
+        mock_search_docs.side_effect = RuntimeError("search unavailable")
+
+        answer, evidence, provenance = _solve_public_reference_history_ops(
+            "How many studio albums were published by Mercedes Sosa between 2000 and 2009 (included)? You can use the latest 2022 version of english wikipedia."
+        )
+
+        self.assertEqual(answer, "3")
+        self.assertTrue(any("structured table count 2000-2009: 3" in item for item in evidence))
+        self.assertEqual(provenance, ["https://en.wikipedia.org/w/index.php?oldid=20220901000000"])
+
+    @patch("domains.gaia_ops.backend._public_reference_search_documents")
+    @patch("domains.gaia_ops.backend._historical_wikipedia_documents")
     @patch("domains.gaia_ops.backend._wikipedia_revision_snapshots_around")
     @patch("domains.gaia_ops.backend._public_reference_title_candidates")
     def test_public_reference_history_ops_extracts_removed_phrase_from_revision_snapshots(
         self,
         mock_titles: object,
         mock_snapshots: object,
+        mock_historical_docs: object,
         mock_search_docs: object,
     ) -> None:
         mock_titles.return_value = ["Example Dragon"]
+        mock_historical_docs.return_value = []
         mock_snapshots.return_value = [
             {"timestamp": "2023-06-10T10:00:00Z", "content": "* Silly dragon joke\n* Stable line"},
             {"timestamp": "2023-06-12T10:00:00Z", "content": "* Stable line"},
@@ -1621,8 +2204,13 @@ class GaiaOpsBackendTests(unittest.TestCase):
         self.assertTrue(any("defunct nationality row" in item for item in evidence))
         self.assertEqual(provenance, ["https://example.com/malko"])
 
+    @patch("domains.gaia_ops.backend._public_record_schedule_documents")
     @patch("domains.gaia_ops.backend._public_record_search_documents")
-    def test_public_record_ops_extracts_arrival_time_from_schedule_table(self, mock_search_docs: object) -> None:
+    def test_public_record_ops_extracts_arrival_time_from_schedule_table(
+        self,
+        mock_search_docs: object,
+        mock_schedule_docs: object,
+    ) -> None:
         mock_search_docs.return_value = [
             {
                 "title": "Tri-Rail ridership",
@@ -1639,6 +2227,7 @@ class GaiaOpsBackendTests(unittest.TestCase):
                 """,
             }
         ]
+        mock_schedule_docs.side_effect = lambda prompt, seed_documents, service_id="": list(seed_documents)
 
         answer, evidence, provenance = _solve_public_record_ops(
             "What time was the Tri-Rail train that carried the most passengers on May 27, 2019 scheduled to arrive in Pompano Beach?"
@@ -1647,6 +2236,122 @@ class GaiaOpsBackendTests(unittest.TestCase):
         self.assertEqual(answer, "9:02 AM")
         self.assertTrue(any("Passengers" in item for item in evidence))
         self.assertEqual(provenance, ["https://example.com/tri-rail"])
+
+    @patch("domains.gaia_ops.backend._public_record_schedule_documents")
+    @patch("domains.gaia_ops.backend._public_record_search_documents")
+    def test_public_record_ops_joins_daily_report_to_schedule_tables(
+        self,
+        mock_search_docs: object,
+        mock_schedule_docs: object,
+    ) -> None:
+        documents = [
+            {
+                "title": "Tri-Rail Commuter Rail Operations",
+                "url": "https://example.com/ridership.pdf",
+                "text": "",
+                "html_text": "",
+                "pdf_text": (
+                    "Report for: May 2019\n"
+                    "P685 3,0850 0 0 352 360 0 0 0 0 0 355 372 0 0 0 0 0 337 349 0 0 0 0 0 319 311 330 0 0 0 0\n"
+                    "P680 2,9670 0 0 358 349 0 0 0 0 0 334 324 0 0 0 0 0 379 273 0 0 0 0 0 332 302 316 0 0 0 0\n"
+                ),
+            },
+            {
+                "title": "Weekend/Holiday Train Schedule",
+                "url": "https://example.com/schedule",
+                "text": "",
+                "pdf_text": "",
+                "html_text": """
+                    <html><body>
+                    <table>
+                      <tr><th>Weekend-Southbound</th></tr>
+                      <tr><td>Mangonia Park</td></tr>
+                      <tr><td>West Palm Beach</td></tr>
+                      <tr><td>Lake Worth Beach</td></tr>
+                      <tr><td>Boynton Beach</td></tr>
+                      <tr><td>Delray Beach</td></tr>
+                      <tr><td>Boca Raton</td></tr>
+                      <tr><td>Deerfield Beach</td></tr>
+                      <tr><td>Pompano Beach</td></tr>
+                    </table>
+                    <table>
+                      <tr><th>P685</th><th>P680</th></tr>
+                      <tr><td>5:20 PM</td><td>2:52 PM</td></tr>
+                      <tr><td>5:26 PM</td><td>2:57 PM</td></tr>
+                      <tr><td>5:36 PM</td><td>3:03 PM</td></tr>
+                      <tr><td>5:43 PM</td><td>3:09 PM</td></tr>
+                      <tr><td>5:52 PM</td><td>3:14 PM</td></tr>
+                      <tr><td>5:59 PM</td><td>3:23 PM</td></tr>
+                      <tr><td>6:06 PM</td><td>3:27 PM</td></tr>
+                      <tr><td>6:41 PM</td><td>3:31 PM</td></tr>
+                    </table>
+                    </body></html>
+                """,
+            },
+        ]
+        mock_search_docs.return_value = documents
+        mock_schedule_docs.side_effect = lambda prompt, seed_documents, service_id="": list(seed_documents)
+
+        answer, evidence, provenance = _solve_public_record_ops(
+            "What time was the Tri-Rail train that carried the most passengers on May 27, 2019 scheduled to arrive in Pompano Beach? Express your answer in the 12-hour digital clock format with AM or PM."
+        )
+
+        self.assertEqual(answer, "6:41 PM")
+        self.assertTrue(any("selected service=P685" in item for item in evidence))
+        self.assertTrue(any("paired schedule tables" in item for item in evidence))
+        self.assertEqual(provenance, ["https://example.com/ridership.pdf", "https://example.com/schedule"])
+
+    @patch("domains.gaia_ops.backend._wikipedia_rendered_text")
+    @patch("domains.gaia_ops.backend._wikipedia_search_titles")
+    @patch("domains.gaia_ops.backend._public_record_search_documents")
+    def test_public_record_ops_prefers_exact_participation_list_over_broad_olympics_page(
+        self,
+        mock_search_docs: object,
+        mock_search_titles: object,
+        mock_rendered_text: object,
+    ) -> None:
+        mock_search_docs.return_value = [
+            {
+                "title": "Summer Olympic Games - Wikipedia",
+                "url": "https://en.wikipedia.org/wiki/Summer_Olympic_Games",
+                "text": "1896 1900 1904 1908 1912 1920 1924 1928 1932",
+                "html_text": """
+                <html><body>
+                <table>
+                  <tr><th>Summer Olympic Games</th></tr>
+                  <tr><td>1896</td></tr>
+                  <tr><td>1900</td></tr>
+                  <tr><td>1904</td></tr>
+                  <tr><td>1908</td></tr>
+                </table>
+                </body></html>
+                """,
+            },
+            {
+                "title": "1928 Summer Olympics - Wikipedia",
+                "url": "https://en.wikipedia.org/wiki/1928_Summer_Olympics",
+                "text": "Argentina (81 athletes) Cuba (1) Dominican Republic (1) United States (280)",
+                "html_text": """
+                <html><body>
+                <table>
+                  <tr><th>Participating National Olympic Committees</th></tr>
+                  <tr><td>Argentina (81 athletes) Cuba (1) Dominican Republic (1) United States (280)</td></tr>
+                </table>
+                </body></html>
+                """,
+            },
+        ]
+        mock_search_titles.return_value = ["Cuba at the 1928 Summer Olympics"]
+        mock_rendered_text.return_value = "Nation Cuba NOC CUB Games 1928"
+
+        answer, evidence, provenance = _solve_public_record_ops(
+            "What country had the least number of athletes at the 1928 Summer Olympics? If there's a tie for a number of athletes, return the first in alphabetical order. Give the IOC country code as your answer."
+        )
+
+        self.assertEqual(answer, "CUB")
+        self.assertTrue(any("parenthetical count candidate Cuba => 1" in item for item in evidence))
+        self.assertTrue(any("mapped Cuba => CUB" in item for item in evidence))
+        self.assertEqual(provenance, ["https://en.wikipedia.org/wiki/1928_Summer_Olympics"])
 
     @patch("domains.gaia_ops.backend._fetch_document_with_pdf")
     @patch("domains.gaia_ops.backend._search_documents_for_title")
@@ -1673,6 +2378,28 @@ class GaiaOpsBackendTests(unittest.TestCase):
         self.assertEqual(answer, "3.5")
         self.assertTrue(any("difference between Paper A=12.5 and Paper B=9.0 => 3.5" in item for item in evidence))
         self.assertEqual(len(provenance), 2)
+
+    @patch("domains.gaia_ops.backend._fetch_document_with_pdf")
+    @patch("domains.gaia_ops.backend._search_documents_for_title")
+    def test_paper_numeric_lookup_passes_anchor_prompt_to_title_search(
+        self,
+        mock_search_title: object,
+        mock_fetch_pdf: object,
+    ) -> None:
+        prompt = 'In Valentina Re’s contribution to the 2017 book "World Building: Transmedia, Fans, Industries", what horror movie does the author cite?'
+        mock_search_title.return_value = [
+            {
+                "title": "World Building: Transmedia, Fans, Industries",
+                "snippet": "",
+                "url": "https://example.com/world-building.pdf",
+                "text": "",
+            }
+        ]
+        mock_fetch_pdf.return_value = {"text": "", "pdf_text": "A Nightmare on Elm Street popularized metalepsis."}
+
+        _solve_paper_numeric_lookup(prompt)
+
+        self.assertEqual(mock_search_title.call_args.kwargs.get("anchor_prompt"), prompt)
 
     @patch("domains.gaia_ops.backend._fetch_document_with_pdf")
     @patch("domains.gaia_ops.backend._search_documents_for_title")
@@ -1747,6 +2474,154 @@ class GaiaOpsBackendTests(unittest.TestCase):
         self.assertTrue(any("transcript answer=3" in item for item in evidence))
         self.assertIn("youtube:transcript", provenance)
 
+    @patch("domains.gaia_ops.backend._solve_thinking_machine_prediction", side_effect=AssertionError("legacy helper should not run"))
+    @patch("domains.gaia_ops.backend._solve_youtube_bird_species_count", side_effect=AssertionError("legacy helper should not run"))
+    @patch("domains.gaia_ops.backend._youtube_video_metadata")
+    @patch("domains.gaia_ops.backend._fetch_search_documents")
+    @patch("domains.gaia_ops.backend._youtube_transcript_segments")
+    def test_video_transcript_ops_uses_generic_document_scalar_without_legacy_story_helper(
+        self,
+        mock_segments: object,
+        mock_search_docs: object,
+        mock_video_metadata: object,
+        _legacy_birds: object,
+        _legacy_prediction: object,
+    ) -> None:
+        mock_segments.return_value = []
+        mock_video_metadata.return_value = {}
+        mock_search_docs.return_value = [
+            {
+                "url": "https://example.com/companion-article",
+                "title": "Companion article",
+                "snippet": "The highest number of bird species seen simultaneously was 7.",
+                "text": "Observers reported the highest number of bird species on camera simultaneously was 7.",
+            }
+        ]
+
+        answer, evidence, provenance = _solve_video_transcript_ops(
+            "In the video https://www.youtube.com/watch?v=L1vXCYZAYYM, what is the highest number of bird species to be on camera simultaneously?"
+        )
+
+        self.assertEqual(answer, "7")
+        self.assertTrue(any("video_document_scalar" in item for item in evidence))
+        self.assertIn("https://example.com/companion-article", provenance)
+
+    @patch("domains.gaia_ops.backend._solve_thinking_machine_prediction", side_effect=AssertionError("legacy helper should not run"))
+    @patch("domains.gaia_ops.backend._solve_youtube_bird_species_count", side_effect=AssertionError("legacy helper should not run"))
+    @patch("domains.gaia_ops.backend._youtube_video_metadata")
+    @patch("domains.gaia_ops.backend._fetch_search_documents")
+    @patch("domains.gaia_ops.backend._youtube_transcript_segments")
+    def test_video_transcript_ops_counts_species_from_fused_evidence_without_legacy_helper(
+        self,
+        mock_segments: object,
+        mock_search_docs: object,
+        mock_video_metadata: object,
+        _legacy_birds: object,
+        _legacy_prediction: object,
+    ) -> None:
+        mock_segments.return_value = [
+            {"start": 1.0, "end": 4.0, "text": "An emperor penguin moves past a giant petrel."},
+        ]
+        mock_video_metadata.return_value = {
+            "title": "Antarctic birds on camera",
+            "description": "Features an Adélie penguin near the colony.",
+        }
+        mock_search_docs.return_value = [
+            {
+                "url": "https://example.com/birds",
+                "title": "Bird guide",
+                "snippet": "Gentoo penguin joins the group.",
+                "text": "Observers later note a gentoo penguin with the emperor penguin and giant petrel.",
+            }
+        ]
+
+        answer, evidence, provenance = _solve_video_transcript_ops(
+            "In the video https://www.youtube.com/watch?v=L1vXCYZAYYM, what is the highest number of bird species to be on camera simultaneously?"
+        )
+
+        self.assertEqual(answer, "4")
+        self.assertTrue(any("video species detected=" in item for item in evidence))
+        self.assertIn("https://example.com/birds", provenance)
+
+    @patch("domains.gaia_ops.backend._solve_thinking_machine_prediction", side_effect=AssertionError("legacy helper should not run"))
+    @patch("domains.gaia_ops.backend._solve_youtube_bird_species_count", side_effect=AssertionError("legacy helper should not run"))
+    @patch("domains.gaia_ops.backend._youtube_video_metadata")
+    @patch("domains.gaia_ops.backend._fetch_search_documents")
+    @patch("domains.gaia_ops.backend._youtube_transcript_segments")
+    def test_video_transcript_ops_uses_generic_person_evidence_graph_without_legacy_helper(
+        self,
+        mock_segments: object,
+        mock_search_docs: object,
+        mock_video_metadata: object,
+        _legacy_birds: object,
+        _legacy_prediction: object,
+    ) -> None:
+        mock_segments.return_value = [
+            {"start": 10.0, "end": 18.0, "text": "Claude Shannon says thinking machines will handle routine work."},
+        ]
+        mock_video_metadata.return_value = {
+            "title": "The Thinking Machine",
+            "description": "A scientist predicts the future of AI and robots.",
+        }
+        mock_search_docs.return_value = [
+            {
+                "url": "https://example.com/thinking-machine",
+                "title": "The Thinking Machine and Claude Shannon",
+                "snippet": "Claude Shannon is the scientist making the prediction about the future of AI.",
+                "text": "In the film The Thinking Machine, Claude Shannon is explicitly identified as the scientist making the prediction about the future of AI and robots.",
+            }
+        ]
+
+        answer, evidence, provenance = _solve_video_transcript_ops(
+            "In the video https://www.youtube.com/watch?v=demo999, which scientist is predicting the future of AI and robots?"
+        )
+
+        self.assertEqual(answer, "Claude Shannon")
+        self.assertTrue(any("video best person=Claude Shannon" in item for item in evidence))
+        self.assertTrue(provenance)
+
+    @patch("domains.gaia_ops.backend._solve_numpy_regression_github_case", side_effect=AssertionError("legacy helper should not run"))
+    @patch("domains.gaia_ops.backend._github_issue_timeline_events")
+    @patch("domains.gaia_ops.backend._github_search_issues")
+    @patch("domains.gaia_ops.backend._fetch_search_documents")
+    def test_github_public_artifact_ops_uses_generic_issue_timeline_without_legacy_named_helper(
+        self,
+        mock_search_docs: object,
+        mock_search_issues: object,
+        mock_timeline: object,
+        _legacy_solver: object,
+    ) -> None:
+        mock_search_docs.return_value = [
+            {
+                "url": "https://github.com/numpy/numpy/issues/1841",
+                "title": "numpy/numpy issue 1841",
+                "snippet": "Regression issue with label component: numpy.polynomial",
+                "text": "Issue in repo numpy/numpy",
+            }
+        ]
+        mock_search_issues.return_value = [
+            {
+                "number": 1841,
+                "html_url": "https://github.com/numpy/numpy/issues/1841",
+                "closed_at": "2019-05-10T00:00:00Z",
+            }
+        ]
+        mock_timeline.return_value = [
+            {
+                "event": "labeled",
+                "created_at": "2019-05-04T12:00:00Z",
+                "label": {"name": "regression"},
+            }
+        ]
+
+        answer, evidence, provenance = _solve_github_public_artifact_ops(
+            "According to GitHub, what date was the earliest closed issue with the label component: numpy.polynomial labeled as regression? Answer in MM/DD/YY."
+        )
+
+        self.assertEqual(answer, "05/04/19")
+        self.assertTrue(any("generic_github_issue_event" in item for item in evidence))
+        self.assertEqual(provenance, ["https://github.com/numpy/numpy/issues/1841"])
+
     @patch("domains.gaia_ops.backend._wayback_snapshot_html")
     @patch("domains.gaia_ops.backend._search_documents_from_prompt")
     def test_web_archive_ops_extracts_removed_menu_item(self, mock_search_docs: object, mock_snapshot_html: object) -> None:
@@ -1810,7 +2685,7 @@ class GaiaOpsBackendTests(unittest.TestCase):
         self.assertTrue(any("fractions from fractions.png" in item for item in evidence))
         self.assertEqual(provenance, ["image:fractions.png"])
 
-    @patch("domains.gaia_ops.backend._easyocr_text_lines")
+    @patch("domains.gaia_ops.backend._easyocr_text_lines_with_variants")
     def test_image_vision_ops_extracts_latest_year(self, mock_lines: object) -> None:
         mock_lines.return_value = ["1894", "2003", "1998"]
 
@@ -1823,17 +2698,44 @@ class GaiaOpsBackendTests(unittest.TestCase):
         self.assertTrue(any("years from poster.jpg" in item for item in evidence))
         self.assertEqual(provenance, ["image:poster.jpg"])
 
-    @patch("domains.gaia_ops.backend._solve_github_contributor_name_match")
-    def test_github_public_artifact_ops_routes_contributor_match_structurally(self, mock_solver: object) -> None:
-        mock_solver.return_value = ("Zhao Ziyang", ["matched contributor"])
+    @patch("domains.gaia_ops.backend._solve_github_contributor_name_match", side_effect=AssertionError("legacy helper should not run"))
+    @patch("domains.gaia_ops.backend._fetch_search_documents")
+    def test_github_public_artifact_ops_routes_contributor_match_structurally(
+        self, mock_search_docs: object, _legacy_solver: object
+    ) -> None:
+        def _fake_search(query: str, **_: object) -> list[dict[str, str]]:
+            if "same name as" in query.lower() or "github" in query.lower():
+                return [
+                    {
+                        "url": "https://github.com/opencv/opencv/pull/1",
+                        "title": "OpenCV PR by Zhao Ziyang",
+                        "snippet": "Contributor Zhao Ziyang added Mask-RCNN support.",
+                        "text": "Contributor Zhao Ziyang added Mask-RCNN support.",
+                    }
+                ]
+            if "former chinese head of government" in query.lower():
+                return [
+                    {
+                        "url": "https://en.wikipedia.org/wiki/Zhao_Ziyang",
+                        "title": "Zhao Ziyang - former Chinese head of government",
+                        "snippet": "Zhao Ziyang served as premier of China.",
+                        "text": "Zhao Ziyang served as premier of China.",
+                    }
+                ]
+            return []
+
+        mock_search_docs.side_effect = _fake_search
 
         answer, evidence, provenance = _solve_github_public_artifact_ops(
             "Which contributor to the version of OpenCV where support was added for the Mask-RCNN model has the same name as a former Chinese head of government when the names are transliterated to the Latin alphabet?"
         )
 
         self.assertEqual(answer, "Zhao Ziyang")
-        self.assertTrue(any("matched contributor" in item for item in evidence))
-        self.assertEqual(provenance, ["github:contributors", "reference:public-entity-match"])
+        self.assertTrue(any("generic_github_contributor_match" in item for item in evidence))
+        self.assertEqual(
+            provenance,
+            ["https://github.com/opencv/opencv/pull/1", "https://en.wikipedia.org/wiki/Zhao_Ziyang"],
+        )
 
     @patch("domains.gaia_ops.backend._solve_generic_public_reference")
     def test_solve_question_generic_public_reference_requires_stronger_confidence_before_candidate_answer(
@@ -1856,11 +2758,8 @@ class GaiaOpsBackendTests(unittest.TestCase):
 
         result = solve_question(state.problem_text, state)
 
-        self.assertTrue(result["ok"])
-        self.assertNotIn("solved", result)
-        self.assertEqual(result["payload"]["candidate_answer"], "")
-        self.assertEqual(result["payload"]["state_metadata"]["answer_mode"], "generic_public_reference")
-        self.assertLess(result["payload"]["state_metadata"]["answer_confidence"], 0.72)
+        self.assertFalse(result["ok"])
+        self.assertIn("quality checks", result["result"])
 
     @patch("domains.gaia_ops.backend._solve_generic_public_reference")
     def test_solve_question_generic_public_reference_exposes_candidate_answer_when_evidence_is_strong(
@@ -1892,6 +2791,9 @@ class GaiaOpsBackendTests(unittest.TestCase):
         self.assertEqual(result["payload"]["candidate_answer"], "3")
         self.assertEqual(result["payload"]["state_metadata"]["candidate_answer"], "3")
         self.assertGreaterEqual(result["payload"]["state_metadata"]["answer_confidence"], 0.72)
+        self.assertEqual(result["payload"]["state_metadata"]["reasoning_schema"]["source_family"], "public_reference")
+        self.assertEqual(result["payload"]["state_metadata"]["augmentation_layer"]["mode"], "trillion_structural")
+        self.assertTrue(result["payload"]["state_metadata"]["answer_self_check"]["accepted"])
 
     def test_fallback_repairs_do_not_answer_low_confidence_generic_public_reference_candidates(self) -> None:
         backend = GaiaOpsReasoningDomain()
@@ -1920,3 +2822,20 @@ class GaiaOpsBackendTests(unittest.TestCase):
         action = backend.fallback_repairs(state)[0]
 
         self.assertEqual(action.type, ActionType.BACKTRACK)
+
+    def test_candidate_answer_ready_rejects_failed_self_check(self) -> None:
+        backend = GaiaOpsReasoningDomain()
+        state = SimpleNamespace(
+            metadata={
+                "candidate_answer": "CUB",
+                "answer_confidence": 0.92,
+                "answer_mode": "public_record_ops",
+                "answer_self_check": {
+                    "accepted": False,
+                    "support": 0.18,
+                    "notes": ["temporal provenance weak"],
+                },
+            }
+        )
+
+        self.assertFalse(backend._candidate_answer_ready(state))
