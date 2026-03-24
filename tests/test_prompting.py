@@ -55,11 +55,29 @@ class PromptCompactionTests(unittest.TestCase):
                 },
                 "augmentation_layer": {
                     "mode": "trillion_structural",
+                    "mindset": "recurse on hidden structure before accepting the first plausible answer",
                     "recursion": "time -> source -> operator -> rival -> contract",
                     "motif": "public_reference::count",
                     "source_order": "page -> section/table -> rival answer check",
                     "synthesis": "answer only when source/time/operator agree",
                     "output_guard": "comma-separated list with no whitespace",
+                },
+                "task_algebra": {
+                    "equation": "time x source x operator x contract x rival",
+                    "time_axis": "snapshot_year:2022",
+                    "source_axis": "public_reference",
+                    "operator_axis": "count",
+                    "contract_axis": "comma-separated list with no whitespace",
+                    "operator_stack": "retrieve pages -> isolate section/table -> apply operator -> contract check",
+                    "closure_rule": "answer only when one candidate survives the rival check and the output contract",
+                },
+                "internal_role_machine": {
+                    "roles": "framer -> retriever -> resolver -> judge -> closer",
+                    "framer": "lock time/source/operator/contract",
+                    "retriever": "collect only relevant evidence",
+                    "resolver": "generate a small rival set",
+                    "judge": "reject candidates that fail alignment",
+                    "closer": "release only the surviving candidate",
                 },
                 "answer_self_check": {
                     "accepted": True,
@@ -103,6 +121,8 @@ class PromptCompactionTests(unittest.TestCase):
         self.assertIn("[RECENT_TOOLS]", prompt)
         self.assertIn("[TACTIC_HINTS]", prompt)
         self.assertIn("[AUGMENTATION]", prompt)
+        self.assertIn("[TASK_ALGEBRA]", prompt)
+        self.assertIn("[ROLE_MACHINE]", prompt)
         self.assertIn("[REASONING_SCHEMA]", prompt)
         self.assertIn("[SELF_CHECK]", prompt)
         self.assertNotIn("[METADATA]", prompt)
@@ -110,6 +130,9 @@ class PromptCompactionTests(unittest.TestCase):
         self.assertIn("target_file=report.xlsx", prompt)
         self.assertIn("candidate_answer=alpha, beta", prompt)
         self.assertIn("mode=trillion_structural", prompt)
+        self.assertIn("mindset=recurse on hidden structure", prompt)
+        self.assertIn("equation=time x source x operator x contract x rival", prompt)
+        self.assertIn("roles=framer -> retriever -> resolver -> judge -> closer", prompt)
         self.assertIn("source_family=public_reference", prompt)
         self.assertIn("contract=comma-separated list with no whitespace", prompt)
         self.assertNotIn("fact one about the target entity | fact two about the supporting source | fact three with a candidate answer | fact four with a date filter | fact five should force truncation", prompt)

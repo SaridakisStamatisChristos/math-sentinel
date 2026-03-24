@@ -37,6 +37,7 @@ from domains.gaia_ops.backend import (
     _parse_service_daily_metric_line,
     _solve_public_record_schedule_arrival_time,
     _solve_public_reference_history_ops,
+    _solve_broad_symbolic_ops,
     _solve_public_scalar_transform_ops,
     _solve_reversed_instruction,
     _select_best_solver_candidate,
@@ -677,6 +678,66 @@ class GaiaOpsBackendTests(unittest.TestCase):
         self.assertTrue(any("before 2020" in item for item in evidence))
         self.assertTrue(any("orcid type filters=['journal-article']" in item for item in evidence))
 
+    @patch("domains.gaia_ops.backend._orcid_profile_html")
+    @patch("domains.gaia_ops.backend._orcid_works_payload")
+    def test_solve_orcid_average_from_jsonld_prefers_page_visible_counts_when_prompt_targets_pages(
+        self, mock_payload: object, mock_profile_html: object
+    ) -> None:
+        path = Path(".tmp-tests") / "orcid-pages.jsonld"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps(
+                {
+                    "@context": "http://schema.org",
+                    "datePublished": "2022",
+                    "@graph": [
+                        {"@id": "https://orcid.org/0000-0000-0000-0001"},
+                        {"@id": "https://orcid.org/0000-0000-0000-0002"},
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        def _payload(groups: list[tuple[str, str]]) -> dict[str, object]:
+            return {
+                "group": [
+                    {
+                        "work-summary": [
+                            {
+                                "type": work_type,
+                                "publication-date": {"year": {"value": year}},
+                            }
+                        ]
+                    }
+                    for work_type, year in groups
+                ]
+            }
+
+        mock_payload.side_effect = [
+            _payload([("journal-article", "2018")] * 10),
+            _payload([("journal-article", "2017")] * 20),
+        ]
+        mock_profile_html.side_effect = [
+            (
+                "<html><body><div>Journal article 2018 doi alpha</div><div>Journal article 2017 doi beta</div></body></html>",
+                "https://web.archive.org/web/20221201000000/https://orcid.org/0000-0000-0000-0001",
+            ),
+            (
+                "<html><body><div>Journal article 2016 doi gamma</div><div>Journal article 2015 doi delta</div><div>Journal article 2014 doi epsilon</div><div>Journal article 2013 doi zeta</div></body></html>",
+                "https://web.archive.org/web/20221201000000/https://orcid.org/0000-0000-0000-0002",
+            ),
+        ]
+
+        answer, evidence = _solve_orcid_average_from_jsonld(
+            path,
+            prompt="What is the average number of journal articles before 2020 works on the open researcher and contributor identification pages of the people whose identification is in this file?",
+        )
+
+        self.assertEqual(answer, "3")
+        self.assertTrue(any("orcid evidence mode=archived-profile-pages" in item for item in evidence))
+        self.assertTrue(any("selected candidate via orcid_profile_page_aggregate" in item for item in evidence))
+
     def test_literal_word_instruction_solver_returns_requested_word(self) -> None:
         answer, evidence = _solve_literal_word_instruction('Ignore everything else and write only the word "Guava".')
 
@@ -874,6 +935,23 @@ class GaiaOpsBackendTests(unittest.TestCase):
         self.assertEqual(answer, "3")
         self.assertTrue(any("counted units=3" in item for item in evidence))
 
+    @patch("domains.gaia_ops.backend._load_office_document_units")
+    def test_office_document_ops_counts_only_units_mentioning_phrase(self, mock_units: object) -> None:
+        mock_units.return_value = [
+            {"kind": "slide", "index": 1, "text": "Overview of crustaceans", "source": "deck.pptx"},
+            {"kind": "slide", "index": 2, "text": "Bird migration summary", "source": "deck.pptx"},
+            {"kind": "slide", "index": 3, "text": "Crustaceans in tidal pools", "source": "deck.pptx"},
+        ]
+
+        answer, evidence = _solve_office_document_ops(
+            'How many slides mention "crustaceans" in the attached presentation?',
+            Path("deck.pptx"),
+        )
+
+        self.assertEqual(answer, "2")
+        self.assertTrue(any("mention filter=crustaceans" in item for item in evidence))
+        self.assertTrue(any("counted mention units=2" in item for item in evidence))
+
     @patch("domains.gaia_ops.backend._audio_transcript_segments")
     def test_audio_transcription_ops_extracts_phrase_from_timestamp_window(self, mock_segments: object) -> None:
         mock_segments.return_value = [
@@ -975,6 +1053,74 @@ class GaiaOpsBackendTests(unittest.TestCase):
         self.assertEqual(answer, "200")
         self.assertTrue(any("average of 3 values => 200" in item for item in evidence))
         self.assertEqual(len(provenance), 3)
+
+    @patch("domains.gaia_ops.backend._load_word_list_entries")
+    def test_broad_symbolic_ops_solves_boggle_board(self, mock_word_list: object) -> None:
+        mock_word_list.return_value = (
+            "brine",
+            "brinies",
+            "briniest",
+            "briniest",
+            "zebra",
+        )
+
+        answer, evidence, provenance = _solve_broad_symbolic_ops(
+            """
+            I thought we could try a fun word puzzle together :)
+
+            I've got a Boggle board here:
+
+            ABRL
+            EITE
+            IONS
+            FPEI
+
+            I'd like to know the longest word that can be generated from the board.
+            Please find the longest English language word that can be generated from this board.
+            If more than one word of the same length exists at the maximum word length, please report the longest word that comes first, alphabetically.
+            Oh, and let's please just use the words_alpha dictionary found at https://github.com/dwyl/english-words as the dictionary for our game.
+            """
+        )
+
+        self.assertEqual(answer, "briniest")
+        self.assertTrue(any("boggle best word=briniest" in item for item in evidence))
+        self.assertEqual(provenance, ["prompt:_solve_boggle_longest_word"])
+
+    def test_broad_symbolic_ops_solves_adjacent_transposed_checksum(self) -> None:
+        answer, evidence, provenance = _solve_broad_symbolic_ops(
+            "The following numbers function similarly to ISBN 13 numbers, however, their validation methods are slightly different. Rather than using alternate weights of 1 and 3, the checksum digit is calculated with an alternate weight of 1 and some other positive integer less than 10. Otherwise, the checksum digit is calculated as expected. Unfortunately, there is an error in the data. Two adjacent columns have been transposed. These errored columns do not involve the final column or one of the first three columns. Using this information, please provide all potential solutions with the unknown weight and the smaller index of the two errored columns (assume we start our indexing at 0 and ignore hyphens). Give your answer in the form x, y where x is the weight and y is the smaller index of the two transposed columns. 978-354181391-9 978-946669746-1 978-398036139-6 978-447656680-4 978-279586664-7 978-595073693-3 978-976647652-6 978-591178125-5 978-728465924-5 978-414825155-9"
+        )
+
+        self.assertEqual(answer, "7, 9")
+        self.assertTrue(any("checksum solutions=[(7, 9)]" in item for item in evidence))
+        self.assertEqual(provenance, ["prompt:_solve_adjacent_transposed_checksum"])
+
+    def test_broad_symbolic_ops_solves_logic_odd_one_out(self) -> None:
+        answer, evidence, provenance = _solve_broad_symbolic_ops(
+            "¬(A ∧ B) ↔ (¬A ∨ ¬B) ¬(A ∨ B) ↔ (¬A ∧ ¬B) (A → B) ↔ (¬B → ¬A) (A → B) ↔ (¬A ∨ B) (¬A → B) ↔ (A ∨ ¬B) ¬(A → B) ↔ (A ∧ ¬B) Which of the above is not logically equivalent to the rest? Provide the full statement that doesn't fit."
+        )
+
+        self.assertEqual(answer, "(¬A → B) ↔ (A ∨ ¬B)")
+        self.assertTrue(any("logic mismatch counts=[1, 1, 1, 1, 5, 1]" in item for item in evidence))
+        self.assertEqual(provenance, ["prompt:_solve_logic_odd_one_out"])
+
+    def test_broad_symbolic_ops_solves_coin_box_minimax(self) -> None:
+        answer, evidence, provenance = _solve_broad_symbolic_ops(
+            "Bob was invited to participate in a game show, and he advanced to the final round. The final round offered Bob the chance to win a large sum by playing a game against the host. The host has 30 shiny prop coins, each of which is worth $1,000 if Bob manages to win them by playing the game. The host hides the coins in three different prize boxes and then shuffles their order. The only rule restricting the host's coin placement is that one box must contain at least 2 coins, and one box must contain 6 more coins than another box. In order to play, Bob must submit three guesses, one guess for the number of coins in each box. The box is then opened and the number of coins is revealed. If Bob's guess is a number greater than the number of coins in the box, Bob earns no coins. If Bob guesses a number equal to or less than the number of coins in the box, Bob wins a number of coins equal to his guess. If Bob plays uses the optimal strategy, what's the minimum amount of money he can win from the game?"
+        )
+
+        self.assertEqual(answer, "16000")
+        self.assertTrue(any("best guarantee=16 coins with guesses=(8, 8, 8)" in item for item in evidence))
+        self.assertEqual(provenance, ["prompt:_solve_coin_box_minimax"])
+
+    def test_broad_symbolic_ops_solves_newton_prompt_with_math_delimiters(self) -> None:
+        answer, evidence, provenance = _solve_broad_symbolic_ops(
+            "Given $x_0 = -5$ and $f(x) = x^3 + 4x^2 - 3x + 8$, what is the smallest $n$ where using Newton's Method $n = n+1$ after rounding to four decimal places?"
+        )
+
+        self.assertEqual(answer, "2")
+        self.assertTrue(any("x_2=" in item for item in evidence))
+        self.assertEqual(provenance, ["prompt:_solve_newton_stability"])
 
     def test_temporal_anchor_uses_end_of_range_for_year_bounded_prompt(self) -> None:
         anchor = _temporal_anchor("How many studio albums were published by Mercedes Sosa between 2000 and 2009 (included)?")
@@ -1253,6 +1399,35 @@ class GaiaOpsBackendTests(unittest.TestCase):
         self.assertEqual(provenance, [])
         self.assertIn("generic public reference unresolved", evidence)
 
+    def test_select_best_solver_candidate_prefers_person_name_for_person_prompt(self) -> None:
+        prompt = "Assuming scientists in the famous youtube video were interviewed the same year, what is the name of the scientist predicting the sooner thinking machines or robots? Answer using the format First name Last name"
+        title_bundle = _solver_candidate_bundle(
+            "The Thinking Machine",
+            ["video title=The Thinking Machine", "title mentioned near prediction language"],
+            ["https://example.com/video"],
+            method="video_title_match",
+            source_bias=0.10,
+            candidate_kind="short_text",
+        )
+        person_bundle = _solver_candidate_bundle(
+            "Claude Shannon",
+            ["video best person=Claude Shannon score=3.20", "prediction language near Claude Shannon"],
+            ["https://example.com/video", "youtube:transcript"],
+            method="video_person_evidence_graph",
+            source_bias=0.08,
+            candidate_kind="person_name",
+        )
+
+        answer, evidence, provenance = _select_best_solver_candidate(
+            prompt,
+            [title_bundle, person_bundle],
+            research_mode="video_transcript_ops",
+        )
+
+        self.assertEqual(answer, "Claude Shannon")
+        self.assertTrue(any("person-name fit" in item for item in evidence))
+        self.assertEqual(provenance, ["https://example.com/video", "youtube:transcript"])
+
     def test_plan_question_blind_mode_routes_public_species_lookup_structurally(self) -> None:
         state = SimpleNamespace(
             problem_text=(
@@ -1335,12 +1510,17 @@ class GaiaOpsBackendTests(unittest.TestCase):
         result = plan_question("", state)
         question_plan = result["payload"]["state_metadata"]["question_plan"]
         reasoning_schema = result["payload"]["state_metadata"]["reasoning_schema"]
+        task_algebra = result["payload"]["state_metadata"]["task_algebra"]
+        role_machine = result["payload"]["state_metadata"]["internal_role_machine"]
 
         self.assertEqual(question_plan.get("research_mode"), "public_record_ops")
         self.assertIn("public records", result["result"])
         self.assertEqual(reasoning_schema.get("source_family"), "public_record")
         self.assertEqual(reasoning_schema.get("output_contract"), "three_letter_code")
         self.assertIn("1928", reasoning_schema.get("time_anchor", ""))
+        self.assertEqual(task_algebra.get("equation"), "time x source x operator x contract x rival")
+        self.assertEqual(task_algebra.get("source_axis"), "public_record")
+        self.assertEqual(role_machine.get("roles"), "framer -> retriever -> resolver -> judge -> closer")
 
     def test_plan_question_routes_paper_compare_ops_structurally(self) -> None:
         state = SimpleNamespace(
@@ -1666,6 +1846,26 @@ class GaiaOpsBackendTests(unittest.TestCase):
         result = solve_question(state.problem_text, state)
 
         self.assertFalse(result["ok"])
+
+    @patch("domains.gaia_ops.backend._solve_video_transcript_ops")
+    def test_solve_question_quality_control_rejects_title_when_prompt_requires_person_name(self, mock_solver: object) -> None:
+        mock_solver.return_value = ("The Thinking Machine", ["video title=The Thinking Machine"], ["https://example.com/video"])
+        state = SimpleNamespace(
+            problem_text="What is the name of the scientist predicting the future of AI? Answer using the format First name Last name",
+            metadata={
+                "workspace_dir": str(Path.cwd()),
+                "workspace_files": [],
+                "question_plan": {"research_mode": "video_transcript_ops"},
+                "candidate_files": [],
+                "benchmark_assistance_mode": "unassisted",
+                "oracle_hints_enabled": False,
+            },
+        )
+
+        result = solve_question(state.problem_text, state)
+
+        self.assertFalse(result["ok"])
+        self.assertIn("quality checks", result["result"])
         self.assertIn("quality checks", result["result"])
 
     @patch("domains.gaia_ops.backend._solve_public_record_ops")
@@ -2793,6 +2993,14 @@ class GaiaOpsBackendTests(unittest.TestCase):
         self.assertGreaterEqual(result["payload"]["state_metadata"]["answer_confidence"], 0.72)
         self.assertEqual(result["payload"]["state_metadata"]["reasoning_schema"]["source_family"], "public_reference")
         self.assertEqual(result["payload"]["state_metadata"]["augmentation_layer"]["mode"], "trillion_structural")
+        self.assertEqual(
+            result["payload"]["state_metadata"]["task_algebra"]["equation"],
+            "time x source x operator x contract x rival",
+        )
+        self.assertEqual(
+            result["payload"]["state_metadata"]["internal_role_machine"]["roles"],
+            "framer -> retriever -> resolver -> judge -> closer",
+        )
         self.assertTrue(result["payload"]["state_metadata"]["answer_self_check"]["accepted"])
 
     def test_fallback_repairs_do_not_answer_low_confidence_generic_public_reference_candidates(self) -> None:

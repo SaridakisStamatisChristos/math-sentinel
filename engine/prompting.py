@@ -226,10 +226,34 @@ def _self_check_text(check: Any, text_item_chars: int) -> str:
 def _augmentation_text(layer: Any, text_item_chars: int) -> str:
     if not isinstance(layer, dict):
         return ""
-    ordered_keys = ("mode", "recursion", "motif", "source_order", "synthesis", "output_guard")
+    ordered_keys = ("mode", "mindset", "recursion", "motif", "source_order", "synthesis", "output_guard")
     parts: List[str] = []
     for key in ordered_keys:
         value = _truncate(layer.get(key, ""), text_item_chars)
+        if value:
+            parts.append(f"{key}={value}")
+    return " | ".join(parts)
+
+
+def _task_algebra_text(algebra: Any, text_item_chars: int) -> str:
+    if not isinstance(algebra, dict):
+        return ""
+    ordered_keys = ("equation", "time_axis", "source_axis", "operator_axis", "contract_axis", "operator_stack", "closure_rule")
+    parts: List[str] = []
+    for key in ordered_keys:
+        value = _truncate(algebra.get(key, ""), text_item_chars)
+        if value:
+            parts.append(f"{key}={value}")
+    return " | ".join(parts)
+
+
+def _role_machine_text(machine: Any, text_item_chars: int) -> str:
+    if not isinstance(machine, dict):
+        return ""
+    ordered_keys = ("roles", "framer", "retriever", "resolver", "judge", "closer")
+    parts: List[str] = []
+    for key in ordered_keys:
+        value = _truncate(machine.get(key, ""), text_item_chars)
         if value:
             parts.append(f"{key}={value}")
     return " | ".join(parts)
@@ -278,6 +302,12 @@ def _render_search_state(state: ReasoningState) -> str:
     augmentation_text = _augmentation_text((getattr(state, "metadata", {}) or {}).get("augmentation_layer", {}), text_item_chars)
     if augmentation_text:
         lines.append(f"[AUGMENTATION] {augmentation_text}")
+    task_algebra_text = _task_algebra_text((getattr(state, "metadata", {}) or {}).get("task_algebra", {}), text_item_chars)
+    if task_algebra_text:
+        lines.append(f"[TASK_ALGEBRA] {task_algebra_text}")
+    role_machine_text = _role_machine_text((getattr(state, "metadata", {}) or {}).get("internal_role_machine", {}), text_item_chars)
+    if role_machine_text:
+        lines.append(f"[ROLE_MACHINE] {role_machine_text}")
     schema_text = _reasoning_schema_text((getattr(state, "metadata", {}) or {}).get("reasoning_schema", {}), text_item_chars)
     if schema_text:
         lines.append(f"[REASONING_SCHEMA] {schema_text}")
