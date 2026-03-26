@@ -21,20 +21,26 @@ This runbook documents the training workflow that is actually supported by `trai
 Use PowerShell from the repository root.
 
 ```powershell
-C:/Python312/python.exe -m venv .venv
-.\.venv\Scripts\Activate.ps1
+C:/Python312/python.exe -m venv .venv-py312
+.\.venv-py312\Scripts\Activate.ps1
 python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
+```
+
+For CUDA on this machine, install the matching PyTorch wheel after the base requirements:
+
+```powershell
+python -m pip install --force-reinstall torch==2.6.0+cu124 --index-url https://download.pytorch.org/whl/cu124
 ```
 
 Verify the active interpreter before starting training:
 
 ```powershell
 python -c "import sys; print(sys.executable)"
-python -c "import torch; print(torch.__version__)"
+python -c "import torch; print(torch.__version__); print(torch.cuda.is_available())"
 ```
 
-Expected result on this machine: `python` should resolve to the activated `.venv` interpreter, not `C:\Users\scsar\AppData\Local\Programs\Python\Python314\python.exe`.
+Expected result on this machine: `python` should resolve to the activated `.venv-py312` interpreter, not `C:\Users\scsar\AppData\Local\Programs\Python\Python314\python.exe`.
 
 ## Supported Training Flags
 

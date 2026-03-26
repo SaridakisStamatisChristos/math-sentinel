@@ -1,0 +1,102 @@
+{
+  "suite_name": "gaia_level1_blind_five",
+  "description": "Five level-1 GAIA official cases for blind structural generalization checks.",
+  "tasks": [
+    {
+      "task_id": "2d83110e-a098-4ebb-9987-066c06fa42d0",
+      "domain": "gaia_json_reasoning",
+      "prompt": ".rewsna eht sa \"tfel\" drow eht fo etisoppo eht etirw ,ecnetnes siht dnatsrednu uoy fI",
+      "answer": "Right",
+      "goal": "Return the shortest correct final answer",
+      "meta": {
+        "family": "gaia_json_reasoning",
+        "benchmark_suite": "gaia_full_official",
+        "benchmark_tier": "official",
+        "holdout_group": "gaia_full_official",
+        "source": "public_benchmark",
+        "fixture_role": "benchmark",
+        "fixture_dir": "C:\\Users\\scsar\\Desktop\\math_sentinel_v7\\data\\official_corpus\\gaia\\attachments\\2d83110e-a098-4ebb-9987-066c06fa42d0",
+        "level": "1",
+        "question_id": "2d83110e-a098-4ebb-9987-066c06fa42d0"
+      }
+    },
+    {
+      "task_id": "27d5d136-8563-469e-92bf-fd103c28b57c",
+      "domain": "gaia_json_reasoning",
+      "prompt": "\u00ac(A \u2227 B) \u2194 (\u00acA \u2228 \u00acB)\n\u00ac(A \u2228 B) \u2194 (\u00acA \u2227 \u00acB)\n(A \u2192 B) \u2194 (\u00acB \u2192 \u00acA)\n(A \u2192 B) \u2194 (\u00acA \u2228 B)\n(\u00acA \u2192 B) \u2194 (A \u2228 \u00acB)\n\u00ac(A \u2192 B) \u2194 (A \u2227 \u00acB)\n\nWhich of the above is not logically equivalent to the rest? Provide the full statement that doesn't fit.",
+      "answer": "(\u00acA \u2192 B) \u2194 (A \u2228 \u00acB)",
+      "goal": "Return the shortest correct final answer",
+      "meta": {
+        "family": "gaia_json_reasoning",
+        "benchmark_suite": "gaia_full_official",
+        "benchmark_tier": "official",
+        "holdout_group": "gaia_full_official",
+        "source": "public_benchmark",
+        "fixture_role": "benchmark",
+        "fixture_dir": "C:\\Users\\scsar\\Desktop\\math_sentinel_v7\\data\\official_corpus\\gaia\\attachments\\27d5d136-8563-469e-92bf-fd103c28b57c",
+        "level": "1",
+        "question_id": "27d5d136-8563-469e-92bf-fd103c28b57c"
+      }
+    },
+    {
+      "task_id": "cffe0e32-c9a6-4c52-9877-78ceb4aaa9fb",
+      "domain": "gaia_json_reasoning",
+      "prompt": "An office held a Secret Santa gift exchange where each of its twelve employees was assigned one other employee in the group to present with a gift. Each employee filled out a profile including three likes or hobbies. On the day of the gift exchange, only eleven gifts were given, each one specific to one of the recipient's interests. Based on the information in the document, who did not give a gift?",
+      "answer": "Fred",
+      "goal": "Return the shortest correct final answer",
+      "meta": {
+        "family": "gaia_json_reasoning",
+        "benchmark_suite": "gaia_full_official",
+        "benchmark_tier": "official",
+        "holdout_group": "gaia_full_official",
+        "source": "public_benchmark",
+        "fixture_role": "benchmark",
+        "fixture_dir": "C:\\Users\\scsar\\Desktop\\math_sentinel_v7\\data\\official_corpus\\gaia\\attachments\\cffe0e32-c9a6-4c52-9877-78ceb4aaa9fb",
+        "oracle_evidence_file": "cffe0e32-c9a6-4c52-9877-78ceb4aaa9fb.docx",
+        "file_name": "cffe0e32-c9a6-4c52-9877-78ceb4aaa9fb.docx",
+        "level": "1",
+        "question_id": "cffe0e32-c9a6-4c52-9877-78ceb4aaa9fb"
+      }
+    },
+    {
+      "task_id": "5cfb274c-0207-4aa7-9575-6ac0bd95d9b2",
+      "domain": "gaia_json_reasoning",
+      "prompt": "Each cell in the attached spreadsheet represents a plot of land. The color of the cell indicates who owns that plot. Green cells are plots owned by Earl Smith. Can Earl walk through every plot he owns (and no other plots) and return to his starting plot without backtracking? For this question, consider backtracking to be any instance where Earl would enter a plot of land he had already entered since leaving his starting plot.",
+      "answer": "No",
+      "goal": "Return the shortest correct final answer",
+      "meta": {
+        "family": "gaia_json_reasoning",
+        "benchmark_suite": "gaia_full_official",
+        "benchmark_tier": "official",
+        "holdout_group": "gaia_full_official",
+        "source": "public_benchmark",
+        "fixture_role": "benchmark",
+        "fixture_dir": "C:\\Users\\scsar\\Desktop\\math_sentinel_v7\\data\\official_corpus\\gaia\\attachments\\5cfb274c-0207-4aa7-9575-6ac0bd95d9b2",
+        "oracle_evidence_file": "5cfb274c-0207-4aa7-9575-6ac0bd95d9b2.xlsx",
+        "file_name": "5cfb274c-0207-4aa7-9575-6ac0bd95d9b2.xlsx",
+        "level": "1",
+        "question_id": "5cfb274c-0207-4aa7-9575-6ac0bd95d9b2"
+      }
+    },
+    {
+      "task_id": "cca530fc-4052-43b2-b130-b30968d8aa44",
+      "domain": "gaia_json_reasoning",
+      "prompt": "This image has a black background and several white clusters of dots. Find the cluster of dots located just below the horizontal midline and farthest to the left. What is the text label of this cluster?",
+      "answer": "Rd5",
+      "goal": "Return the shortest correct final answer",
+      "meta": {
+        "family": "gaia_json_reasoning",
+        "benchmark_suite": "gaia_full_official",
+        "benchmark_tier": "official",
+        "holdout_group": "gaia_full_official",
+        "source": "public_benchmark",
+        "fixture_role": "benchmark",
+        "fixture_dir": "C:\\Users\\scsar\\Desktop\\math_sentinel_v7\\data\\official_corpus\\gaia\\attachments\\cca530fc-4052-43b2-b130-b30968d8aa44",
+        "oracle_evidence_file": "cca530fc-4052-43b2-b130-b30968d8aa44.png",
+        "file_name": "cca530fc-4052-43b2-b130-b30968d8aa44.png",
+        "level": "1",
+        "question_id": "cca530fc-4052-43b2-b130-b30968d8aa44"
+      }
+    }
+  ]
+}

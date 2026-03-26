@@ -1,2 +1,3 @@
 def slugify(value):
-    return value.strip().lower().replace(" ", "_")
+    s = " ".join(str(value or "").split())
+    return s.strip().lower().replace(" ", "-")

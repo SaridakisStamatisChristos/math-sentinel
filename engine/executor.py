@@ -87,6 +87,7 @@ class StateExecutor:
                 else:
                     info["valid_step"] = 0.0
                     info["risk"] = max(1.0, float(result.get("risk", 1.0)))
+                    info["note"] = str(result.get("result_text", "") or result.get("result", ""))[:200]
                     self._track_tool_usage(child, action.tool, action.content)
                     self._bump_stagnation(child, 0.0)
             elif action.type == ActionType.ANSWER:

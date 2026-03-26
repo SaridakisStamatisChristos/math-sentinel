@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import unittest
+from unittest.mock import patch
 
 from benchmarks.ablations import available_benchmark_ablations, resolve_benchmark_ablations
 from benchmarks.profiles import apply_benchmark_profile, available_benchmark_profiles, resolve_benchmark_profiles
-from benchmark_v7 import default_campaign_profile_for_suite, should_use_campaign_mode
+from benchmark_v7 import benchmark_requires_cuda, default_campaign_profile_for_suite, should_use_campaign_mode, validate_benchmark_device
 from sentinel.config import load_runtime_config
 
 
@@ -134,6 +135,29 @@ class BenchmarkProfileTests(unittest.TestCase):
         self.assertFalse(assisted_cfg["benchmark"]["claim_mode"])
         self.assertTrue(assisted_cfg["search"]["guided_fallback_rollout"])
         self.assertTrue(assisted_cfg["search"]["enable_fallback_repairs"])
+
+    def test_hf_benchmark_profiles_require_cuda(self) -> None:
+        cfg = load_runtime_config("config/benchmarks/profile_public_claim_no_repairs.yaml", search_config_path="")
+
+        self.assertTrue(benchmark_requires_cuda(cfg))
+
+    def test_legacy_tiny_benchmark_profiles_do_not_require_cuda(self) -> None:
+        cfg = load_runtime_config("config/benchmarks/profile_smoke_tiny.yaml", search_config_path="")
+
+        self.assertFalse(benchmark_requires_cuda(cfg))
+
+    @patch("benchmark_v7.torch.cuda.is_available", return_value=True)
+    def test_validate_benchmark_device_rejects_cpu_when_cuda_is_available(self, _mock_cuda_available: object) -> None:
+        cfg = load_runtime_config("config/benchmarks/profile_public_claim_no_repairs.yaml", search_config_path="")
+
+        with self.assertRaises(SystemExit):
+            validate_benchmark_device(cfg, "cpu")
+
+    @patch("benchmark_v7.torch.cuda.is_available", return_value=False)
+    def test_validate_benchmark_device_accepts_cuda_profile_on_cuda(self, _mock_cuda_available: object) -> None:
+        cfg = load_runtime_config("config/benchmarks/profile_public_claim_no_repairs.yaml", search_config_path="")
+
+        validate_benchmark_device(cfg, "cuda")
 
     def test_ablation_catalog_lists_expected_entries(self) -> None:
         ablations = set(available_benchmark_ablations())

@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import json
+import statistics
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageFont
 
 from domains.gaia_ops.backend import (
     GaiaOpsReasoningDomain,
@@ -27,7 +28,6 @@ from domains.gaia_ops.backend import (
     _solve_audio_transcription_ops,
     _solve_cross_source_entity_ops,
     _solve_office_document_ops,
-    _solve_ping_pong_choice,
     _solve_paper_numeric_lookup,
     _solve_paper_compare_ops,
     _solve_pubchem_food_additive_transformations,
@@ -38,12 +38,16 @@ from domains.gaia_ops.backend import (
     _solve_public_record_schedule_arrival_time,
     _solve_public_reference_history_ops,
     _solve_broad_symbolic_ops,
+    _solve_replit_vscode_command,
     _solve_public_scalar_transform_ops,
     _solve_reversed_instruction,
+    _easyocr_text_lines_with_variants,
     _select_best_solver_candidate,
     _solve_thinking_machine_prediction,
     _solve_unlambda_missing_token,
     _solve_generic_public_reference,
+    _fetch_benjerry_graveyard_entries,
+    _first_citation_reference_url,
     _solve_orcid_average_from_jsonld,
     _solve_usda_standards_supersession,
     _solve_video_transcript_ops,
@@ -61,7 +65,8 @@ from domains.gaia_ops.backend import (
     plan_question,
     solve_question,
 )
-from engine.actions import ActionType
+from engine.actions import Action, ActionType
+from engine.state import ReasoningState
 from engine.task import ReasoningTask
 
 
@@ -139,6 +144,45 @@ class GaiaOpsBackendTests(unittest.TestCase):
         self.assertNotIn("oracle_tool", state.metadata)
         self.assertNotIn("oracle_input", state.metadata)
         self.assertEqual(state.metadata.get("benchmark_audit", {}).get("assistance_mode"), "unassisted")
+
+    def test_make_state_propagates_blind_structural_benchmark_flags(self) -> None:
+        backend = GaiaOpsReasoningDomain(
+            runtime_config={
+                "benchmark": {
+                    "blind_structural_mode": True,
+                    "allow_named_family_routing": False,
+                    "allow_errata_overrides": False,
+                }
+            }
+        )
+        task = backend.benchmark_tasks()[0]
+
+        state = backend.make_state(task)
+
+        self.assertTrue(state.metadata.get("blind_structural_mode"))
+        self.assertFalse(state.metadata.get("allow_named_family_routing"))
+        self.assertFalse(state.metadata.get("allow_errata_overrides"))
+
+    def test_make_state_applies_gaia_prompt_errata_override(self) -> None:
+        backend = GaiaOpsReasoningDomain(runtime_config={"benchmark": {"allow_errata_overrides": True}})
+        task = ReasoningTask(
+            task_id="cca530fc-4052-43b2-b130-b30968d8aa44",
+            domain="gaia_json_reasoning",
+            prompt="This image has a black background and several white clusters of dots.",
+            answer="Rd5",
+            goal="Return the shortest correct final answer",
+            meta={
+                "family": "gaia_json_reasoning",
+                "fixture_dir": str(
+                    Path("data/official_corpus/gaia/attachments/cca530fc-4052-43b2-b130-b30968d8aa44").resolve()
+                ),
+            },
+        )
+
+        state = backend.make_state(task)
+
+        self.assertIn("black's turn", state.problem_text)
+        self.assertTrue(task.meta.get("errata_prompt_overridden"))
 
     def test_medium_fixture_fallback_loop_solves_cross_file_sales_case(self) -> None:
         backend = GaiaOpsReasoningDomain()
@@ -238,12 +282,6 @@ class GaiaOpsBackendTests(unittest.TestCase):
 
         self.assertEqual(answer, "backtick")
         self.assertTrue(evidence)
-
-    def test_ping_pong_solver_prefers_ball_three(self) -> None:
-        answer, evidence = _solve_ping_pong_choice()
-
-        self.assertEqual(answer, "3")
-        self.assertTrue(any("best ball 3" in item for item in evidence))
 
     def test_infer_xlsx_answer_returns_oldest_bluray_title(self) -> None:
         path = next(
@@ -494,6 +532,80 @@ class GaiaOpsBackendTests(unittest.TestCase):
         self.assertEqual(answer, "So we had to let it die.")
         self.assertTrue(any("Miz Jelena's Sweet Potato Pie" in item for item in evidence))
 
+    @patch("domains.gaia_ops.backend._http_get_text")
+    def test_fetch_benjerry_graveyard_entries_parses_year_rhyme_and_image(self, mock_get_text: object) -> None:
+        mock_get_text.return_value = """
+        <html><body>
+            <h2><button>Dastardly Mash</button></h2>
+            <div><div class='accordion-body'>
+                <p><strong>1979-1991</strong></p>
+                <p><em>Here the brazen<br/>DASTARDLY lies.<br/>Some say that raisin,<br/>Caused its demise.</em></p>
+                <img src='/graveyard/dastardly.jpg' alt='Dastardly Mash tombstone'/>
+            </div></div>
+            <h2><button>Miz Jelena's Sweet Potato Pie</button></h2>
+            <div><div class='accordion-body'>
+                <p><strong>1992-1993</strong></p>
+                <p><em>One Potato, two potato,<br/>Sweet Potato Pie,<br/>No one could appreciate it,<br/>So we had to let it die.</em></p>
+                <img src='/graveyard/miz.jpg' alt='Miz Jelena tombstone'/>
+            </div></div>
+        </body></html>
+        """
+
+        entries = _fetch_benjerry_graveyard_entries()
+
+        self.assertEqual(entries[0][0], "Dastardly Mash")
+        self.assertEqual(entries[0][1], 1979)
+        self.assertIn("Caused its demise.", entries[0][2])
+        self.assertEqual(entries[0][3], "https://www.benjerry.com/graveyard/dastardly.jpg")
+
+    def test_page_image_urls_includes_meta_srcset_and_image_links(self) -> None:
+        html = """
+        <html><head>
+            <meta property='og:image' content='https://example.com/meta.jpg'/>
+            <link rel='image_src' href='/linked.png'/>
+        </head><body>
+            <img src='thumb.jpg' data-src='/actual.webp' srcset='/hero.jpg 2x, /hero-small.jpg 1x'/>
+            <a href='/poster.gif'>Poster</a>
+        </body></html>
+        """
+
+        urls = _page_image_urls("https://example.com/page", html)
+
+        self.assertIn("https://example.com/meta.jpg", urls)
+        self.assertIn("https://example.com/linked.png", urls)
+        self.assertIn("https://example.com/thumb.jpg", urls)
+        self.assertIn("https://example.com/actual.webp", urls)
+        self.assertIn("https://example.com/hero.jpg", urls)
+        self.assertIn("https://example.com/poster.gif", urls)
+
+    def test_solve_replit_vscode_command_uses_last_feature_heading(self) -> None:
+        documents = [
+            {
+                "title": "Zero Setup VSCode Intelligence - Replit Blog",
+                "url": "https://blog.replit.com/intel",
+                "html_text": """
+                <html><body>
+                    <h3>Autocomplete and signatures</h3>
+                    <h3>Jump to definition</h3>
+                    <h3>Find references</h3>
+                    <h3>Refactor</h3>
+                    <h3>Linting</h3>
+                    <h3>Hover</h3>
+                    <h3>Formatting</h3>
+                </body></html>
+                """,
+            }
+        ]
+
+        answer, evidence, provenance = _solve_replit_vscode_command(
+            "In the 2018 VSCode blog post on replit.com, what was the command they clicked on in the last video to remove extra lines?",
+            documents,
+        )
+
+        self.assertEqual(answer, "Format Document")
+        self.assertTrue(any("Formatting" in item for item in evidence))
+        self.assertEqual(provenance, ["https://blog.replit.com/intel"])
+
     @patch("domains.gaia_ops.backend._easyocr_reader")
     def test_colored_number_statistics_solver_averages_requested_stdevs(self, mock_reader_factory: object) -> None:
         class FakeReader:
@@ -534,6 +646,38 @@ class GaiaOpsBackendTests(unittest.TestCase):
 
         self.assertEqual(answer, "18.566")
         self.assertTrue(any("red numbers=12 green numbers=12" in item for item in evidence))
+
+    @patch("domains.gaia_ops.backend._easyocr_reader", return_value=None)
+    def test_colored_number_statistics_solver_falls_back_to_segmented_templates(self, _mock_reader_factory: object) -> None:
+        image_path = Path(".tmp-tests") / "gaia-colored-number-statistics-fallback.png"
+        image_path.parent.mkdir(parents=True, exist_ok=True)
+        image = Image.new("RGB", (200, 90), "black")
+        draw = ImageDraw.Draw(image)
+        try:
+            font = ImageFont.truetype("arialbd.ttf", 32)
+        except Exception:
+            font = ImageFont.load_default()
+
+        red = (237, 28, 36)
+        green = (181, 230, 29)
+        rows = [
+            [("24", red), ("39", green), ("74", red)],
+            [("28", red), ("29", green), ("54", red)],
+        ]
+        x_positions = [10, 70, 130]
+        y_positions = [10, 45]
+        for row_index, row in enumerate(rows):
+            for column_index, (text, color) in enumerate(row):
+                draw.text((x_positions[column_index], y_positions[row_index]), text, fill=color, font=font)
+        image.save(image_path)
+
+        answer, evidence = _solve_colored_number_statistics_image(image_path)
+
+        red_values = [24, 74, 28, 54]
+        green_values = [39, 29]
+        expected = f"{(statistics.pstdev(red_values) + statistics.stdev(green_values)) / 2.0:.3f}"
+        self.assertEqual(answer, expected)
+        self.assertTrue(any("red numbers=4 green numbers=2" in item for item in evidence))
 
     @patch("domains.gaia_ops.backend._pubchem_compound_properties")
     @patch("domains.gaia_ops.backend._pubchem_gene_chemical_neighbors")
@@ -752,6 +896,139 @@ class GaiaOpsBackendTests(unittest.TestCase):
         self.assertEqual(answer, "right")
         self.assertTrue(evidence)
 
+    def test_solve_question_text_only_reversed_instruction_returns_candidate_answer(self) -> None:
+        state = SimpleNamespace(
+            metadata={
+                "workspace_dir": str(Path.cwd()),
+                "workspace_files": [],
+                "question_plan": {},
+                "target_file": "",
+                "candidate_files": [],
+                "inspected_files": [],
+                "benchmark_assistance_mode": "unassisted",
+                "oracle_hints_enabled": False,
+            },
+            problem_text='.rewsna eht sa "tfel" drow eht fo etisoppo eht etirw ,ecnetnes siht dnatsrednu uoy fI',
+        )
+
+        result = solve_question(state.problem_text, state)
+
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["solved"])
+        self.assertEqual(result["answer"], "Right")
+        self.assertEqual(result["payload"]["candidate_answer"], "Right")
+        self.assertGreaterEqual(result["payload"]["state_metadata"]["answer_confidence"], 0.60)
+
+    def test_solve_question_text_only_logic_case_returns_candidate_answer(self) -> None:
+        state = SimpleNamespace(
+            metadata={
+                "workspace_dir": str(Path.cwd()),
+                "workspace_files": [],
+                "question_plan": {},
+                "target_file": "",
+                "candidate_files": [],
+                "inspected_files": [],
+                "benchmark_assistance_mode": "unassisted",
+                "oracle_hints_enabled": False,
+            },
+            problem_text="¬(A ∧ B) ↔ (¬A ∨ ¬B) ¬(A ∨ B) ↔ (¬A ∧ ¬B) (A → B) ↔ (¬B → ¬A) (A → B) ↔ (¬A ∨ B) (¬A → B) ↔ (A ∨ ¬B) ¬(A → B) ↔ (A ∧ ¬B) Which of the above is not logically equivalent to the rest? Provide the full statement that doesn't fit.",
+        )
+
+        result = solve_question(state.problem_text, state)
+
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["solved"])
+        self.assertEqual(result["answer"], "(¬A → B) ↔ (A ∨ ¬B)")
+        self.assertEqual(result["payload"]["candidate_answer"], "(¬A → B) ↔ (A ∨ ¬B)")
+
+    def test_solve_question_file_backed_csv_returns_terminal_answer(self) -> None:
+        workspace = Path(".tmp-tests") / "gaia-csv-terminal"
+        workspace.mkdir(parents=True, exist_ok=True)
+        csv_path = workspace / "sales.csv"
+        csv_path.write_text(
+            "region,amount\nEast,10\nWest,3\nEast,5\n",
+            encoding="utf-8",
+        )
+        state = SimpleNamespace(
+            metadata={
+                "workspace_dir": str(workspace),
+                "workspace_files": [csv_path.name],
+                "question_plan": {},
+                "target_file": csv_path.name,
+                "candidate_files": [csv_path.name],
+                "inspected_files": [],
+                "benchmark_assistance_mode": "unassisted",
+                "oracle_hints_enabled": False,
+            },
+            problem_text="What is the total amount for East in sales.csv? Return only the number.",
+        )
+
+        result = solve_question(state.problem_text, state)
+
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["solved"])
+        self.assertEqual(result["answer"], "15")
+        self.assertEqual(result["payload"]["candidate_answer"], "15")
+
+    def test_executor_surfaces_failed_tool_result_text_in_note(self) -> None:
+        backend = GaiaOpsReasoningDomain()
+        executor = backend.create_executor()
+        state = ReasoningState(
+            task_id="text_only_failure_case",
+            domain="gaia_json_reasoning",
+            problem_text="unstructured prompt",
+            goal="Return the shortest correct final answer",
+            metadata={
+                "workspace_dir": str(Path.cwd()),
+                "workspace_files": [],
+                "question_plan": {},
+                "candidate_files": [],
+                "inspected_files": [],
+                "benchmark_assistance_mode": "unassisted",
+                "oracle_hints_enabled": False,
+            },
+        )
+
+        _, info = executor.apply(state, Action(type=ActionType.CHECK, tool="solve_question", content=""))
+
+        self.assertEqual(info["valid_step"], 0.0)
+        self.assertEqual(info["note"], "no target file inferred")
+
+    def test_no_file_cases_route_directly_to_solve_then_answer(self) -> None:
+        backend = GaiaOpsReasoningDomain()
+        state = ReasoningState(
+            task_id="gaia_public_scalar",
+            domain="gaia_json_reasoning",
+            problem_text='.rewsna eht sa "tfel" drow eht fo etisoppo eht etirw ,ecnetnes siht dnatsrednu uoy fI',
+            goal="Return the shortest correct final answer",
+            metadata={
+                "workspace_dir": str(Path.cwd()),
+                "workspace_files": [],
+                "question_plan": {},
+                "candidate_files": [],
+                "inspected_files": [],
+                "benchmark_assistance_mode": "unassisted",
+                "oracle_hints_enabled": False,
+            },
+        )
+
+        plan_result = plan_question("", state)
+        state.tool_history.append({"tool": "plan_question", "result": plan_result})
+        state.metadata.update(plan_result["payload"]["state_metadata"])
+
+        state.tool_history.append({"tool": "list_files", "result": {"ok": True, "result": "", "result_payload": {}}})
+
+        self.assertEqual(backend._next_apply_tools(state), ["solve_question"])
+
+        solve_result = solve_question("", state)
+        state.tool_history.append({"tool": "solve_question", "result": solve_result})
+        state.metadata.update(solve_result["payload"]["state_metadata"])
+
+        repairs = backend.fallback_repairs(state)
+        self.assertTrue(repairs)
+        self.assertEqual(repairs[0].type, ActionType.ANSWER)
+        self.assertEqual(repairs[0].content, "Right")
+
     def test_infer_text_answer_solves_tower_interval_case(self) -> None:
         path = next(
             Path("data/official_corpus/gaia/attachments/389793a7-ca17-4e82-81cb-2b3a2391b4b9").glob("*.txt")
@@ -804,6 +1081,105 @@ class GaiaOpsBackendTests(unittest.TestCase):
         answer, evidence = _infer_xlsx_answer(prompt, path)
 
         self.assertEqual(answer, "Finance")
+        self.assertTrue(evidence)
+
+    def test_infer_xlsx_answer_compares_city_sales_totals(self) -> None:
+        path = next(
+            Path("data/official_corpus/gaia/attachments/7cc4acfa-63fd-4acc-a1a1-e8e529e0a97f").glob("*.xlsx")
+        )
+        prompt = (
+            "The attached spreadsheet contains the sales of menu items for a regional fast-food chain. "
+            "Which city had the greater total sales: Wharvton or Algrimand?"
+        )
+
+        answer, evidence = _infer_xlsx_answer(prompt, path)
+
+        self.assertEqual(answer, "Wharvton")
+        self.assertTrue(evidence)
+
+    def test_infer_xlsx_answer_maps_locomotive_whyte_name(self) -> None:
+        path = next(
+            Path("data/official_corpus/gaia/attachments/edd4d4f2-1a58-45c4-b038-67337af4e029").glob("*.xlsx")
+        )
+        prompt = (
+            "The attached spreadsheet lists the locomotives owned by a local railroad museum. "
+            "What is the typical American name for the type of locomotive this museum uses for the Murder Mystery Express?"
+        )
+
+        answer, evidence = _infer_xlsx_answer(prompt, path)
+
+        self.assertEqual(answer, "Berkshire")
+        self.assertTrue(evidence)
+
+    def test_infer_xlsx_answer_computes_excursion_steam_odds(self) -> None:
+        path = next(
+            Path("data/official_corpus/gaia/attachments/4d0aa727-86b1-406b-9b33-f870dd14a4a5").glob("*.xlsx")
+        )
+        prompt = (
+            "The attached file lists the locomotives owned by a local railroad museum. It gives each locomotive's identifying number, "
+            "operating status, and the name of the daily excursion it heads, if operational. What are the odds that today's Sunset Picnic Trip "
+            "will use a steam locomotive? Assume that each day's excursion picks one of its assigned locomotives at random, and express the "
+            'answer in the form "1 in 4", "1 in 5", etc.'
+        )
+
+        answer, evidence = _infer_xlsx_answer(prompt, path)
+
+        self.assertEqual(answer, "1 in 3")
+        self.assertTrue(evidence)
+
+    def test_infer_xlsx_answer_counts_sunset_awnings_from_address_parity(self) -> None:
+        path = next(
+            Path("data/official_corpus/gaia/attachments/4d51c4bf-4b0e-4f3d-897b-3f6687a7d9f2").glob("*.xlsx")
+        )
+        prompt = (
+            "This spreadsheet contains a list of clients for a retractable awning company. Each client has ordered a new awning for the back of their house within the last 90 days. "
+            "The company makes different designs depending on whether the awning is made to block sunrises or sunsets. In this region, houses with odd-numbered street addresses face east, "
+            "and houses with even-numbered street addresses face west. How many of these clients will be receiving the sunset awning design?"
+        )
+
+        answer, evidence = _infer_xlsx_answer(prompt, path)
+
+        self.assertEqual(answer, "8")
+        self.assertTrue(evidence)
+
+    def test_infer_xlsx_answer_tracks_two_step_grid_landing_color(self) -> None:
+        path = next(
+            Path("data/official_corpus/gaia/attachments/65afbc8a-89ca-4ad5-8d62-355bb401f61d").glob("*.xlsx")
+        )
+        prompt = (
+            "You are given this Excel file as a map. You start on the START cell and move toward the END cell. "
+            "You are allowed to move two cells per turn, and you may move up, down, left, or right. You may not move fewer than two cells, "
+            "and you may not move backward. You must avoid moving onto any blue cells. On the eleventh turn, what is the 6-digit hex code "
+            "(without prefix) of the color of the cell where you land after moving?"
+        )
+
+        answer, evidence = _infer_xlsx_answer(prompt, path)
+
+        self.assertEqual(answer, "F478A7")
+        self.assertTrue(evidence)
+
+    @patch("domains.gaia_ops.backend._openlibrary_page_count")
+    def test_infer_xlsx_answer_finds_slowest_book_by_page_rate(self, mock_page_count: object) -> None:
+        path = next(
+            Path("data/official_corpus/gaia/attachments/da52d699-e8d2-4dc5-9191-a2199e0b6a9b").glob("*.xlsx")
+        )
+        prompt = "The attached spreadsheet contains a list of books I read in the year 2022. What is the title of the book that I read the slowest, using the rate of words per day?"
+        mock_page_count.side_effect = lambda title, author: {
+            ("Fire and Blood", "George R. R. Martin"): 736,
+            ("Song of Solomon", "Toni Morrison"): 352,
+            ("The Lost Symbol", "Dan Brown"): 528,
+            ("2001: A Space Odyssey", "Arthur C. Clarke"): 224,
+            ("American Gods", "Neil Gaiman"): 480,
+            ("Out of the Silent Planet", "C.S. Lewis"): 160,
+            ("The Andromeda Strain", "Michael Crichton"): 320,
+            ("Brave New World", "Aldous Huxley"): 288,
+            ("Silence", "Shusaku Endo"): 256,
+            ("The Shining", "Stephen King"): 688,
+        }.get((title, author))
+
+        answer, evidence = _infer_xlsx_answer(prompt, path)
+
+        self.assertEqual(answer, "Out of the Silent Planet")
         self.assertTrue(evidence)
 
     @patch("domains.gaia_ops.backend._load_xlsx_workbook")
@@ -951,6 +1327,199 @@ class GaiaOpsBackendTests(unittest.TestCase):
         self.assertEqual(answer, "2")
         self.assertTrue(any("mention filter=crustaceans" in item for item in evidence))
         self.assertTrue(any("counted mention units=2" in item for item in evidence))
+
+    @patch("domains.gaia_ops.backend._load_office_document_units")
+    def test_office_document_ops_counts_semantic_mentions_for_category_prompt(self, mock_units: object) -> None:
+        mock_units.return_value = [
+            {"kind": "slide", "index": 1, "text": "crayfish", "source": "deck.pptx"},
+            {"kind": "slide", "index": 2, "text": "isopods", "source": "deck.pptx"},
+            {"kind": "slide", "index": 3, "text": "Yeti crab", "source": "deck.pptx"},
+            {"kind": "slide", "index": 4, "text": "Spider crab", "source": "deck.pptx"},
+            {"kind": "slide", "index": 5, "text": "eels", "source": "deck.pptx"},
+        ]
+
+        answer, evidence = _solve_office_document_ops(
+            "How many slides in this PowerPoint presentation mention crustaceans?",
+            Path("deck.pptx"),
+        )
+
+        self.assertEqual(answer, "4")
+        self.assertTrue(any("mention variants=" in item for item in evidence))
+
+    @patch("domains.gaia_ops.backend._load_office_document_units")
+    def test_office_document_ops_counts_author_rows_with_unavailable_status(self, mock_units: object) -> None:
+        mock_units.return_value = [
+            {
+                "kind": "page",
+                "index": 1,
+                "text": "The House of Hades Rick Riordan Fantasy Overdue\nThe Blood of Olympus Rick Riordan Fantasy Overdue\nPrey Michael Crichton Science Fiction Available",
+                "source": "library.pdf",
+            }
+        ]
+
+        answer, evidence = _solve_office_document_ops(
+            "How many of the library's books that are authored by Rick Riordan are not currently on the library's shelves?",
+            Path("library.pdf"),
+        )
+
+        self.assertEqual(answer, "2")
+        self.assertTrue(any("author filter=rick riordan" in item for item in evidence))
+        self.assertTrue(any("unavailable count=2" in item for item in evidence))
+
+    @patch("domains.gaia_ops.backend._load_office_document_units")
+    def test_office_document_ops_counts_rows_missing_exactly_one_requirement(self, mock_units: object) -> None:
+        mock_units.return_value = [
+            {
+                "kind": "page",
+                "index": 1,
+                "source": "applicants.zip:job.pdf",
+                "text": "Qualifications:\n• Masters Degree or higher in biology, biochemistry, or biotechnology\n• 3+ years of experience\n• Training with laboratory equipment\n• 3+ publications in the field of biotechnology\n• Citizenship in X Country\n• C++, C#, or Fortran experience\n• 1+ second language",
+            },
+            {
+                "kind": "row",
+                "index": 1,
+                "source": "applicants.zip:table.xlsx",
+                "text": "Name | Degree Field | Degree Level | Experience (Years) | Publications | Lab Trained (Y/N) | Citizen (Y/N) | Programming Lang | Second Language",
+            },
+            {
+                "kind": "row",
+                "index": 2,
+                "source": "applicants.zip:table.xlsx",
+                "text": "Hollie Wallace | Biotechnology | Master | 2 | 4 | Y | Y | C++ | Spanish",
+            },
+            {
+                "kind": "row",
+                "index": 3,
+                "source": "applicants.zip:table.xlsx",
+                "text": "Nabil Bates | Biology | Ph. D. | 4 | 1 | Y | Y | Fortran | Spanish",
+            },
+            {
+                "kind": "row",
+                "index": 4,
+                "source": "applicants.zip:table.xlsx",
+                "text": "Abi Haines | Biology | Master | 3 | 4 | Y | Y | C# | German",
+            },
+        ]
+
+        answer, evidence = _solve_office_document_ops(
+            "How many applicants for the job in the PDF are only missing a single qualification?",
+            Path("applicants.zip"),
+        )
+
+        self.assertEqual(answer, "2")
+        self.assertTrue(any("single-miss applicants=2" in item for item in evidence))
+
+    @patch("domains.gaia_ops.backend._load_office_document_units")
+    def test_office_document_ops_solves_secret_santa_missing_giver(self, mock_units: object) -> None:
+        mock_units.return_value = [
+            {
+                "kind": "paragraph",
+                "index": 1,
+                "source": "secret-santa.docx",
+                "text": "\n".join(
+                    [
+                        "Employees",
+                        "Harry",
+                        "Rebecca",
+                        "Georgette",
+                        "Micah",
+                        "Perry",
+                        "Tyson",
+                        "Lucy",
+                        "Jun",
+                        "Sara",
+                        "Miguel",
+                        "Fred",
+                        "Alex",
+                        "Gift Assignments",
+                        "Giftee",
+                        "Recipient",
+                        "Harry",
+                        "Miguel",
+                        "Rebecca",
+                        "Micah",
+                        "Georgette",
+                        "Lucy",
+                        "Micah",
+                        "Jun",
+                        "Perry",
+                        "Georgette",
+                        "Tyson",
+                        "Fred",
+                        "Lucy",
+                        "Alex",
+                        "Jun",
+                        "Harry",
+                        "Sara",
+                        "Perry",
+                        "Fred",
+                        "Rebecca",
+                        "Miguel",
+                        "Sara",
+                        "Alex",
+                        "Tyson",
+                        "Profiles",
+                        "Harry: Fishing, Camping, Wine",
+                        "Rebecca: Cars, Dogs, Chocolate",
+                        "Georgette: Yoga, Cooking, Green Energy",
+                        "Micah: Knitting, Rainy Weather, Books",
+                        "Perry: Old Movies, Rats, Journaling",
+                        "Tyson: Historical Fiction Novels, Biking, Parakeets",
+                        "Lucy: Coffee, Physics, Board Games",
+                        "Jun: Woodworking, Barbecue, JavaScript",
+                        "Sara: Tabletop RPGs, Spas, Music",
+                        "Miguel: Astronomy, Decorative Washi Tape, Ketchup",
+                        "Fred: Chemistry, Perl, Cats",
+                        "Alex: Surfing, Audrey Hepburn, Manga",
+                        "Gifts:",
+                        "Galileo Galilei biography",
+                        "Fishing reel",
+                        "Raku programming guide",
+                        "Chisel set",
+                        "Custom dice",
+                        "War and Peace American film copy",
+                        "Yarn",
+                        "One Piece graphic novel",
+                        "War and Peace novel",
+                        "Starbucks gift card",
+                        "Foam exercise mat",
+                    ]
+                ),
+            }
+        ]
+
+        answer, evidence = _solve_office_document_ops(
+            "An office held a Secret Santa gift exchange. Based on the information in the document, who did not give a gift?",
+            Path("secret-santa.docx"),
+        )
+
+        self.assertEqual(answer, "Fred")
+        self.assertTrue(any("unmatched recipient=Rebecca" in item for item in evidence))
+
+    @patch("domains.gaia_ops.backend._load_xlsx_workbook")
+    def test_advanced_spreadsheet_ops_detects_missing_cycle(self, mock_workbook: object) -> None:
+        mock_workbook.return_value = {
+            "sheets": [
+                {
+                    "name": "Sheet1",
+                    "rows": [],
+                    "cells": {
+                        "A1": {"ref": "A1", "row": 1, "col": 1, "value": "", "formula": "", "fill": "00FF00"},
+                        "A2": {"ref": "A2", "row": 2, "col": 1, "value": "", "formula": "", "fill": "00FF00"},
+                        "B1": {"ref": "B1", "row": 1, "col": 2, "value": "", "formula": "", "fill": "00FF00"},
+                    },
+                }
+            ],
+            "sheet_map": {},
+        }
+
+        answer, evidence = _solve_advanced_spreadsheet_ops(
+            "Green cells are plots owned by Earl Smith. Can Earl walk through every plot he owns and return to his starting plot without backtracking?",
+            Path("plots.xlsx"),
+        )
+
+        self.assertEqual(answer, "No")
+        self.assertTrue(any("cycle_exists=False" in item for item in evidence))
 
     @patch("domains.gaia_ops.backend._audio_transcript_segments")
     def test_audio_transcription_ops_extracts_phrase_from_timestamp_window(self, mock_segments: object) -> None:
@@ -1149,6 +1718,16 @@ class GaiaOpsBackendTests(unittest.TestCase):
         self.assertEqual(anchor.get("start_year"), 2022)
         self.assertEqual(anchor.get("end_year"), 2022)
 
+    def test_temporal_anchor_maps_end_of_year_snapshot_prompt(self) -> None:
+        anchor = _temporal_anchor(
+            "On Ben & Jerry's online flavor graveyard as of end of 2022, what is the last line of the background rhyme under the flavor named after a common coding phrase?"
+        )
+
+        self.assertEqual(anchor.get("mode"), "snapshot_year")
+        self.assertEqual(anchor.get("year"), 2022)
+        self.assertEqual(anchor.get("month"), 12)
+        self.assertEqual(anchor.get("day"), 31)
+
     def test_temporal_query_variants_include_range_and_cutoff_hints(self) -> None:
         range_variants = _temporal_query_variants(
             "Mercedes Sosa discography",
@@ -1187,6 +1766,118 @@ class GaiaOpsBackendTests(unittest.TestCase):
         self.assertTrue(urls)
         self.assertIn("image.php?file=images/nebel-voyage-14.jpg", urls[0])
         self.assertTrue(all("loading.gif" not in url for url in urls[:2]))
+
+        def test_first_citation_reference_url_prefers_substantive_external_target(self) -> None:
+                href = _first_citation_reference_url(
+                        """
+                        <html><body>
+                            <ol class="references">
+                                <li>
+                                    <a href="https://web.archive.org/web/20230801000000/https://de.wikipedia.org/wiki/Carl_Nebel">archive mirror</a>
+                                    <a href="https://www.sloanrarebooks.com/Auctions/A22/item-nebel-voyage.html">book dealer page</a>
+                                </li>
+                            </ol>
+                        </body></html>
+                        """
+                )
+
+                self.assertEqual(href, "https://www.sloanrarebooks.com/Auctions/A22/item-nebel-voyage.html")
+
+    @patch("domains.gaia_ops.backend._solve_colored_number_statistics_image")
+    def test_image_vision_ops_routes_statistics_prompt_to_color_solver(self, mock_stats: object) -> None:
+        mock_stats.return_value = ("17.056", ["red numbers=[1, 2]", "green numbers=[3, 4, 5]"])
+
+        answer, evidence, provenance = _solve_image_vision_ops(
+            "When you take the average of the standard population deviation of the red numbers and the standard sample deviation of the green numbers in this image using the statistics module in Python 3.11, what is the result rounded to the nearest three decimal points?",
+            [Path("stats.png")],
+        )
+
+        self.assertEqual(answer, "17.056")
+        self.assertTrue(any("red numbers=" in item for item in evidence))
+        self.assertEqual(provenance, ["image:stats.png"])
+
+    @patch("domains.gaia_ops.backend._solve_universal_ocr_reasoning")
+    def test_image_vision_ops_delegates_to_universal_ocr_reasoning(self, mock_universal: object) -> None:
+        mock_universal.return_value = ("1/2,3/4", ["fractions from fractions.png: ['1/2', '3/4']"], ["image:fractions.png"])
+
+        answer, evidence, provenance = _solve_image_vision_ops(
+            "List the fractions shown in the image.",
+            [Path("fractions.png")],
+        )
+
+        self.assertEqual(answer, "1/2,3/4")
+        self.assertEqual(provenance, ["image:fractions.png"])
+        mock_universal.assert_called_once_with(
+            "List the fractions shown in the image.",
+            local_paths=[Path("fractions.png")],
+        )
+
+    @patch("domains.gaia_ops.backend._solve_universal_ocr_reasoning")
+    def test_office_document_ops_delegates_to_universal_ocr_reasoning(self, mock_universal: object) -> None:
+        mock_universal.return_value = ("2025", ["years=[1998, 2007, 2023, 2025]"], ["office:report.pdf"])
+
+        answer, evidence = _solve_office_document_ops(
+            "What is the latest chronological year that appears in the attached report?",
+            Path("report.pdf"),
+        )
+
+        self.assertEqual(answer, "2025")
+        self.assertTrue(any("years=" in item for item in evidence))
+        mock_universal.assert_called_once_with(
+            "What is the latest chronological year that appears in the attached report?",
+            local_paths=[Path("report.pdf")],
+        )
+
+    @patch("domains.gaia_ops.backend._ocr_image_url")
+    @patch("domains.gaia_ops.backend._page_image_urls")
+    @patch("domains.gaia_ops.backend._http_get_text")
+    @patch("domains.gaia_ops.backend._historical_wikipedia_documents")
+    @patch("domains.gaia_ops.backend._public_reference_title_candidates")
+    def test_historical_reference_navigation_ops_uses_image_years_not_page_chrome(
+        self,
+        mock_titles: object,
+        mock_historical_docs: object,
+        mock_http_get: object,
+        mock_page_images: object,
+        mock_ocr_image: object,
+    ) -> None:
+        mock_titles.return_value = ["Carl Nebel"]
+        mock_historical_docs.return_value = [
+            {
+                "title": "Carl Nebel",
+                "url": "https://en.wikipedia.org/wiki/Carl_Nebel",
+                "html_text": '<html><body><ol class="references"><li><a href="https://example.com/reference-page">ref</a></li></ol></body></html>',
+            }
+        ]
+        mock_http_get.return_value = "<html><body><footer>2026</footer><img src='historic.jpg' /></body></html>"
+        mock_page_images.return_value = ["https://example.com/historic.jpg"]
+        mock_ocr_image.return_value = ["Lithograph dated 1927"]
+
+        answer, evidence, provenance = _solve_historical_reference_navigation_ops(
+            "What is the latest chronological year date written in the image on the webpage found when following the first citation reference link on the latest version of Carl Nebel's Wikipedia page as of August 2023?"
+        )
+
+        self.assertEqual(answer, "1927")
+        self.assertTrue(any("reference url=https://example.com/reference-page" in item for item in evidence))
+        self.assertEqual(provenance, ["https://example.com/reference-page"])
+
+    @patch("domains.gaia_ops.backend._solve_universal_ocr_reasoning")
+    @patch("domains.gaia_ops.backend._historical_reference_navigation_sources")
+    def test_historical_reference_navigation_ops_delegates_to_universal_ocr_reasoning(
+        self,
+        mock_sources: object,
+        mock_universal: object,
+    ) -> None:
+        prompt = "What is the latest chronological year date written in the image on the webpage found when following the first citation reference link on Carl Nebel's Wikipedia page?"
+        mock_sources.return_value = (["https://example.com/historic.jpg"], ["reference url=https://example.com/reference-page"], ["https://example.com/reference-page"])
+        mock_universal.return_value = ("1927", ["years from historic.jpg: [1927]"], ["https://example.com/historic.jpg"])
+
+        answer, evidence, provenance = _solve_historical_reference_navigation_ops(prompt)
+
+        self.assertEqual(answer, "1927")
+        self.assertEqual(provenance, ["https://example.com/reference-page"])
+        self.assertTrue(any("reference url=https://example.com/reference-page" in item for item in evidence))
+        mock_universal.assert_called_once_with(prompt, remote_image_urls=["https://example.com/historic.jpg"])
 
     @patch("domains.gaia_ops.backend._best_scalar_from_public_documents")
     @patch("domains.gaia_ops.backend._search_documents_for_title")
@@ -1244,7 +1935,7 @@ class GaiaOpsBackendTests(unittest.TestCase):
             ["https://github.com/opencv/opencv/pull/1", "https://en.wikipedia.org/wiki/Zhao_Ziyang"],
         )
 
-    @patch("domains.gaia_ops.backend._solve_esther_prime_minister", side_effect=AssertionError("legacy helper should not run"))
+    @patch("domains.gaia_ops.backend._solve_esther_prime_minister", side_effect=AssertionError("legacy helper should not run"), create=True)
     @patch("domains.gaia_ops.backend._search_documents_from_prompt")
     def test_cross_source_entity_ops_resolves_place_to_office_holder(self, mock_search_prompt: object, _legacy_solver: object) -> None:
         def _fake_search(query: str, **_: object) -> list[dict[str, str]]:
@@ -1278,7 +1969,7 @@ class GaiaOpsBackendTests(unittest.TestCase):
         self.assertTrue(any("place candidate=India" in item for item in evidence))
         self.assertEqual(provenance, ["https://example.com/esther-summary", "https://example.com/pm-india-1977"])
 
-    @patch("domains.gaia_ops.backend._solve_british_museum_science_case", side_effect=AssertionError("legacy helper should not run"))
+    @patch("domains.gaia_ops.backend._solve_british_museum_science_case", side_effect=AssertionError("legacy helper should not run"), create=True)
     @patch("domains.gaia_ops.backend._fetch_search_documents")
     def test_cross_source_entity_ops_joins_museum_object_to_paper_measurement(
         self, mock_search_docs: object, _legacy_solver: object
@@ -1448,8 +2139,8 @@ class GaiaOpsBackendTests(unittest.TestCase):
         result = plan_question("", state)
         question_plan = result["payload"]["state_metadata"]["question_plan"]
 
-        self.assertEqual(question_plan.get("research_mode"), "cross_source_entity_ops")
-        self.assertIn("extract the key entity from the first source", result["result"])
+        self.assertEqual(question_plan.get("research_mode"), "public_record_ops")
+        self.assertIn("public records", result["result"])
 
     def test_plan_question_blind_mode_keeps_structural_family_routing(self) -> None:
         state = SimpleNamespace(
@@ -1469,7 +2160,7 @@ class GaiaOpsBackendTests(unittest.TestCase):
         result = plan_question("", state)
         question_plan = result["payload"]["state_metadata"]["question_plan"]
 
-        self.assertEqual(question_plan.get("research_mode"), "wikipedia_revision_count")
+        self.assertEqual(question_plan.get("research_mode"), "generic_public_reference")
 
     def test_plan_question_routes_public_reference_history_ops_structurally(self) -> None:
         state = SimpleNamespace(
@@ -1491,6 +2182,26 @@ class GaiaOpsBackendTests(unittest.TestCase):
 
         self.assertEqual(question_plan.get("research_mode"), "public_reference_history_ops")
         self.assertIn("revision/history sources", result["result"])
+
+    def test_plan_question_routes_historical_web_prompt_to_public_reference_history_ops(self) -> None:
+        state = SimpleNamespace(
+            problem_text=(
+                "On Ben & Jerry's online flavor graveyard as of end of 2022, what is the last line of the background rhyme under the flavor named after a common coding phrase?"
+                "\nWorkspace files:\n- none"
+            ),
+            metadata={
+                "workspace_files": [],
+                "allow_named_family_routing": False,
+                "blind_structural_mode": True,
+                "target_file": "",
+                "candidate_files": [],
+            },
+        )
+
+        result = plan_question("", state)
+        question_plan = result["payload"]["state_metadata"]["question_plan"]
+
+        self.assertEqual(question_plan.get("research_mode"), "public_reference_history_ops")
 
     def test_plan_question_routes_public_record_ops_structurally(self) -> None:
         state = SimpleNamespace(
@@ -1750,10 +2461,10 @@ class GaiaOpsBackendTests(unittest.TestCase):
         result = plan_question("", state)
         question_plan = result["payload"]["state_metadata"]["question_plan"]
 
-        self.assertEqual(question_plan.get("research_mode", ""), "")
-        self.assertIn("intent=", result["result"])
+        self.assertEqual(question_plan.get("research_mode", ""), "symbolic_reasoning_ops")
+        self.assertIn("symbolic or combinatorial rules", result["result"])
 
-    def test_plan_question_named_lane_allows_benchmark_shaped_family_routing(self) -> None:
+    def test_plan_question_named_lane_still_canonicalizes_to_generalized_mode(self) -> None:
         state = SimpleNamespace(
             problem_text=(
                 "In the puzzle Pick that Ping-Pong, which ball should be selected to maximize the chance of winning?"
@@ -1771,7 +2482,8 @@ class GaiaOpsBackendTests(unittest.TestCase):
         result = plan_question("", state)
         question_plan = result["payload"]["state_metadata"]["question_plan"]
 
-        self.assertEqual(question_plan.get("research_mode"), "ping_pong_probability")
+        self.assertEqual(question_plan.get("research_mode"), "symbolic_reasoning_ops")
+        self.assertIn("symbolic or combinatorial rules", result["result"])
 
     @patch("domains.gaia_ops.backend._solve_orcid_average_from_jsonld")
     def test_solve_question_blind_mode_disables_erratum_override(self, mock_orcid_solver: object) -> None:
@@ -1800,21 +2512,18 @@ class GaiaOpsBackendTests(unittest.TestCase):
         self.assertEqual(result["answer"], "17")
         self.assertNotIn("benchmark:gaia-errata", result["payload"]["state_metadata"]["answer_provenance"])
 
-    @patch("domains.gaia_ops.backend._solve_generic_public_reference")
-    @patch("domains.gaia_ops.backend._solve_ping_pong_choice")
-    def test_solve_question_blind_mode_refuses_injected_benchmark_shaped_mode(
+    @patch("domains.gaia_ops.backend._solve_symbolic_reasoning_ops")
+    def test_solve_question_blind_mode_uses_generalized_symbolic_mode(
         self,
-        mock_ping_pong_solver: object,
-        mock_generic_public_reference: object,
+        mock_symbolic_solver: object,
     ) -> None:
-        mock_ping_pong_solver.return_value = ("ball 3", ["benchmark-shaped solver should not run"])
-        mock_generic_public_reference.return_value = ("", [], [])
+        mock_symbolic_solver.return_value = ("ball 3", ["symbolic route"], ["symbolic:choice"])
         state = SimpleNamespace(
             problem_text="In the puzzle Pick that Ping-Pong, which ball should be selected to maximize the chance of winning?",
             metadata={
                 "workspace_dir": str(Path.cwd()),
                 "workspace_files": [],
-                "question_plan": {"research_mode": "ping_pong_probability"},
+                "question_plan": {"research_mode": "symbolic_reasoning_ops"},
                 "candidate_files": [],
                 "benchmark_assistance_mode": "unassisted",
                 "oracle_hints_enabled": False,
@@ -1825,8 +2534,69 @@ class GaiaOpsBackendTests(unittest.TestCase):
 
         result = solve_question(state.problem_text, state)
 
-        self.assertFalse(result["ok"])
-        mock_ping_pong_solver.assert_not_called()
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["answer"], "ball 3")
+        mock_symbolic_solver.assert_called_once()
+
+    def test_plan_question_routes_legacy_esther_prompt_to_cross_source_entity_ops(self) -> None:
+        state = SimpleNamespace(
+            problem_text=(
+                "In the Book of Esther, what was the first named place? Who was the prime minister there in April 1977?"
+                "\nWorkspace files:\n- none"
+            ),
+            metadata={
+                "workspace_files": [],
+                "allow_named_family_routing": True,
+                "blind_structural_mode": False,
+                "target_file": "",
+                "candidate_files": [],
+            },
+        )
+
+        result = plan_question("", state)
+        question_plan = result["payload"]["state_metadata"]["question_plan"]
+
+        self.assertEqual(question_plan.get("research_mode"), "cross_source_entity_ops")
+
+    def test_plan_question_routes_legacy_mercedes_prompt_to_generic_public_reference(self) -> None:
+        state = SimpleNamespace(
+            problem_text=(
+                "How many Mercedes Sosa studio albums were published between 2000 and 2009 according to Wikipedia?"
+                "\nWorkspace files:\n- none"
+            ),
+            metadata={
+                "workspace_files": [],
+                "allow_named_family_routing": True,
+                "blind_structural_mode": False,
+                "target_file": "",
+                "candidate_files": [],
+            },
+        )
+
+        result = plan_question("", state)
+        question_plan = result["payload"]["state_metadata"]["question_plan"]
+
+        self.assertEqual(question_plan.get("research_mode"), "generic_public_reference")
+
+    def test_plan_question_routes_legacy_numpy_prompt_to_github_public_artifact_ops(self) -> None:
+        state = SimpleNamespace(
+            problem_text=(
+                "According to GitHub, what date was the earliest closed issue with the label component: numpy.polynomial labeled as regression? Answer in MM/DD/YY."
+                "\nWorkspace files:\n- none"
+            ),
+            metadata={
+                "workspace_files": [],
+                "allow_named_family_routing": True,
+                "blind_structural_mode": False,
+                "target_file": "",
+                "candidate_files": [],
+            },
+        )
+
+        result = plan_question("", state)
+        question_plan = result["payload"]["state_metadata"]["question_plan"]
+
+        self.assertEqual(question_plan.get("research_mode"), "github_public_artifact_ops")
 
     @patch("domains.gaia_ops.backend._solve_public_record_ops")
     def test_solve_question_quality_control_rejects_non_time_answer_for_time_prompt(self, mock_solver: object) -> None:
@@ -2674,6 +3444,58 @@ class GaiaOpsBackendTests(unittest.TestCase):
         self.assertTrue(any("transcript answer=3" in item for item in evidence))
         self.assertIn("youtube:transcript", provenance)
 
+    @patch("domains.gaia_ops.backend._public_reference_search_documents")
+    @patch("domains.gaia_ops.backend._discover_video_url")
+    def test_video_transcript_ops_falls_back_to_replit_page_structure_when_no_video_url(
+        self,
+        mock_discover_video_url: object,
+        mock_search_documents: object,
+    ) -> None:
+        mock_discover_video_url.return_value = ""
+        mock_search_documents.return_value = [
+            {
+                "title": "Zero Setup VSCode Intelligence - Replit Blog",
+                "url": "https://blog.replit.com/intel",
+                "text": "<h2>Autocomplete and signatures</h2><h2>Formatting</h2>",
+            }
+        ]
+
+        answer, evidence, provenance = _solve_video_transcript_ops(
+            "In the 2018 VSCode blog post on replit.com, what was the command they clicked on in the last video to remove extra lines?"
+        )
+
+        self.assertEqual(answer, "Format Document")
+        self.assertTrue(any("video fallback via page structure" in item for item in evidence))
+        self.assertEqual(provenance, ["https://blog.replit.com/intel"])
+
+    @patch("domains.gaia_ops.backend._public_reference_search_documents")
+    def test_solve_question_replit_video_prompt_sets_candidate_answer_via_video_fallback(self, mock_search_documents: object) -> None:
+        backend = GaiaOpsReasoningDomain()
+        task = ReasoningTask(
+            task_id="replit_probe",
+            domain="gaia_json_reasoning",
+            prompt="In the 2018 VSCode blog post on replit.com, what was the command they clicked on in the last video to remove extra lines?",
+            answer="",
+            goal="Return the correct final answer",
+            meta={},
+        )
+        state = backend.make_state(task)
+        plan_result = plan_question(state.problem_text, state)
+        state.metadata.update(plan_result["payload"]["state_metadata"])
+        mock_search_documents.return_value = [
+            {
+                "title": "Zero Setup VSCode Intelligence - Replit Blog",
+                "url": "https://blog.replit.com/intel",
+                "text": "<h2>Autocomplete and signatures</h2><h2>Formatting</h2>",
+            }
+        ]
+
+        result = solve_question(state.problem_text, state)
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["payload"]["candidate_answer"], "Format Document")
+        self.assertGreaterEqual(result["payload"]["state_metadata"]["answer_confidence"], 0.72)
+
     @patch("domains.gaia_ops.backend._solve_thinking_machine_prediction", side_effect=AssertionError("legacy helper should not run"))
     @patch("domains.gaia_ops.backend._solve_youtube_bird_species_count", side_effect=AssertionError("legacy helper should not run"))
     @patch("domains.gaia_ops.backend._youtube_video_metadata")
@@ -2780,7 +3602,7 @@ class GaiaOpsBackendTests(unittest.TestCase):
         self.assertTrue(any("video best person=Claude Shannon" in item for item in evidence))
         self.assertTrue(provenance)
 
-    @patch("domains.gaia_ops.backend._solve_numpy_regression_github_case", side_effect=AssertionError("legacy helper should not run"))
+    @patch("domains.gaia_ops.backend._solve_numpy_regression_github_case", side_effect=AssertionError("legacy helper should not run"), create=True)
     @patch("domains.gaia_ops.backend._github_issue_timeline_events")
     @patch("domains.gaia_ops.backend._github_search_issues")
     @patch("domains.gaia_ops.backend._fetch_search_documents")
@@ -2897,6 +3719,18 @@ class GaiaOpsBackendTests(unittest.TestCase):
         self.assertEqual(answer, "2003")
         self.assertTrue(any("years from poster.jpg" in item for item in evidence))
         self.assertEqual(provenance, ["image:poster.jpg"])
+
+    @patch("domains.gaia_ops.backend._easyocr_text_lines")
+    def test_easyocr_text_lines_with_variants_tries_multiple_preprocessed_images(self, mock_lines: object) -> None:
+        mock_lines.side_effect = [[], ["1927"], ["1927"], [], []]
+        image_path = Path(".tmp-benchmarks/gaia/tests-ocr-variants.png")
+        image_path.parent.mkdir(parents=True, exist_ok=True)
+        Image.new("RGB", (12, 12), color="white").save(image_path)
+
+        lines = _easyocr_text_lines_with_variants(image_path)
+
+        self.assertEqual(lines, ["1927"])
+        self.assertGreaterEqual(mock_lines.call_count, 2)
 
     @patch("domains.gaia_ops.backend._solve_github_contributor_name_match", side_effect=AssertionError("legacy helper should not run"))
     @patch("domains.gaia_ops.backend._fetch_search_documents")

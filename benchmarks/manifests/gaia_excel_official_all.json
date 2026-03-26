@@ -1,0 +1,268 @@
+{
+  "suite": "gaia_excel_official_all",
+  "tier": "official",
+  "backend": "gaia_ops",
+  "description": "All official GAIA Excel-backed cases in original manifest order.",
+  "cases": [
+    {
+      "task_id": "32102e3e-d12a-4209-9163-7b3a104efe5d",
+      "domain": "gaia_json_reasoning",
+      "prompt": "The attached spreadsheet shows the inventory for a movie and video game rental store in Seattle, Washington. What is the title of the oldest Blu-Ray recorded in this spreadsheet? Return it as appearing in the spreadsheet.",
+      "answer": "Time-Parking 2: Parallel Universe",
+      "goal": "Return the shortest correct final answer",
+      "meta": {
+        "family": "gaia_json_reasoning",
+        "benchmark_suite": "gaia_full_official",
+        "benchmark_tier": "official",
+        "holdout_group": "gaia_full_official",
+        "source": "public_benchmark",
+        "fixture_role": "benchmark",
+        "fixture_dir": "C:\\Users\\scsar\\Desktop\\math_sentinel_v7\\data\\official_corpus\\gaia\\attachments\\32102e3e-d12a-4209-9163-7b3a104efe5d",
+        "oracle_evidence_file": "32102e3e-d12a-4209-9163-7b3a104efe5d.xlsx",
+        "file_name": "32102e3e-d12a-4209-9163-7b3a104efe5d.xlsx",
+        "level": "2",
+        "question_id": "32102e3e-d12a-4209-9163-7b3a104efe5d"
+      }
+    },
+    {
+      "task_id": "5cfb274c-0207-4aa7-9575-6ac0bd95d9b2",
+      "domain": "gaia_json_reasoning",
+      "prompt": "Each cell in the attached spreadsheet represents a plot of land. The color of the cell indicates who owns that plot. Green cells are plots owned by Earl Smith. Can Earl walk through every plot he owns (and no other plots) and return to his starting plot without backtracking? For this question, consider backtracking to be any instance where Earl would enter a plot of land he had already entered since leaving his starting plot.",
+      "answer": "No",
+      "goal": "Return the shortest correct final answer",
+      "meta": {
+        "family": "gaia_json_reasoning",
+        "benchmark_suite": "gaia_full_official",
+        "benchmark_tier": "official",
+        "holdout_group": "gaia_full_official",
+        "source": "public_benchmark",
+        "fixture_role": "benchmark",
+        "fixture_dir": "C:\\Users\\scsar\\Desktop\\math_sentinel_v7\\data\\official_corpus\\gaia\\attachments\\5cfb274c-0207-4aa7-9575-6ac0bd95d9b2",
+        "oracle_evidence_file": "5cfb274c-0207-4aa7-9575-6ac0bd95d9b2.xlsx",
+        "file_name": "5cfb274c-0207-4aa7-9575-6ac0bd95d9b2.xlsx",
+        "level": "1",
+        "question_id": "5cfb274c-0207-4aa7-9575-6ac0bd95d9b2"
+      }
+    },
+    {
+      "task_id": "076c8171-9b3b-49b9-a477-244d2a532826",
+      "domain": "gaia_json_reasoning",
+      "prompt": "The attached file contains a list of vendors in the Liminal Springs mall, along with each vendor\u2019s monthly revenue and the rent they pay the mall. I want you to find the vendor that makes the least money, relative to the rent it pays. Then, tell me what is listed in the \u201ctype\u201d column for that vendor.",
+      "answer": "Finance",
+      "goal": "Return the shortest correct final answer",
+      "meta": {
+        "family": "gaia_json_reasoning",
+        "benchmark_suite": "gaia_full_official",
+        "benchmark_tier": "official",
+        "holdout_group": "gaia_full_official",
+        "source": "public_benchmark",
+        "fixture_role": "benchmark",
+        "fixture_dir": "C:\\Users\\scsar\\Desktop\\math_sentinel_v7\\data\\official_corpus\\gaia\\attachments\\076c8171-9b3b-49b9-a477-244d2a532826",
+        "oracle_evidence_file": "076c8171-9b3b-49b9-a477-244d2a532826.xlsx",
+        "file_name": "076c8171-9b3b-49b9-a477-244d2a532826.xlsx",
+        "level": "2",
+        "question_id": "076c8171-9b3b-49b9-a477-244d2a532826"
+      }
+    },
+    {
+      "task_id": "c526d8d6-5987-4da9-b24c-83466fa172f3",
+      "domain": "gaia_json_reasoning",
+      "prompt": "In the NIH translation of the original 1913 Michaelis-Menten Paper, what is the velocity of a reaction to four decimal places using the final equation in the paper based on the information for Reaction 7 in the Excel file?",
+      "answer": "0.0424",
+      "goal": "Return the shortest correct final answer",
+      "meta": {
+        "family": "gaia_json_reasoning",
+        "benchmark_suite": "gaia_full_official",
+        "benchmark_tier": "official",
+        "holdout_group": "gaia_full_official",
+        "source": "public_benchmark",
+        "fixture_role": "benchmark",
+        "fixture_dir": "C:\\Users\\scsar\\Desktop\\math_sentinel_v7\\data\\official_corpus\\gaia\\attachments\\c526d8d6-5987-4da9-b24c-83466fa172f3",
+        "oracle_evidence_file": "c526d8d6-5987-4da9-b24c-83466fa172f3.xlsx",
+        "file_name": "c526d8d6-5987-4da9-b24c-83466fa172f3.xlsx",
+        "level": "3",
+        "question_id": "c526d8d6-5987-4da9-b24c-83466fa172f3"
+      }
+    },
+    {
+      "task_id": "3da89939-209c-4086-8520-7eb734e6b4ef",
+      "domain": "gaia_json_reasoning",
+      "prompt": "I was referencing each of the tables in the file from papers that were cited by the \"Trans fatty acid contents in chocolates and chocolate wafers in Turkey\" paper. I lost my own reference sheet and need to know which of the papers each table came from. The file may not use the full table caption. If the references in the\"Trans fatty acid\" paper bibliography were numbered starting with 1, give me the numbers in the order that they would be used to fill the cells in the Excel file from top to bottom, as a comma separated list.",
+      "answer": "8, 29, 22, 1, 8, 26",
+      "goal": "Return the shortest correct final answer",
+      "meta": {
+        "family": "gaia_json_reasoning",
+        "benchmark_suite": "gaia_full_official",
+        "benchmark_tier": "official",
+        "holdout_group": "gaia_full_official",
+        "source": "public_benchmark",
+        "fixture_role": "benchmark",
+        "fixture_dir": "C:\\Users\\scsar\\Desktop\\math_sentinel_v7\\data\\official_corpus\\gaia\\attachments\\3da89939-209c-4086-8520-7eb734e6b4ef",
+        "oracle_evidence_file": "3da89939-209c-4086-8520-7eb734e6b4ef.xlsx",
+        "file_name": "3da89939-209c-4086-8520-7eb734e6b4ef.xlsx",
+        "level": "3",
+        "question_id": "3da89939-209c-4086-8520-7eb734e6b4ef"
+      }
+    },
+    {
+      "task_id": "54612da3-fd56-4941-80f4-5eb82330de25",
+      "domain": "gaia_json_reasoning",
+      "prompt": "The attached file shows the locomotives in the collection of a North American railroad museum. How many wheels do the listed steam locomotives have in total?",
+      "answer": "60",
+      "goal": "Return the shortest correct final answer",
+      "meta": {
+        "family": "gaia_json_reasoning",
+        "benchmark_suite": "gaia_full_official",
+        "benchmark_tier": "official",
+        "holdout_group": "gaia_full_official",
+        "source": "public_benchmark",
+        "fixture_role": "benchmark",
+        "fixture_dir": "C:\\Users\\scsar\\Desktop\\math_sentinel_v7\\data\\official_corpus\\gaia\\attachments\\54612da3-fd56-4941-80f4-5eb82330de25",
+        "oracle_evidence_file": "54612da3-fd56-4941-80f4-5eb82330de25.xlsx",
+        "file_name": "54612da3-fd56-4941-80f4-5eb82330de25.xlsx",
+        "level": "2",
+        "question_id": "54612da3-fd56-4941-80f4-5eb82330de25"
+      }
+    },
+    {
+      "task_id": "7cc4acfa-63fd-4acc-a1a1-e8e529e0a97f",
+      "domain": "gaia_json_reasoning",
+      "prompt": "The attached spreadsheet contains the sales of menu items for a regional fast-food chain. Which city had the greater total sales: Wharvton or Algrimand?",
+      "answer": "Wharvton",
+      "goal": "Return the shortest correct final answer",
+      "meta": {
+        "family": "gaia_json_reasoning",
+        "benchmark_suite": "gaia_full_official",
+        "benchmark_tier": "official",
+        "holdout_group": "gaia_full_official",
+        "source": "public_benchmark",
+        "fixture_role": "benchmark",
+        "fixture_dir": "C:\\Users\\scsar\\Desktop\\math_sentinel_v7\\data\\official_corpus\\gaia\\attachments\\7cc4acfa-63fd-4acc-a1a1-e8e529e0a97f",
+        "oracle_evidence_file": "7cc4acfa-63fd-4acc-a1a1-e8e529e0a97f.xlsx",
+        "file_name": "7cc4acfa-63fd-4acc-a1a1-e8e529e0a97f.xlsx",
+        "level": "2",
+        "question_id": "7cc4acfa-63fd-4acc-a1a1-e8e529e0a97f"
+      }
+    },
+    {
+      "task_id": "65afbc8a-89ca-4ad5-8d62-355bb401f61d",
+      "domain": "gaia_json_reasoning",
+      "prompt": "You are given this Excel file as a map. You start on the START cell and move toward the END cell. You are allowed to move two cells per turn, and you may move up, down, left, or right. You may not move fewer than two cells, and you may not move backward. You must avoid moving onto any blue cells. On the eleventh turn, what is the 6-digit hex code (without prefix) of the color of the cell where you land after moving?",
+      "answer": "F478A7",
+      "goal": "Return the shortest correct final answer",
+      "meta": {
+        "family": "gaia_json_reasoning",
+        "benchmark_suite": "gaia_full_official",
+        "benchmark_tier": "official",
+        "holdout_group": "gaia_full_official",
+        "source": "public_benchmark",
+        "fixture_role": "benchmark",
+        "fixture_dir": "C:\\Users\\scsar\\Desktop\\math_sentinel_v7\\data\\official_corpus\\gaia\\attachments\\65afbc8a-89ca-4ad5-8d62-355bb401f61d",
+        "oracle_evidence_file": "65afbc8a-89ca-4ad5-8d62-355bb401f61d.xlsx",
+        "file_name": "65afbc8a-89ca-4ad5-8d62-355bb401f61d.xlsx",
+        "level": "1",
+        "question_id": "65afbc8a-89ca-4ad5-8d62-355bb401f61d"
+      }
+    },
+    {
+      "task_id": "4d51c4bf-4b0e-4f3d-897b-3f6687a7d9f2",
+      "domain": "gaia_json_reasoning",
+      "prompt": "This spreadsheet contains a list of clients for a retractable awning company. Each client has ordered a new awning for the back of their house within the last 90 days. The company makes different designs depending on whether the awning is made to block sunrises or sunsets. In this region, houses with odd-numbered street addresses face east, and houses with even-numbered street addresses face west. How many of these clients will be receiving the sunset awning design?",
+      "answer": "8",
+      "goal": "Return the shortest correct final answer",
+      "meta": {
+        "family": "gaia_json_reasoning",
+        "benchmark_suite": "gaia_full_official",
+        "benchmark_tier": "official",
+        "holdout_group": "gaia_full_official",
+        "source": "public_benchmark",
+        "fixture_role": "benchmark",
+        "fixture_dir": "C:\\Users\\scsar\\Desktop\\math_sentinel_v7\\data\\official_corpus\\gaia\\attachments\\4d51c4bf-4b0e-4f3d-897b-3f6687a7d9f2",
+        "oracle_evidence_file": "4d51c4bf-4b0e-4f3d-897b-3f6687a7d9f2.xlsx",
+        "file_name": "4d51c4bf-4b0e-4f3d-897b-3f6687a7d9f2.xlsx",
+        "level": "2",
+        "question_id": "4d51c4bf-4b0e-4f3d-897b-3f6687a7d9f2"
+      }
+    },
+    {
+      "task_id": "da52d699-e8d2-4dc5-9191-a2199e0b6a9b",
+      "domain": "gaia_json_reasoning",
+      "prompt": "The attached spreadsheet contains a list of books I read in the year 2022. What is the title of the book that I read the slowest, using the rate of words per day?",
+      "answer": "Out of the Silent Planet",
+      "goal": "Return the shortest correct final answer",
+      "meta": {
+        "family": "gaia_json_reasoning",
+        "benchmark_suite": "gaia_full_official",
+        "benchmark_tier": "official",
+        "holdout_group": "gaia_full_official",
+        "source": "public_benchmark",
+        "fixture_role": "benchmark",
+        "fixture_dir": "C:\\Users\\scsar\\Desktop\\math_sentinel_v7\\data\\official_corpus\\gaia\\attachments\\da52d699-e8d2-4dc5-9191-a2199e0b6a9b",
+        "oracle_evidence_file": "da52d699-e8d2-4dc5-9191-a2199e0b6a9b.xlsx",
+        "file_name": "da52d699-e8d2-4dc5-9191-a2199e0b6a9b.xlsx",
+        "level": "3",
+        "question_id": "da52d699-e8d2-4dc5-9191-a2199e0b6a9b"
+      }
+    },
+    {
+      "task_id": "edd4d4f2-1a58-45c4-b038-67337af4e029",
+      "domain": "gaia_json_reasoning",
+      "prompt": "The attached spreadsheet lists the locomotives owned by a local railroad museum. What is the typical American name for the type of locomotive this museum uses for the Murder Mystery Express?",
+      "answer": "Berkshire",
+      "goal": "Return the shortest correct final answer",
+      "meta": {
+        "family": "gaia_json_reasoning",
+        "benchmark_suite": "gaia_full_official",
+        "benchmark_tier": "official",
+        "holdout_group": "gaia_full_official",
+        "source": "public_benchmark",
+        "fixture_role": "benchmark",
+        "fixture_dir": "C:\\Users\\scsar\\Desktop\\math_sentinel_v7\\data\\official_corpus\\gaia\\attachments\\edd4d4f2-1a58-45c4-b038-67337af4e029",
+        "oracle_evidence_file": "edd4d4f2-1a58-45c4-b038-67337af4e029.xlsx",
+        "file_name": "edd4d4f2-1a58-45c4-b038-67337af4e029.xlsx",
+        "level": "2",
+        "question_id": "edd4d4f2-1a58-45c4-b038-67337af4e029"
+      }
+    },
+    {
+      "task_id": "4d0aa727-86b1-406b-9b33-f870dd14a4a5",
+      "domain": "gaia_json_reasoning",
+      "prompt": "The attached file lists the locomotives owned by a local railroad museum. It gives each locomotive\u2019s identifying number, operating status, and the name of the daily excursion it heads, if operational. What are the odds that today\u2019s Sunset Picnic Trip will use a steam locomotive? Assume that each day\u2019s excursion picks one of its assigned locomotives at random, and express the answer in the form \u201c1 in 4\u201d, \u201c1 in 5\u201d, etc.",
+      "answer": "1 in 3",
+      "goal": "Return the shortest correct final answer",
+      "meta": {
+        "family": "gaia_json_reasoning",
+        "benchmark_suite": "gaia_full_official",
+        "benchmark_tier": "official",
+        "holdout_group": "gaia_full_official",
+        "source": "public_benchmark",
+        "fixture_role": "benchmark",
+        "fixture_dir": "C:\\Users\\scsar\\Desktop\\math_sentinel_v7\\data\\official_corpus\\gaia\\attachments\\4d0aa727-86b1-406b-9b33-f870dd14a4a5",
+        "oracle_evidence_file": "4d0aa727-86b1-406b-9b33-f870dd14a4a5.xlsx",
+        "file_name": "4d0aa727-86b1-406b-9b33-f870dd14a4a5.xlsx",
+        "level": "2",
+        "question_id": "4d0aa727-86b1-406b-9b33-f870dd14a4a5"
+      }
+    },
+    {
+      "task_id": "7bd855d8-463d-4ed5-93ca-5fe35145f733",
+      "domain": "gaia_json_reasoning",
+      "prompt": "The attached Excel file contains the sales of menu items for a local fast-food chain. What were the total sales that the chain made from food (not including drinks)? Express your answer in USD with two decimal places.",
+      "answer": "89706.00",
+      "goal": "Return the shortest correct final answer",
+      "meta": {
+        "family": "gaia_json_reasoning",
+        "benchmark_suite": "gaia_full_official",
+        "benchmark_tier": "official",
+        "holdout_group": "gaia_full_official",
+        "source": "public_benchmark",
+        "fixture_role": "benchmark",
+        "fixture_dir": "C:\\Users\\scsar\\Desktop\\math_sentinel_v7\\data\\official_corpus\\gaia\\attachments\\7bd855d8-463d-4ed5-93ca-5fe35145f733",
+        "oracle_evidence_file": "7bd855d8-463d-4ed5-93ca-5fe35145f733.xlsx",
+        "file_name": "7bd855d8-463d-4ed5-93ca-5fe35145f733.xlsx",
+        "level": "1",
+        "question_id": "7bd855d8-463d-4ed5-93ca-5fe35145f733"
+      }
+    }
+  ]
+}

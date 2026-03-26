@@ -1,8 +1,9 @@
-torch==2.10.0
+torch==2.6.0
 numpy==1.26.2
 PyYAML==6.0.3
 beautifulsoup4==4.14.3
 pillow==12.1.1
+easyocr==1.7.2
 pypdf==6.9.2
 soupsieve==2.8.3
 sympy==1.14.0

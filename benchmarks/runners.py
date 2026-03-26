@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any, Dict, Iterable, List, Tuple
 
 import torch
@@ -43,6 +44,10 @@ def resolve_suite_targets(suite_spec: str, backends_spec: str) -> List[Tuple[str
     normalized_suite = raw_suite.lower()
     public_suites = set(available_public_suites())
     public_groups = available_public_suite_groups()
+
+    suite_path = Path(raw_suite)
+    if not normalized_suite.startswith(("manifest:", "official:")) and suite_path.suffix.lower() in {".json", ".jsonl"} and suite_path.exists():
+        return [("manifest", raw_suite)]
 
     if normalized_suite.startswith("manifest:"):
         manifest_path = raw_suite.split(":", 1)[1].strip()

@@ -6,6 +6,8 @@ import json
 from pathlib import Path
 from typing import Any, Dict
 
+import torch
+
 from benchmarks.ablations import resolve_benchmark_ablations
 from benchmarks.ablations import available_benchmark_ablations
 from benchmarks.campaign import run_benchmark_campaign
@@ -45,6 +47,26 @@ def cli_cfg_overrides(args: argparse.Namespace) -> Dict[str, Any]:
     if args.local_files_only:
         overrides.setdefault("model", {})["local_files_only"] = True
     return overrides
+
+
+def benchmark_requires_cuda(cfg: Dict[str, Any]) -> bool:
+    provider = str(cfg.get("model", {}).get("provider", "legacy_tiny")).lower()
+    return provider in {"hf", "hf_causal_lm", "openweight"}
+
+
+def validate_benchmark_device(cfg: Dict[str, Any], device: str) -> None:
+    if not benchmark_requires_cuda(cfg):
+        return
+    if device == "cuda":
+        return
+    if torch.cuda.is_available():
+        raise SystemExit(
+            "Benchmark runtime resolved to CPU even though CUDA is available. "
+            "Use a CUDA-capable benchmark config/profile instead of allowing silent CPU fallback."
+        )
+    raise SystemExit(
+        "This benchmark profile requires CUDA, but no CUDA device is available in the active Python environment."
+    )
 
 
 def main() -> None:
@@ -123,6 +145,7 @@ def main() -> None:
         return
 
     device = configure_runtime(cfg, deterministic_override=(True if args.deterministic else None), safe_override=(True if args.safe_runtime else None))
+    validate_benchmark_device(cfg, device)
     event_logger = build_runtime_event_logger(cfg)
     prover, tokenizer, verifier = load_benchmark_runtime(cfg, device, checkpoint=args.checkpoint)
 

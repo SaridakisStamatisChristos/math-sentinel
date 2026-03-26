@@ -49,6 +49,11 @@ class BenchmarkManifestTests(unittest.TestCase):
 
         self.assertEqual(targets, [("manifest", "benchmarks/manifests/gaia_medium_official_style.json")])
 
+    def test_resolve_suite_targets_supports_raw_manifest_path(self) -> None:
+        targets = resolve_suite_targets("benchmarks/manifests/gaia_medium_official_style.json", "all")
+
+        self.assertEqual(targets, [("manifest", "benchmarks/manifests/gaia_medium_official_style.json")])
+
     def test_resolve_suite_targets_supports_official_prefix(self) -> None:
         targets = resolve_suite_targets("official:all", "all")
 

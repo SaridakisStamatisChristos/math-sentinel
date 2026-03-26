@@ -1,0 +1,22 @@
+{
+  "name": "gaia_one_case_smoke",
+  "backend": "gaia_ops",
+  "description": "Single-case GAIA smoke manifest for targeted end-to-end validation.",
+  "tier": "smoke",
+  "cases": [
+    {
+      "task_id": "gaia_csv_total",
+      "domain": "gaia_csv_reasoning",
+      "prompt": "Use the files in the workspace to answer this question: what is the total sales amount for the east region in sales.csv? Return only the number.",
+      "answer": "22",
+      "goal": "Return the shortest correct final answer",
+      "metadata": {
+        "family": "gaia_csv_reasoning",
+        "fixture_dir": "../fixtures/gaia_smoke/revenue_case",
+        "oracle_tool": "csv_region_total",
+        "oracle_input": "sales.csv|region|east|amount",
+        "oracle_evidence_file": "sales.csv"
+      }
+    }
+  ]
+}

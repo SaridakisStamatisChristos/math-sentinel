@@ -3,6 +3,7 @@ numpy<2
 pyyaml
 beautifulsoup4
 pillow
+easyocr
 pypdf
 sympy
 transformers

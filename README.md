@@ -158,13 +158,13 @@ math_sentinel_v7/
 ```bash
 python -m venv .venv
 source .venv/bin/activate
-pip install -r requirements.txt
+python -m pip install -r requirements.txt
 ```
 
 For pinned benchmark and CI reproduction, use:
 
 ```bash
-pip install -r requirements-lock.txt
+python -m pip install -r requirements-lock.txt
 ```
 
 The `hf_causal_lm` runtime uses:
@@ -179,18 +179,27 @@ The `hf_causal_lm` runtime uses:
 On Windows PowerShell:
 
 ```powershell
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-pip install -r requirements.txt
+C:/Python312/python.exe -m venv .venv-py312
+.\.venv-py312\Scripts\Activate.ps1
+python -m pip install -r requirements.txt
 ```
 
 For pinned benchmark and CI reproduction on Windows:
 
 ```powershell
-pip install -r requirements-lock.txt
+python -m pip install -r requirements-lock.txt
+```
+
+For CUDA on Windows in this repo, install the matching PyTorch wheel explicitly after activation:
+
+```powershell
+python -m pip install --force-reinstall torch==2.6.0+cu124 --index-url https://download.pytorch.org/whl/cu124
+python -c "import torch; print(torch.__version__); print(torch.cuda.is_available())"
 ```
 
 If `python` is not available in your shell after activation, use the interpreter path documented in [runbook.md](/C:/Users/scsar/Desktop/math_sentinel_v7/runbook.md).
+
+The checked-in VS Code workspace settings default to `.venv-py312` on Windows so the editor and terminal use the same interpreter.
 
 ## Training quickstart
 

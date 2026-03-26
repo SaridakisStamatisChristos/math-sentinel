@@ -1,0 +1,98 @@
+{
+  "suite": "gaia_level1_third_five",
+  "tier": "official",
+  "backend": "gaia_ops",
+  "description": "Third five-case level-1 GAIA official slice for continued generalization checks.",
+  "cases": [
+    {
+      "task_id": "46719c30-f4c3-4cad-be07-d5cb21eee6bb",
+      "domain": "gaia_json_reasoning",
+      "prompt": "Of the authors (First M. Last) that worked on the paper \"Pie Menus or Linear Menus, Which Is Better?\" in 2015, what was the title of the first paper authored by the author that submitted the camera ready version? Ignore the subtitle if there is one.",
+      "answer": "Mapping Human Oriented Information to Software Agents for Online Systems Usage",
+      "goal": "Return the shortest correct final answer",
+      "meta": {
+        "family": "gaia_json_reasoning",
+        "benchmark_suite": "gaia_full_official",
+        "benchmark_tier": "official",
+        "holdout_group": "gaia_full_official",
+        "source": "public_benchmark",
+        "fixture_role": "benchmark",
+        "fixture_dir": "C:\\Users\\scsar\\Desktop\\math_sentinel_v7\\data\\official_corpus\\gaia\\attachments\\46719c30-f4c3-4cad-be07-d5cb21eee6bb",
+        "level": "1",
+        "question_id": "46719c30-f4c3-4cad-be07-d5cb21eee6bb"
+      }
+    },
+    {
+      "task_id": "4b6bb5f7-f634-410e-815d-e673ab7f8632",
+      "domain": "gaia_json_reasoning",
+      "prompt": "In Series 9, Episode 11 of Doctor Who, the Doctor is trapped inside an ever-shifting maze. What is this location called in the official script for the episode? ",
+      "answer": "THE CASTLE",
+      "goal": "Return the shortest correct final answer",
+      "meta": {
+        "family": "gaia_json_reasoning",
+        "benchmark_suite": "gaia_full_official",
+        "benchmark_tier": "official",
+        "holdout_group": "gaia_full_official",
+        "source": "public_benchmark",
+        "fixture_role": "benchmark",
+        "fixture_dir": "C:\\Users\\scsar\\Desktop\\math_sentinel_v7\\data\\official_corpus\\gaia\\attachments\\4b6bb5f7-f634-410e-815d-e673ab7f8632",
+        "level": "1",
+        "question_id": "4b6bb5f7-f634-410e-815d-e673ab7f8632"
+      }
+    },
+    {
+      "task_id": "dc28cf18-6431-458b-83ef-64b3ce566c10",
+      "domain": "gaia_json_reasoning",
+      "prompt": "My family reunion is this week, and I was assigned the mashed potatoes to bring. The attendees include my married mother and father, my twin brother and his family of 4, my married sister and her family of 3, my 3-year-old daughter, my uncle and his wife, my aunt, my grandmother, and me. How many pounds of potatoes should I buy if I need 1/2 pound per person and always round up to the nearest 5 pounds to make sure I have enough?",
+      "answer": "2",
+      "goal": "Return the shortest correct final answer",
+      "meta": {
+        "family": "gaia_json_reasoning",
+        "benchmark_suite": "gaia_full_official",
+        "benchmark_tier": "official",
+        "holdout_group": "gaia_full_official",
+        "source": "public_benchmark",
+        "fixture_role": "benchmark",
+        "fixture_dir": "C:\\Users\\scsar\\Desktop\\math_sentinel_v7\\data\\official_corpus\\gaia\\attachments\\dc28cf18-6431-458b-83ef-64b3ce566c10",
+        "level": "1",
+        "question_id": "dc28cf18-6431-458b-83ef-64b3ce566c10"
+      }
+    },
+    {
+      "task_id": "b816bfce-3d80-4913-a07d-69b752ce6377",
+      "domain": "gaia_json_reasoning",
+      "prompt": "In Emily Midkiff's June 2014 article in a journal named for the one of Hreidmar's sons that guarded his house, what word was quoted from two different authors in the article?",
+      "answer": "fluffy",
+      "goal": "Return the shortest correct final answer",
+      "meta": {
+        "family": "gaia_json_reasoning",
+        "benchmark_suite": "gaia_full_official",
+        "benchmark_tier": "official",
+        "holdout_group": "gaia_full_official",
+        "source": "public_benchmark",
+        "fixture_role": "benchmark",
+        "fixture_dir": "C:\\Users\\scsar\\Desktop\\math_sentinel_v7\\data\\official_corpus\\gaia\\attachments\\b816bfce-3d80-4913-a07d-69b752ce6377",
+        "level": "1",
+        "question_id": "b816bfce-3d80-4913-a07d-69b752ce6377"
+      }
+    },
+    {
+      "task_id": "72e110e7-464c-453c-a309-90a95aed6538",
+      "domain": "gaia_json_reasoning",
+      "prompt": "Under DDC 633 on Bielefeld University Library's BASE, as of 2020, from what country was the unknown language article with a flag unique from the others?",
+      "answer": "Guatemala",
+      "goal": "Return the shortest correct final answer",
+      "meta": {
+        "family": "gaia_json_reasoning",
+        "benchmark_suite": "gaia_full_official",
+        "benchmark_tier": "official",
+        "holdout_group": "gaia_full_official",
+        "source": "public_benchmark",
+        "fixture_role": "benchmark",
+        "fixture_dir": "C:\\Users\\scsar\\Desktop\\math_sentinel_v7\\data\\official_corpus\\gaia\\attachments\\72e110e7-464c-453c-a309-90a95aed6538",
+        "level": "1",
+        "question_id": "72e110e7-464c-453c-a309-90a95aed6538"
+      }
+    }
+  ]
+}

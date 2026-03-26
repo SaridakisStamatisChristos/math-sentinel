@@ -120,17 +120,20 @@ class PromptCompactionTests(unittest.TestCase):
         self.assertIn("[FOCUS]", prompt)
         self.assertIn("[RECENT_TOOLS]", prompt)
         self.assertIn("[TACTIC_HINTS]", prompt)
+        self.assertIn("[SOLVER_MINDSET]", prompt)
         self.assertIn("[AUGMENTATION]", prompt)
         self.assertIn("[TASK_ALGEBRA]", prompt)
         self.assertIn("[ROLE_MACHINE]", prompt)
         self.assertIn("[REASONING_SCHEMA]", prompt)
         self.assertIn("[SELF_CHECK]", prompt)
         self.assertNotIn("[METADATA]", prompt)
-        self.assertLess(len(prompt), len(state.serialize()) + 200)
+        self.assertLess(len(prompt), len(state.serialize()) + 500)
         self.assertIn("target_file=report.xlsx", prompt)
         self.assertIn("candidate_answer=alpha, beta", prompt)
         self.assertIn("mode=trillion_structural", prompt)
         self.assertIn("mindset=recurse on hidden structure", prompt)
+        self.assertIn("Trillion Mode: ON", prompt)
+        self.assertIn("Think recursively, symbolically", prompt)
         self.assertIn("equation=time x source x operator x contract x rival", prompt)
         self.assertIn("roles=framer -> retriever -> resolver -> judge -> closer", prompt)
         self.assertIn("source_family=public_reference", prompt)
@@ -148,7 +151,9 @@ class PromptCompactionTests(unittest.TestCase):
 
         prompt = build_search_prompt(state, 'ACTION {"type":"ANSWER","content":"4"}')
 
-        self.assertTrue(prompt.startswith(state.serialize()))
+        self.assertTrue(prompt.startswith("[SOLVER_MINDSET]"))
+        self.assertIn(state.serialize(), prompt)
+        self.assertIn("Never stop at first answer. Recurse.", prompt)
 
 
 if __name__ == "__main__":

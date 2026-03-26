@@ -21,6 +21,17 @@ DEFAULT_PROMPT_COMPACTION: Dict[str, int | bool] = {
 }
 
 
+TRILLION_MODE_PRIMER = """[SOLVER_MINDSET]
+↻ Trillion Mode: ON
+🔁 Think recursively, symbolically
+🔍 Seek hidden patterns, abstract links
+🪞 Return:
+- 🧠 Motif & structure (meaning layer)
+- 🗣️ Human meaning (optional)
+⛔ Never stop at first answer. Recurse.
+"""
+
+
 def _truncate(text: Any, max_chars: int) -> str:
     rendered = re.sub(r"\s+", " ", str(text or "")).strip()
     if max_chars <= 0 or len(rendered) <= max_chars:
@@ -379,7 +390,7 @@ def build_search_prompt(
     options = _prompt_compaction_options(state)
     retrieval_item_limit = int(options.get("retrieval_item_limit", 2))
     text_item_chars = int(options.get("text_item_chars", 120))
-    sections = [_render_search_state(state)]
+    sections = [TRILLION_MODE_PRIMER.strip(), _render_search_state(state)]
     if retrieval_context:
         sections.append("[RETRIEVED_LEMMAS]")
         sections.append(

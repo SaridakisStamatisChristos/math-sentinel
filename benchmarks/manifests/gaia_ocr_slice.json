@@ -1,0 +1,356 @@
+{
+  "suite": "gaia_ocr_slice",
+  "tier": "official",
+  "backend": "gaia_ops",
+  "description": "OCR-heavy and OCR-adjacent official GAIA cases.",
+  "cases": [
+    {
+      "task_id": "624cbf11-6a41-4692-af9c-36b3e5ca3130",
+      "domain": "gaia_json_reasoning",
+      "prompt": "What's the last line of the rhyme under the flavor name on the headstone visible in the background of the photo of the oldest flavor's headstone in the Ben & Jerry's online flavor graveyard as of the end of 2022?",
+      "answer": "So we had to let it die.",
+      "goal": "Return the shortest correct final answer",
+      "meta": {
+        "family": "gaia_json_reasoning",
+        "benchmark_suite": "gaia_full_official",
+        "benchmark_tier": "official",
+        "holdout_group": "gaia_full_official",
+        "source": "public_benchmark",
+        "fixture_role": "benchmark",
+        "fixture_dir": "C:\\Users\\scsar\\Desktop\\math_sentinel_v7\\data\\official_corpus\\gaia\\attachments\\624cbf11-6a41-4692-af9c-36b3e5ca3130",
+        "level": "2",
+        "question_id": "624cbf11-6a41-4692-af9c-36b3e5ca3130"
+      }
+    },
+    {
+      "task_id": "df6561b2-7ee5-4540-baab-5095f742716a",
+      "domain": "gaia_json_reasoning",
+      "prompt": "When you take the average of the standard population deviation of the red numbers and the standard sample deviation of the green numbers in this image using the statistics module in Python 3.11, what is the result rounded to the nearest three decimal points?",
+      "answer": "17.056",
+      "goal": "Return the shortest correct final answer",
+      "meta": {
+        "family": "gaia_json_reasoning",
+        "benchmark_suite": "gaia_full_official",
+        "benchmark_tier": "official",
+        "holdout_group": "gaia_full_official",
+        "source": "public_benchmark",
+        "fixture_role": "benchmark",
+        "fixture_dir": "C:\\Users\\scsar\\Desktop\\math_sentinel_v7\\data\\official_corpus\\gaia\\attachments\\df6561b2-7ee5-4540-baab-5095f742716a",
+        "oracle_evidence_file": "df6561b2-7ee5-4540-baab-5095f742716a.png",
+        "file_name": "df6561b2-7ee5-4540-baab-5095f742716a.png",
+        "level": "2",
+        "question_id": "df6561b2-7ee5-4540-baab-5095f742716a"
+      }
+    },
+    {
+      "task_id": "b4cc024b-3f5e-480e-b96a-6656493255b5",
+      "domain": "gaia_json_reasoning",
+      "prompt": "The photograph in the Whitney Museum of American Art's collection with accession number 2022.128 shows a person holding a book. Which military unit did the author of this book join in 1813? Answer without using articles.",
+      "answer": "Russian-German Legion",
+      "goal": "Return the shortest correct final answer",
+      "meta": {
+        "family": "gaia_json_reasoning",
+        "benchmark_suite": "gaia_full_official",
+        "benchmark_tier": "official",
+        "holdout_group": "gaia_full_official",
+        "source": "public_benchmark",
+        "fixture_role": "benchmark",
+        "fixture_dir": "C:\\Users\\scsar\\Desktop\\math_sentinel_v7\\data\\official_corpus\\gaia\\attachments\\b4cc024b-3f5e-480e-b96a-6656493255b5",
+        "level": "2",
+        "question_id": "b4cc024b-3f5e-480e-b96a-6656493255b5"
+      }
+    },
+    {
+      "task_id": "05407167-39ec-4d3a-a234-73a9120c325d",
+      "domain": "gaia_json_reasoning",
+      "prompt": "In the 2018 VSCode blog post on replit.com, what was the command they clicked on in the last video to remove extra lines?",
+      "answer": "Format Document",
+      "goal": "Return the shortest correct final answer",
+      "meta": {
+        "family": "gaia_json_reasoning",
+        "benchmark_suite": "gaia_full_official",
+        "benchmark_tier": "official",
+        "holdout_group": "gaia_full_official",
+        "source": "public_benchmark",
+        "fixture_role": "benchmark",
+        "fixture_dir": "C:\\Users\\scsar\\Desktop\\math_sentinel_v7\\data\\official_corpus\\gaia\\attachments\\05407167-39ec-4d3a-a234-73a9120c325d",
+        "level": "2",
+        "question_id": "05407167-39ec-4d3a-a234-73a9120c325d"
+      }
+    },
+    {
+      "task_id": "bfcd99e1-0690-4b53-a85c-0174a8629083",
+      "domain": "gaia_json_reasoning",
+      "prompt": "How many applicants for the job in the PDF are only missing a single qualification?",
+      "answer": "17",
+      "goal": "Return the shortest correct final answer",
+      "meta": {
+        "family": "gaia_json_reasoning",
+        "benchmark_suite": "gaia_full_official",
+        "benchmark_tier": "official",
+        "holdout_group": "gaia_full_official",
+        "source": "public_benchmark",
+        "fixture_role": "benchmark",
+        "fixture_dir": "C:\\Users\\scsar\\Desktop\\math_sentinel_v7\\data\\official_corpus\\gaia\\attachments\\bfcd99e1-0690-4b53-a85c-0174a8629083",
+        "oracle_evidence_file": "bfcd99e1-0690-4b53-a85c-0174a8629083.zip",
+        "file_name": "bfcd99e1-0690-4b53-a85c-0174a8629083.zip",
+        "level": "2",
+        "question_id": "bfcd99e1-0690-4b53-a85c-0174a8629083"
+      }
+    },
+    {
+      "task_id": "e9a2c537-8232-4c3f-85b0-b52de6bcba99",
+      "domain": "gaia_json_reasoning",
+      "prompt": "The attached file shows a list of books in the collection of Scribe County Public Library. How many of the library’s books that are authored by Rick Riordan are not currently on the library’s shelves?",
+      "answer": "7",
+      "goal": "Return the shortest correct final answer",
+      "meta": {
+        "family": "gaia_json_reasoning",
+        "benchmark_suite": "gaia_full_official",
+        "benchmark_tier": "official",
+        "holdout_group": "gaia_full_official",
+        "source": "public_benchmark",
+        "fixture_role": "benchmark",
+        "fixture_dir": "C:\\Users\\scsar\\Desktop\\math_sentinel_v7\\data\\official_corpus\\gaia\\attachments\\e9a2c537-8232-4c3f-85b0-b52de6bcba99",
+        "oracle_evidence_file": "e9a2c537-8232-4c3f-85b0-b52de6bcba99.pdf",
+        "file_name": "e9a2c537-8232-4c3f-85b0-b52de6bcba99.pdf",
+        "level": "2",
+        "question_id": "e9a2c537-8232-4c3f-85b0-b52de6bcba99"
+      }
+    },
+    {
+      "task_id": "9318445f-fe6a-4e1b-acbf-c68228c9906a",
+      "domain": "gaia_json_reasoning",
+      "prompt": "As a comma separated list with no whitespace, using the provided image provide all the fractions that use / as the fraction line and the answers to the sample problems. Order the list by the order in which the fractions appear.",
+      "answer": "3/4,1/4,3/4,3/4,2/4,1/2,5/35,7/21,30/5,30/5,3/4,1/15,1/3,4/9,1/8,32/23,103/170",
+      "goal": "Return the shortest correct final answer",
+      "meta": {
+        "family": "gaia_json_reasoning",
+        "benchmark_suite": "gaia_full_official",
+        "benchmark_tier": "official",
+        "holdout_group": "gaia_full_official",
+        "source": "public_benchmark",
+        "fixture_role": "benchmark",
+        "fixture_dir": "C:\\Users\\scsar\\Desktop\\math_sentinel_v7\\data\\official_corpus\\gaia\\attachments\\9318445f-fe6a-4e1b-acbf-c68228c9906a",
+        "oracle_evidence_file": "9318445f-fe6a-4e1b-acbf-c68228c9906a.png",
+        "file_name": "9318445f-fe6a-4e1b-acbf-c68228c9906a.png",
+        "level": "1",
+        "question_id": "9318445f-fe6a-4e1b-acbf-c68228c9906a"
+      }
+    },
+    {
+      "task_id": "8f80e01c-1296-4371-9486-bb3d68651a60",
+      "domain": "gaia_json_reasoning",
+      "prompt": "Using bass clef notes, what is the age of someone who has experienced the word spelled out in the sheet music by the note letters the total number of lines and notes minus the number of notes on lines in the image?",
+      "answer": "90",
+      "goal": "Return the shortest correct final answer",
+      "meta": {
+        "family": "gaia_json_reasoning",
+        "benchmark_suite": "gaia_full_official",
+        "benchmark_tier": "official",
+        "holdout_group": "gaia_full_official",
+        "source": "public_benchmark",
+        "fixture_role": "benchmark",
+        "fixture_dir": "C:\\Users\\scsar\\Desktop\\math_sentinel_v7\\data\\official_corpus\\gaia\\attachments\\8f80e01c-1296-4371-9486-bb3d68651a60",
+        "oracle_evidence_file": "8f80e01c-1296-4371-9486-bb3d68651a60.png",
+        "file_name": "8f80e01c-1296-4371-9486-bb3d68651a60.png",
+        "level": "2",
+        "question_id": "8f80e01c-1296-4371-9486-bb3d68651a60"
+      }
+    },
+    {
+      "task_id": "a3fbeb63-0e8c-4a11-bff6-0e3b484c3e9c",
+      "domain": "gaia_json_reasoning",
+      "prompt": "How many slides in this PowerPoint presentation mention crustaceans?",
+      "answer": "4",
+      "goal": "Return the shortest correct final answer",
+      "meta": {
+        "family": "gaia_json_reasoning",
+        "benchmark_suite": "gaia_full_official",
+        "benchmark_tier": "official",
+        "holdout_group": "gaia_full_official",
+        "source": "public_benchmark",
+        "fixture_role": "benchmark",
+        "fixture_dir": "C:\\Users\\scsar\\Desktop\\math_sentinel_v7\\data\\official_corpus\\gaia\\attachments\\a3fbeb63-0e8c-4a11-bff6-0e3b484c3e9c",
+        "oracle_evidence_file": "a3fbeb63-0e8c-4a11-bff6-0e3b484c3e9c.pptx",
+        "file_name": "a3fbeb63-0e8c-4a11-bff6-0e3b484c3e9c.pptx",
+        "level": "1",
+        "question_id": "a3fbeb63-0e8c-4a11-bff6-0e3b484c3e9c"
+      }
+    },
+    {
+      "task_id": "6359a0b1-8f7b-499b-9336-840f9ab90688",
+      "domain": "gaia_json_reasoning",
+      "prompt": "What is the area of the green polygon in the attached file? The numbers in purple represent the lengths of the side they are next to.",
+      "answer": "39",
+      "goal": "Return the shortest correct final answer",
+      "meta": {
+        "family": "gaia_json_reasoning",
+        "benchmark_suite": "gaia_full_official",
+        "benchmark_tier": "official",
+        "holdout_group": "gaia_full_official",
+        "source": "public_benchmark",
+        "fixture_role": "benchmark",
+        "fixture_dir": "C:\\Users\\scsar\\Desktop\\math_sentinel_v7\\data\\official_corpus\\gaia\\attachments\\6359a0b1-8f7b-499b-9336-840f9ab90688",
+        "oracle_evidence_file": "6359a0b1-8f7b-499b-9336-840f9ab90688.png",
+        "file_name": "6359a0b1-8f7b-499b-9336-840f9ab90688.png",
+        "level": "2",
+        "question_id": "6359a0b1-8f7b-499b-9336-840f9ab90688"
+      }
+    },
+    {
+      "task_id": "cca70ce6-1952-45d2-acd4-80c903b0bc49",
+      "domain": "gaia_json_reasoning",
+      "prompt": "Look at the attached image. The quiz is scored as follows:\n\nProblems that ask the student to add or subtract fractions: 5 points\nProblems that ask the student to multiply or divide fractions: 10 points\nProblems that ask the student to form an improper fraction: 15 points\nProblems that ask the student to form a mixed number: 20 points\n\nDue to a technical issue that delayed having students take the quiz, the teacher is giving everyone 5 bonus points.\n\nIf you graded the quiz in the attached image, how many points would the student have earned? There is no partial credit.",
+      "answer": "85",
+      "goal": "Return the shortest correct final answer",
+      "meta": {
+        "family": "gaia_json_reasoning",
+        "benchmark_suite": "gaia_full_official",
+        "benchmark_tier": "official",
+        "holdout_group": "gaia_full_official",
+        "source": "public_benchmark",
+        "fixture_role": "benchmark",
+        "fixture_dir": "C:\\Users\\scsar\\Desktop\\math_sentinel_v7\\data\\official_corpus\\gaia\\attachments\\cca70ce6-1952-45d2-acd4-80c903b0bc49",
+        "oracle_evidence_file": "cca70ce6-1952-45d2-acd4-80c903b0bc49.png",
+        "file_name": "cca70ce6-1952-45d2-acd4-80c903b0bc49.png",
+        "level": "2",
+        "question_id": "cca70ce6-1952-45d2-acd4-80c903b0bc49"
+      }
+    },
+    {
+      "task_id": "b7f857e4-d8aa-4387-af2a-0e844df5b9d8",
+      "domain": "gaia_json_reasoning",
+      "prompt": "The attached image contains a Python script. Run the Python code against an array of strings, listed below. The output of the Python script will be a URL containing C++ source code. Compile and run this C++ code against the array [35, 12, 8, 99, 21, 5] and return the sum of the third and fifth integers in the sorted list.\n\narr = ['_alg', 'ghi', 'C++', 'jkl', 'tps', '/Q', 'pqr', 'stu', ':', '//', 'rose', 'vwx', 'yz1', '234', 'tta', '567', '890', 'cod', 'e.', 'or', 'g/', 'wiki', '/', 'ing', 'sort', 'abc' , 'or', 'it', 'hms', 'mno' , 'uic', 'ksort', '#', 'ht' ]",
+      "answer": "47",
+      "goal": "Return the shortest correct final answer",
+      "meta": {
+        "family": "gaia_json_reasoning",
+        "benchmark_suite": "gaia_full_official",
+        "benchmark_tier": "official",
+        "holdout_group": "gaia_full_official",
+        "source": "public_benchmark",
+        "fixture_role": "benchmark",
+        "fixture_dir": "C:\\Users\\scsar\\Desktop\\math_sentinel_v7\\data\\official_corpus\\gaia\\attachments\\b7f857e4-d8aa-4387-af2a-0e844df5b9d8",
+        "oracle_evidence_file": "b7f857e4-d8aa-4387-af2a-0e844df5b9d8.png",
+        "file_name": "b7f857e4-d8aa-4387-af2a-0e844df5b9d8.png",
+        "level": "2",
+        "question_id": "b7f857e4-d8aa-4387-af2a-0e844df5b9d8"
+      }
+    },
+    {
+      "task_id": "d8152ad6-e4d5-4c12-8bb7-8d57dc10c6de",
+      "domain": "gaia_json_reasoning",
+      "prompt": "I have the Standard plan in the image below, and I just uploaded 60 equally sized files and got a message that I'm 100GB over the limit. I have 980 more files of the same size to upload. What is the average additional cost per file in dollar that goes over my current plan limit rounded to the nearest cent if I have to upgrade to the minimum possible plan to store them all? Answer with the following format: x.xx",
+      "answer": "0.03",
+      "goal": "Return the shortest correct final answer",
+      "meta": {
+        "family": "gaia_json_reasoning",
+        "benchmark_suite": "gaia_full_official",
+        "benchmark_tier": "official",
+        "holdout_group": "gaia_full_official",
+        "source": "public_benchmark",
+        "fixture_role": "benchmark",
+        "fixture_dir": "C:\\Users\\scsar\\Desktop\\math_sentinel_v7\\data\\official_corpus\\gaia\\attachments\\d8152ad6-e4d5-4c12-8bb7-8d57dc10c6de",
+        "oracle_evidence_file": "d8152ad6-e4d5-4c12-8bb7-8d57dc10c6de.png",
+        "file_name": "d8152ad6-e4d5-4c12-8bb7-8d57dc10c6de.png",
+        "level": "2",
+        "question_id": "d8152ad6-e4d5-4c12-8bb7-8d57dc10c6de"
+      }
+    },
+    {
+      "task_id": "0e9e85b8-52b9-4de4-b402-5f635ab9631f",
+      "domain": "gaia_json_reasoning",
+      "prompt": "What is the latest chronological year date written in the image on the webpage found when following the first citation reference link on the latest version of Carl Nebel's Wikipedia page as of August 2023?",
+      "answer": "1927",
+      "goal": "Return the shortest correct final answer",
+      "meta": {
+        "family": "gaia_json_reasoning",
+        "benchmark_suite": "gaia_full_official",
+        "benchmark_tier": "official",
+        "holdout_group": "gaia_full_official",
+        "source": "public_benchmark",
+        "fixture_role": "benchmark",
+        "fixture_dir": "C:\\Users\\scsar\\Desktop\\math_sentinel_v7\\data\\official_corpus\\gaia\\attachments\\0e9e85b8-52b9-4de4-b402-5f635ab9631f",
+        "level": "2",
+        "question_id": "0e9e85b8-52b9-4de4-b402-5f635ab9631f"
+      }
+    },
+    {
+      "task_id": "20194330-9976-4043-8632-f8485c6c71b2",
+      "domain": "gaia_json_reasoning",
+      "prompt": "The YouTube channel Game Grumps began a Let’s Play of the game Sonic the Hedgehog (2006) in the year 2012. Thirty seconds into the first episode, a phrase is shown on the screen in white letters on a red background. How many times does the letter \"E\" appear in this phrase?",
+      "answer": "4",
+      "goal": "Return the shortest correct final answer",
+      "meta": {
+        "family": "gaia_json_reasoning",
+        "benchmark_suite": "gaia_full_official",
+        "benchmark_tier": "official",
+        "holdout_group": "gaia_full_official",
+        "source": "public_benchmark",
+        "fixture_role": "benchmark",
+        "fixture_dir": "C:\\Users\\scsar\\Desktop\\math_sentinel_v7\\data\\official_corpus\\gaia\\attachments\\20194330-9976-4043-8632-f8485c6c71b2",
+        "level": "2",
+        "question_id": "20194330-9976-4043-8632-f8485c6c71b2"
+      }
+    },
+    {
+      "task_id": "5b2a14e8-6e59-479c-80e3-4696e8980152",
+      "domain": "gaia_json_reasoning",
+      "prompt": "The brand that makes these harnesses the dogs are wearing in the attached pic shares stories from their ambassadors on their website. What meat is mentioned in the story added Dec 8th 2022?",
+      "answer": "bacon",
+      "goal": "Return the shortest correct final answer",
+      "meta": {
+        "family": "gaia_json_reasoning",
+        "benchmark_suite": "gaia_full_official",
+        "benchmark_tier": "official",
+        "holdout_group": "gaia_full_official",
+        "source": "public_benchmark",
+        "fixture_role": "benchmark",
+        "fixture_dir": "C:\\Users\\scsar\\Desktop\\math_sentinel_v7\\data\\official_corpus\\gaia\\attachments\\5b2a14e8-6e59-479c-80e3-4696e8980152",
+        "oracle_evidence_file": "5b2a14e8-6e59-479c-80e3-4696e8980152.jpg",
+        "file_name": "5b2a14e8-6e59-479c-80e3-4696e8980152.jpg",
+        "level": "3",
+        "question_id": "5b2a14e8-6e59-479c-80e3-4696e8980152"
+      }
+    },
+    {
+      "task_id": "b2c257e0-3ad7-4f05-b8e3-d9da973be36e",
+      "domain": "gaia_json_reasoning",
+      "prompt": "If this whole pint is made up of ice cream, how many percent above or below the US federal standards for butterfat content is it when using the standards as reported by Wikipedia in 2020? Answer as + or - a number rounded to one decimal place.",
+      "answer": "+4.6",
+      "goal": "Return the shortest correct final answer",
+      "meta": {
+        "family": "gaia_json_reasoning",
+        "benchmark_suite": "gaia_full_official",
+        "benchmark_tier": "official",
+        "holdout_group": "gaia_full_official",
+        "source": "public_benchmark",
+        "fixture_role": "benchmark",
+        "fixture_dir": "C:\\Users\\scsar\\Desktop\\math_sentinel_v7\\data\\official_corpus\\gaia\\attachments\\b2c257e0-3ad7-4f05-b8e3-d9da973be36e",
+        "oracle_evidence_file": "b2c257e0-3ad7-4f05-b8e3-d9da973be36e.jpg",
+        "file_name": "b2c257e0-3ad7-4f05-b8e3-d9da973be36e.jpg",
+        "level": "2",
+        "question_id": "b2c257e0-3ad7-4f05-b8e3-d9da973be36e"
+      }
+    },
+    {
+      "task_id": "7a4a336d-dcfa-45a0-b014-824c7619e8de",
+      "domain": "gaia_json_reasoning",
+      "prompt": "At the two-minute mark in the YouTube video uploaded by the channel “GameGrumps” on May 14, 2017 as part of their playthrough of the game Mario Kart 8 Deluxe, the shows’ hosts are competing on one of the game’s racetracks. What was the world record time for that track in the game’s 150cc mode as of June 7, 2023? Express your answer in minutes and seconds, rounding the seconds to the nearest hundredth, e.g. 1:01.001.",
+      "answer": "1:41.614",
+      "goal": "Return the shortest correct final answer",
+      "meta": {
+        "family": "gaia_json_reasoning",
+        "benchmark_suite": "gaia_full_official",
+        "benchmark_tier": "official",
+        "holdout_group": "gaia_full_official",
+        "source": "public_benchmark",
+        "fixture_role": "benchmark",
+        "fixture_dir": "C:\\Users\\scsar\\Desktop\\math_sentinel_v7\\data\\official_corpus\\gaia\\attachments\\7a4a336d-dcfa-45a0-b014-824c7619e8de",
+        "level": "2",
+        "question_id": "7a4a336d-dcfa-45a0-b014-824c7619e8de"
+      }
+    }
+  ]
+}

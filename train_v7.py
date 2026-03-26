@@ -8,6 +8,35 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, cast
 
 import torch
+from contextlib import contextmanager
+
+# AMP compatibility shim: prefer torch.cuda.amp; fall back to torch.amp or no-op stub
+try:
+    from torch.cuda.amp import GradScaler as _GradScaler, autocast as _autocast  # type: ignore
+except Exception:
+    try:
+        from torch.amp import GradScaler as _GradScaler, autocast as _autocast  # type: ignore
+    except Exception:
+        class _GradScaler:  # minimal shim for environments without AMP
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def scale(self, loss):
+                return loss
+
+            def unscale_(self, optimizer):
+                return None
+
+            def step(self, optimizer):
+                return None
+
+            def update(self):
+                return None
+
+        @contextmanager
+        def _autocast(*args, **kwargs):
+            yield
+
 
 from benchmarks.public_catalog import available_public_suites, load_public_suite
 from benchmarks.manifest_loader import load_manifest_suite
@@ -591,7 +620,7 @@ def main() -> None:
         lr=float(cfg["verifier"].get("lr", cfg["training"]["lr"])),
         weight_decay=float(cfg["training"]["weight_decay"]),
     )
-    scaler = torch.amp.GradScaler("cuda", enabled=(device == "cuda" and bool(cfg["training"]["amp"])))
+    scaler = _GradScaler("cuda", enabled=(device == "cuda" and bool(cfg["training"]["amp"])))
 
     replay = ReplayBuffer(capacity=int(cfg["memory"]["replay_capacity"]))
     lemma_store = LemmaStore()
@@ -611,7 +640,7 @@ def main() -> None:
 
     start_step = 1
     if args.resume:
-        payload = load_checkpoint(args.resume, prover, verifier, prover_optim, verifier_optim, scaler=scaler, map_location=device)
+        payload = load_checkpoint(args.resume, prover, verifier, prover_optim, verifier_optim, scaler=cast(Any, scaler), map_location=device)
         start_step = int(payload.get("step", 0)) + 1
         set_optimizer_lr(prover_optim, float(cfg["training"]["lr"]))
         set_optimizer_lr(verifier_optim, float(cfg["verifier"].get("lr", cfg["training"]["lr"])))
@@ -707,7 +736,7 @@ def main() -> None:
                 continue
 
             micro_total_loss: Optional[torch.Tensor] = None
-            with torch.amp.autocast(device_type=("cuda" if device == "cuda" else "cpu"), enabled=amp_enabled):
+            with _autocast(device_type=("cuda" if device == "cuda" else "cpu"), enabled=amp_enabled):
                 if ex_start < ex_end:
                     micro_examples = examples[ex_start:ex_end]
                     micro_batch = batch_encode(micro_examples, tokenizer, int(cfg["model"]["seq_len"]), device)
@@ -877,7 +906,7 @@ def main() -> None:
                 verifier=verifier,
                 prover_optim=prover_optim,
                 verifier_optim=verifier_optim,
-                scaler=scaler,
+                scaler=cast(Any, scaler),
                 step=step,
                 config=cfg,
                 extra_state={"phase": phase.name, "model_runtime": build_model_runtime_info(cfg, prover)},
