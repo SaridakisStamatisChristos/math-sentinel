@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Dict, Iterable, List, Mapping, Optional
 
 from .state import ReasoningState
 
@@ -223,7 +223,9 @@ def _self_check_text(check: Any, text_item_chars: int) -> str:
         parts.append(f"accepted={bool(check.get('accepted'))}")
     if "support" in check:
         try:
-            parts.append(f"support={float(check.get('support')):.2f}")
+            support = check.get("support")
+            if support is not None:
+                parts.append(f"support={float(support):.2f}")
         except Exception:
             pass
     notes = check.get("notes", [])
@@ -384,7 +386,7 @@ def build_search_prompt(
     state: ReasoningState,
     action_instructions: str,
     *,
-    retrieval_context: Optional[Dict[str, list[Any]]] = None,
+    retrieval_context: Optional[Mapping[str, Any]] = None,
     tactic_hints: Optional[list[str]] = None,
 ) -> str:
     options = _prompt_compaction_options(state)
@@ -409,7 +411,7 @@ def build_search_prompt(
             )
         )
         tool_priors = retrieval_context.get("tool_priors", {})
-        if tool_priors:
+        if isinstance(tool_priors, dict) and tool_priors:
             sections.append("[RETRIEVAL_TOOL_HINTS]")
             tool_lines = [
                 f"- {tool}: {score:.2f}"

@@ -194,12 +194,13 @@ def beam_search(
                 exec_info = _build_exec_features(child_state, exec_info, last_action, action_bias_fn, bias_state=last_action_state)
                 if _should_prune_candidate(child_state, exec_info, score_config):
                     if event_logger is not None:
+                        last_action_type = getattr(last_action, "type", None)
                         event_logger(
                             "branch_pruned",
                             domain=node.state.domain,
                             depth=depth,
                             reason="invalid_or_stagnant",
-                            action=getattr(last_action, "type", None).value if last_action is not None else "",
+                            action=last_action_type.value if last_action_type is not None else "",
                             tool=getattr(last_action, "tool", "") if last_action is not None else "",
                         )
                     continue

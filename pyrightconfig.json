@@ -1,0 +1,14 @@
+{
+  "ignore": [
+    "data/official_corpus",
+    ".tmp-benchmarks",
+    ".tmp-tests"
+  ],
+  "exclude": [
+    "data/official_corpus",
+    ".tmp-benchmarks",
+    ".tmp-tests",
+    ".venv-py312",
+    "**/__pycache__"
+  ]
+}

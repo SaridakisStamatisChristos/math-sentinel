@@ -4,6 +4,7 @@ import json
 import statistics
 import unittest
 from pathlib import Path
+from typing import Any, cast
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -72,12 +73,12 @@ from engine.task import ReasoningTask
 
 class GaiaOpsBackendTests(unittest.TestCase):
     @patch("domains.gaia_ops.backend.urllib.request.urlopen")
-    def test_pdf_text_from_url_ignores_non_pdf_payloads(self, mock_urlopen: object) -> None:
+    def test_pdf_text_from_url_ignores_non_pdf_payloads(self, mock_urlopen: Any) -> None:
         class _FakeResponse:
             def __enter__(self) -> "_FakeResponse":
                 return self
 
-            def __exit__(self, exc_type: object, exc: object, tb: object) -> bool:
+            def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> bool:
                 return False
 
             def read(self) -> bytes:
@@ -221,7 +222,7 @@ class GaiaOpsBackendTests(unittest.TestCase):
         self.assertTrue(state.metadata.get("answer_provenance"))
 
     @patch("domains.gaia_ops.backend._arxiv_search")
-    def test_external_arxiv_research_flow_solves_overlap_question(self, mock_search: object) -> None:
+    def test_external_arxiv_research_flow_solves_overlap_question(self, mock_search: Any) -> None:
         mock_search.side_effect = [
             [
                 {
@@ -318,7 +319,7 @@ class GaiaOpsBackendTests(unittest.TestCase):
 
     @patch("domains.gaia_ops.backend._search_documents_for_title")
     @patch("domains.gaia_ops.backend._fetch_document_with_pdf")
-    def test_paper_numeric_lookup_prefers_pdf_capacity_value(self, mock_fetch_pdf: object, mock_search_docs: object) -> None:
+    def test_paper_numeric_lookup_prefers_pdf_capacity_value(self, mock_fetch_pdf: Any, mock_search_docs: Any) -> None:
         mock_search_docs.return_value = [
             {
                 "title": "Can Hiccup Supply Enough Fish to Maintain a Dragon's Diet?",
@@ -345,10 +346,10 @@ class GaiaOpsBackendTests(unittest.TestCase):
     @patch("domains.gaia_ops.backend._http_get_text")
     def test_author_prior_publication_uses_publication_page_entries(
         self,
-        mock_http_get: object,
-        mock_fetch_pdf: object,
-        mock_search_title: object,
-        mock_search_prompt: object,
+        mock_http_get: Any,
+        mock_fetch_pdf: Any,
+        mock_search_title: Any,
+        mock_search_prompt: Any,
     ) -> None:
         mock_search_title.return_value = [
             {
@@ -380,7 +381,7 @@ class GaiaOpsBackendTests(unittest.TestCase):
         self.assertTrue(any("earliest prior title=" in item for item in evidence))
 
     @patch("domains.gaia_ops.backend._fetch_search_documents")
-    def test_youtube_bird_species_count_uses_video_and_companion_evidence(self, mock_search_docs: object) -> None:
+    def test_youtube_bird_species_count_uses_video_and_companion_evidence(self, mock_search_docs: Any) -> None:
         mock_search_docs.return_value = [
             {
                 "title": "Penguin chicks rescued by unlikely hero - BBC Earth",
@@ -405,7 +406,7 @@ class GaiaOpsBackendTests(unittest.TestCase):
 
     @patch("domains.gaia_ops.backend._fetch_search_documents")
     @patch("domains.gaia_ops.backend._fetch_document_with_pdf")
-    def test_elisa_ec_number_lookup_maps_common_enzyme_pair(self, mock_fetch_pdf: object, mock_search_docs: object) -> None:
+    def test_elisa_ec_number_lookup_maps_common_enzyme_pair(self, mock_fetch_pdf: Any, mock_search_docs: Any) -> None:
         mock_search_docs.return_value = [
             {
                 "title": "Contribution of sweetpotato viruses to cultivar decline in Uganda",
@@ -430,8 +431,8 @@ class GaiaOpsBackendTests(unittest.TestCase):
     @patch("domains.gaia_ops.backend._usda_1959_processed_standards_text")
     def test_usda_standards_supersession_computes_expected_percentage(
         self,
-        mock_1959_text: object,
-        mock_status: object,
+        mock_1959_text: Any,
+        mock_status: Any,
     ) -> None:
         mock_1959_text.return_value = "Apples,Dehydrated(Low-moisture) GrapefruitJuice(Dehydrated) OrangeJuice(Dehydrated)"
         mock_status.side_effect = [
@@ -452,7 +453,7 @@ class GaiaOpsBackendTests(unittest.TestCase):
         self.assertTrue(any("selected items=7 superseded=6" in item for item in evidence))
 
     @patch("domains.gaia_ops.backend._fetch_search_documents")
-    def test_thinking_machine_prediction_prefers_explicit_prediction_source(self, mock_search_docs: object) -> None:
+    def test_thinking_machine_prediction_prefers_explicit_prediction_source(self, mock_search_docs: Any) -> None:
         mock_search_docs.side_effect = [
             [
                 {
@@ -501,11 +502,11 @@ class GaiaOpsBackendTests(unittest.TestCase):
     @patch("domains.gaia_ops.backend._fetch_benjerry_graveyard_entries")
     def test_benjerry_background_rhyme_matches_best_headstone(
         self,
-        mock_entries: object,
-        mock_get_bytes: object,
-        mock_decode_image: object,
-        mock_crops: object,
-        mock_score: object,
+        mock_entries: Any,
+        mock_get_bytes: Any,
+        mock_decode_image: Any,
+        mock_crops: Any,
+        mock_score: Any,
     ) -> None:
         mock_entries.return_value = (
             ("Dastardly Mash", 1979, "Here the brazen\nDASTARDLY lies.\nSome say that raisin,\nCaused its demise.", "oldest"),
@@ -533,7 +534,7 @@ class GaiaOpsBackendTests(unittest.TestCase):
         self.assertTrue(any("Miz Jelena's Sweet Potato Pie" in item for item in evidence))
 
     @patch("domains.gaia_ops.backend._http_get_text")
-    def test_fetch_benjerry_graveyard_entries_parses_year_rhyme_and_image(self, mock_get_text: object) -> None:
+    def test_fetch_benjerry_graveyard_entries_parses_year_rhyme_and_image(self, mock_get_text: Any) -> None:
         mock_get_text.return_value = """
         <html><body>
             <h2><button>Dastardly Mash</button></h2>
@@ -607,7 +608,7 @@ class GaiaOpsBackendTests(unittest.TestCase):
         self.assertEqual(provenance, ["https://blog.replit.com/intel"])
 
     @patch("domains.gaia_ops.backend._easyocr_reader")
-    def test_colored_number_statistics_solver_averages_requested_stdevs(self, mock_reader_factory: object) -> None:
+    def test_colored_number_statistics_solver_averages_requested_stdevs(self, mock_reader_factory: Any) -> None:
         class FakeReader:
             def readtext(self, _path: str, detail: int = 1, paragraph: bool = False) -> list[tuple[list[list[int]], str, float]]:
                 return [
@@ -648,7 +649,7 @@ class GaiaOpsBackendTests(unittest.TestCase):
         self.assertTrue(any("red numbers=12 green numbers=12" in item for item in evidence))
 
     @patch("domains.gaia_ops.backend._easyocr_reader", return_value=None)
-    def test_colored_number_statistics_solver_falls_back_to_segmented_templates(self, _mock_reader_factory: object) -> None:
+    def test_colored_number_statistics_solver_falls_back_to_segmented_templates(self, _mock_reader_factory: Any) -> None:
         image_path = Path(".tmp-tests") / "gaia-colored-number-statistics-fallback.png"
         image_path.parent.mkdir(parents=True, exist_ok=True)
         image = Image.new("RGB", (200, 90), "black")
@@ -685,10 +686,10 @@ class GaiaOpsBackendTests(unittest.TestCase):
     @patch("domains.gaia_ops.backend._pubchem_compound_candidates")
     def test_pubchem_food_additive_transformation_solver_follows_enzyme_linked_shared_candidates(
         self,
-        mock_candidates: object,
-        mock_transformations: object,
-        mock_neighbors: object,
-        mock_properties: object,
+        mock_candidates: Any,
+        mock_transformations: Any,
+        mock_neighbors: Any,
+        mock_properties: Any,
     ) -> None:
         mock_candidates.return_value = [
             {
@@ -777,7 +778,7 @@ class GaiaOpsBackendTests(unittest.TestCase):
         self.assertIn("benchmark:gaia-errata", result["payload"]["state_metadata"]["answer_provenance"])
 
     @patch("domains.gaia_ops.backend._orcid_works_payload")
-    def test_solve_orcid_average_from_jsonld_respects_temporal_and_type_filters(self, mock_payload: object) -> None:
+    def test_solve_orcid_average_from_jsonld_respects_temporal_and_type_filters(self, mock_payload: Any) -> None:
         path = Path(".tmp-tests") / "orcid-temporal.jsonld"
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(
@@ -825,7 +826,7 @@ class GaiaOpsBackendTests(unittest.TestCase):
     @patch("domains.gaia_ops.backend._orcid_profile_html")
     @patch("domains.gaia_ops.backend._orcid_works_payload")
     def test_solve_orcid_average_from_jsonld_prefers_page_visible_counts_when_prompt_targets_pages(
-        self, mock_payload: object, mock_profile_html: object
+        self, mock_payload: Any, mock_profile_html: Any
     ) -> None:
         path = Path(".tmp-tests") / "orcid-pages.jsonld"
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -1159,7 +1160,7 @@ class GaiaOpsBackendTests(unittest.TestCase):
         self.assertTrue(evidence)
 
     @patch("domains.gaia_ops.backend._openlibrary_page_count")
-    def test_infer_xlsx_answer_finds_slowest_book_by_page_rate(self, mock_page_count: object) -> None:
+    def test_infer_xlsx_answer_finds_slowest_book_by_page_rate(self, mock_page_count: Any) -> None:
         path = next(
             Path("data/official_corpus/gaia/attachments/da52d699-e8d2-4dc5-9191-a2199e0b6a9b").glob("*.xlsx")
         )
@@ -1183,7 +1184,7 @@ class GaiaOpsBackendTests(unittest.TestCase):
         self.assertTrue(evidence)
 
     @patch("domains.gaia_ops.backend._load_xlsx_workbook")
-    def test_advanced_spreadsheet_ops_aggregates_across_sheets(self, mock_workbook: object) -> None:
+    def test_advanced_spreadsheet_ops_aggregates_across_sheets(self, mock_workbook: Any) -> None:
         mock_workbook.return_value = {
             "sheets": [
                 {
@@ -1217,7 +1218,7 @@ class GaiaOpsBackendTests(unittest.TestCase):
         self.assertTrue(any("used table metric column Score" in item for item in evidence))
 
     @patch("domains.gaia_ops.backend._load_xlsx_workbook")
-    def test_advanced_spreadsheet_ops_reads_explicit_cell_value(self, mock_workbook: object) -> None:
+    def test_advanced_spreadsheet_ops_reads_explicit_cell_value(self, mock_workbook: Any) -> None:
         summary_sheet = {
             "name": "Summary",
             "rows": [["Label", "Value"], ["Result", "42"]],
@@ -1239,7 +1240,7 @@ class GaiaOpsBackendTests(unittest.TestCase):
         self.assertTrue(any("Summary!C2 value=42" in item for item in evidence))
 
     @patch("domains.gaia_ops.backend._load_xlsx_workbook")
-    def test_advanced_spreadsheet_ops_solves_colored_path_count(self, mock_workbook: object) -> None:
+    def test_advanced_spreadsheet_ops_solves_colored_path_count(self, mock_workbook: Any) -> None:
         mock_workbook.return_value = {
             "sheets": [
                 {
@@ -1266,7 +1267,7 @@ class GaiaOpsBackendTests(unittest.TestCase):
         self.assertTrue(any("path cells=" in item for item in evidence))
 
     @patch("domains.gaia_ops.backend._load_office_document_units")
-    def test_office_document_ops_reads_explicit_slide_title(self, mock_units: object) -> None:
+    def test_office_document_ops_reads_explicit_slide_title(self, mock_units: Any) -> None:
         mock_units.return_value = [
             {"kind": "slide", "index": 1, "text": "Opening Overview", "source": "deck.pptx"},
             {"kind": "slide", "index": 2, "text": "Budget Forecast 2024\nRevenue outlook", "source": "deck.pptx"},
@@ -1281,7 +1282,7 @@ class GaiaOpsBackendTests(unittest.TestCase):
         self.assertTrue(any("slide 2 title=" in item for item in evidence))
 
     @patch("domains.gaia_ops.backend._load_office_document_units")
-    def test_office_document_ops_extracts_latest_year_across_units(self, mock_units: object) -> None:
+    def test_office_document_ops_extracts_latest_year_across_units(self, mock_units: Any) -> None:
         mock_units.return_value = [
             {"kind": "page", "index": 1, "text": "Historical summary 1998 2007", "source": "report.pdf"},
             {"kind": "page", "index": 2, "text": "Forward plan for 2023 and 2025", "source": "report.pdf"},
@@ -1296,7 +1297,7 @@ class GaiaOpsBackendTests(unittest.TestCase):
         self.assertTrue(any("years=" in item for item in evidence))
 
     @patch("domains.gaia_ops.backend._load_office_document_units")
-    def test_office_document_ops_counts_pages(self, mock_units: object) -> None:
+    def test_office_document_ops_counts_pages(self, mock_units: Any) -> None:
         mock_units.return_value = [
             {"kind": "page", "index": 1, "text": "One", "source": "bundle.zip:doc.pdf"},
             {"kind": "page", "index": 2, "text": "Two", "source": "bundle.zip:doc.pdf"},
@@ -1312,7 +1313,7 @@ class GaiaOpsBackendTests(unittest.TestCase):
         self.assertTrue(any("counted units=3" in item for item in evidence))
 
     @patch("domains.gaia_ops.backend._load_office_document_units")
-    def test_office_document_ops_counts_only_units_mentioning_phrase(self, mock_units: object) -> None:
+    def test_office_document_ops_counts_only_units_mentioning_phrase(self, mock_units: Any) -> None:
         mock_units.return_value = [
             {"kind": "slide", "index": 1, "text": "Overview of crustaceans", "source": "deck.pptx"},
             {"kind": "slide", "index": 2, "text": "Bird migration summary", "source": "deck.pptx"},
@@ -1329,7 +1330,7 @@ class GaiaOpsBackendTests(unittest.TestCase):
         self.assertTrue(any("counted mention units=2" in item for item in evidence))
 
     @patch("domains.gaia_ops.backend._load_office_document_units")
-    def test_office_document_ops_counts_semantic_mentions_for_category_prompt(self, mock_units: object) -> None:
+    def test_office_document_ops_counts_semantic_mentions_for_category_prompt(self, mock_units: Any) -> None:
         mock_units.return_value = [
             {"kind": "slide", "index": 1, "text": "crayfish", "source": "deck.pptx"},
             {"kind": "slide", "index": 2, "text": "isopods", "source": "deck.pptx"},
@@ -1347,7 +1348,7 @@ class GaiaOpsBackendTests(unittest.TestCase):
         self.assertTrue(any("mention variants=" in item for item in evidence))
 
     @patch("domains.gaia_ops.backend._load_office_document_units")
-    def test_office_document_ops_counts_author_rows_with_unavailable_status(self, mock_units: object) -> None:
+    def test_office_document_ops_counts_author_rows_with_unavailable_status(self, mock_units: Any) -> None:
         mock_units.return_value = [
             {
                 "kind": "page",
@@ -1367,7 +1368,7 @@ class GaiaOpsBackendTests(unittest.TestCase):
         self.assertTrue(any("unavailable count=2" in item for item in evidence))
 
     @patch("domains.gaia_ops.backend._load_office_document_units")
-    def test_office_document_ops_counts_rows_missing_exactly_one_requirement(self, mock_units: object) -> None:
+    def test_office_document_ops_counts_rows_missing_exactly_one_requirement(self, mock_units: Any) -> None:
         mock_units.return_value = [
             {
                 "kind": "page",
@@ -1410,7 +1411,7 @@ class GaiaOpsBackendTests(unittest.TestCase):
         self.assertTrue(any("single-miss applicants=2" in item for item in evidence))
 
     @patch("domains.gaia_ops.backend._load_office_document_units")
-    def test_office_document_ops_solves_secret_santa_missing_giver(self, mock_units: object) -> None:
+    def test_office_document_ops_solves_secret_santa_missing_giver(self, mock_units: Any) -> None:
         mock_units.return_value = [
             {
                 "kind": "paragraph",
@@ -1497,7 +1498,7 @@ class GaiaOpsBackendTests(unittest.TestCase):
         self.assertTrue(any("unmatched recipient=Rebecca" in item for item in evidence))
 
     @patch("domains.gaia_ops.backend._load_xlsx_workbook")
-    def test_advanced_spreadsheet_ops_detects_missing_cycle(self, mock_workbook: object) -> None:
+    def test_advanced_spreadsheet_ops_detects_missing_cycle(self, mock_workbook: Any) -> None:
         mock_workbook.return_value = {
             "sheets": [
                 {
@@ -1522,7 +1523,7 @@ class GaiaOpsBackendTests(unittest.TestCase):
         self.assertTrue(any("cycle_exists=False" in item for item in evidence))
 
     @patch("domains.gaia_ops.backend._audio_transcript_segments")
-    def test_audio_transcription_ops_extracts_phrase_from_timestamp_window(self, mock_segments: object) -> None:
+    def test_audio_transcription_ops_extracts_phrase_from_timestamp_window(self, mock_segments: Any) -> None:
         mock_segments.return_value = [
             {"start": 28.0, "end": 32.0, "text": '"BLUE APPLE"'},
             {"start": 32.0, "end": 36.0, "text": "continues"},
@@ -1538,7 +1539,7 @@ class GaiaOpsBackendTests(unittest.TestCase):
         self.assertEqual(provenance, ["audio:clip.mp3", "audio:transcript"])
 
     @patch("domains.gaia_ops.backend._audio_transcript_segments")
-    def test_audio_transcription_ops_counts_letter_occurrences(self, mock_segments: object) -> None:
+    def test_audio_transcription_ops_counts_letter_occurrences(self, mock_segments: Any) -> None:
         mock_segments.return_value = [
             {"start": 0.0, "end": 4.0, "text": '"RED EEL"'},
         ]
@@ -1553,7 +1554,7 @@ class GaiaOpsBackendTests(unittest.TestCase):
         self.assertEqual(provenance, ["audio:letters.wav", "audio:transcript"])
 
     @patch("domains.gaia_ops.backend._audio_transcript_segments")
-    def test_audio_transcription_ops_extracts_response_after_question(self, mock_segments: object) -> None:
+    def test_audio_transcription_ops_extracts_response_after_question(self, mock_segments: Any) -> None:
         mock_segments.return_value = [
             {"start": 10.0, "end": 12.0, "text": "Isn't that hot?"},
             {"start": 12.0, "end": 15.0, "text": "Indeed it is."},
@@ -1569,8 +1570,8 @@ class GaiaOpsBackendTests(unittest.TestCase):
         self.assertEqual(provenance, ["audio:dialogue.m4a", "audio:transcript"])
 
     @patch("domains.gaia_ops.backend._search_documents_for_title")
-    def test_public_scalar_transform_ops_computes_difference(self, mock_search_title: object) -> None:
-        def _search_side_effect(title: str, *args: object, **kwargs: object) -> list[dict[str, str]]:
+    def test_public_scalar_transform_ops_computes_difference(self, mock_search_title: Any) -> None:
+        def _search_side_effect(title: str, *args: Any, **kwargs: Any) -> list[dict[str, str]]:
             if title == "Alpha City":
                 return [{"title": title, "snippet": "", "url": "https://example.com/alpha", "text": "Alpha City population 120"}]
             return [{"title": title, "snippet": "", "url": "https://example.com/beta", "text": "Beta City population 90"}]
@@ -1586,8 +1587,8 @@ class GaiaOpsBackendTests(unittest.TestCase):
         self.assertEqual(len(provenance), 2)
 
     @patch("domains.gaia_ops.backend._search_documents_for_title")
-    def test_public_scalar_transform_ops_computes_percentage_ratio(self, mock_search_title: object) -> None:
-        def _search_side_effect(title: str, *args: object, **kwargs: object) -> list[dict[str, str]]:
+    def test_public_scalar_transform_ops_computes_percentage_ratio(self, mock_search_title: Any) -> None:
+        def _search_side_effect(title: str, *args: Any, **kwargs: Any) -> list[dict[str, str]]:
             if title == "Alpha City":
                 return [{"title": title, "snippet": "", "url": "https://example.com/alpha", "text": "Alpha City population 200"}]
             return [{"title": title, "snippet": "", "url": "https://example.com/beta", "text": "Beta City population 50"}]
@@ -1603,8 +1604,8 @@ class GaiaOpsBackendTests(unittest.TestCase):
         self.assertEqual(len(provenance), 2)
 
     @patch("domains.gaia_ops.backend._search_documents_for_title")
-    def test_public_scalar_transform_ops_computes_average(self, mock_search_title: object) -> None:
-        def _search_side_effect(title: str, *args: object, **kwargs: object) -> list[dict[str, str]]:
+    def test_public_scalar_transform_ops_computes_average(self, mock_search_title: Any) -> None:
+        def _search_side_effect(title: str, *args: Any, **kwargs: Any) -> list[dict[str, str]]:
             mapping = {
                 "Peak Alpha": 100.0,
                 "Peak Beta": 200.0,
@@ -1624,7 +1625,7 @@ class GaiaOpsBackendTests(unittest.TestCase):
         self.assertEqual(len(provenance), 3)
 
     @patch("domains.gaia_ops.backend._load_word_list_entries")
-    def test_broad_symbolic_ops_solves_boggle_board(self, mock_word_list: object) -> None:
+    def test_broad_symbolic_ops_solves_boggle_board(self, mock_word_list: Any) -> None:
         mock_word_list.return_value = (
             "brine",
             "brinies",
@@ -1784,7 +1785,7 @@ class GaiaOpsBackendTests(unittest.TestCase):
                 self.assertEqual(href, "https://www.sloanrarebooks.com/Auctions/A22/item-nebel-voyage.html")
 
     @patch("domains.gaia_ops.backend._solve_colored_number_statistics_image")
-    def test_image_vision_ops_routes_statistics_prompt_to_color_solver(self, mock_stats: object) -> None:
+    def test_image_vision_ops_routes_statistics_prompt_to_color_solver(self, mock_stats: Any) -> None:
         mock_stats.return_value = ("17.056", ["red numbers=[1, 2]", "green numbers=[3, 4, 5]"])
 
         answer, evidence, provenance = _solve_image_vision_ops(
@@ -1797,7 +1798,7 @@ class GaiaOpsBackendTests(unittest.TestCase):
         self.assertEqual(provenance, ["image:stats.png"])
 
     @patch("domains.gaia_ops.backend._solve_universal_ocr_reasoning")
-    def test_image_vision_ops_delegates_to_universal_ocr_reasoning(self, mock_universal: object) -> None:
+    def test_image_vision_ops_delegates_to_universal_ocr_reasoning(self, mock_universal: Any) -> None:
         mock_universal.return_value = ("1/2,3/4", ["fractions from fractions.png: ['1/2', '3/4']"], ["image:fractions.png"])
 
         answer, evidence, provenance = _solve_image_vision_ops(
@@ -1813,7 +1814,7 @@ class GaiaOpsBackendTests(unittest.TestCase):
         )
 
     @patch("domains.gaia_ops.backend._solve_universal_ocr_reasoning")
-    def test_office_document_ops_delegates_to_universal_ocr_reasoning(self, mock_universal: object) -> None:
+    def test_office_document_ops_delegates_to_universal_ocr_reasoning(self, mock_universal: Any) -> None:
         mock_universal.return_value = ("2025", ["years=[1998, 2007, 2023, 2025]"], ["office:report.pdf"])
 
         answer, evidence = _solve_office_document_ops(
@@ -1835,11 +1836,11 @@ class GaiaOpsBackendTests(unittest.TestCase):
     @patch("domains.gaia_ops.backend._public_reference_title_candidates")
     def test_historical_reference_navigation_ops_uses_image_years_not_page_chrome(
         self,
-        mock_titles: object,
-        mock_historical_docs: object,
-        mock_http_get: object,
-        mock_page_images: object,
-        mock_ocr_image: object,
+        mock_titles: Any,
+        mock_historical_docs: Any,
+        mock_http_get: Any,
+        mock_page_images: Any,
+        mock_ocr_image: Any,
     ) -> None:
         mock_titles.return_value = ["Carl Nebel"]
         mock_historical_docs.return_value = [
@@ -1865,8 +1866,8 @@ class GaiaOpsBackendTests(unittest.TestCase):
     @patch("domains.gaia_ops.backend._historical_reference_navigation_sources")
     def test_historical_reference_navigation_ops_delegates_to_universal_ocr_reasoning(
         self,
-        mock_sources: object,
-        mock_universal: object,
+        mock_sources: Any,
+        mock_universal: Any,
     ) -> None:
         prompt = "What is the latest chronological year date written in the image on the webpage found when following the first citation reference link on Carl Nebel's Wikipedia page?"
         mock_sources.return_value = (["https://example.com/historic.jpg"], ["reference url=https://example.com/reference-page"], ["https://example.com/reference-page"])
@@ -1883,8 +1884,8 @@ class GaiaOpsBackendTests(unittest.TestCase):
     @patch("domains.gaia_ops.backend._search_documents_for_title")
     def test_public_scalar_transform_ops_passes_anchor_prompt_to_title_search(
         self,
-        mock_search_title: object,
-        mock_best_scalar: object,
+        mock_search_title: Any,
+        mock_best_scalar: Any,
     ) -> None:
         prompt = 'What is the average elevation of "Peak Alpha" and "Peak Beta" as of 2019?'
         mock_search_title.return_value = [{"title": "stub", "snippet": "", "url": "https://example.com", "text": ""}]
@@ -1899,9 +1900,9 @@ class GaiaOpsBackendTests(unittest.TestCase):
     @patch("domains.gaia_ops.backend._solve_github_contributor_name_match", side_effect=AssertionError("legacy helper should not run"))
     @patch("domains.gaia_ops.backend._fetch_search_documents")
     def test_cross_source_entity_ops_matches_entity_across_github_and_public_reference(
-        self, mock_search_docs: object, _legacy_solver: object
+        self, mock_search_docs: Any, _legacy_solver: Any
     ) -> None:
-        def _fake_search(query: str, **_: object) -> list[dict[str, str]]:
+        def _fake_search(query: str, **_: Any) -> list[dict[str, str]]:
             if "same name as" in query.lower() or "github" in query.lower():
                 return [
                     {
@@ -1937,8 +1938,8 @@ class GaiaOpsBackendTests(unittest.TestCase):
 
     @patch("domains.gaia_ops.backend._solve_esther_prime_minister", side_effect=AssertionError("legacy helper should not run"), create=True)
     @patch("domains.gaia_ops.backend._search_documents_from_prompt")
-    def test_cross_source_entity_ops_resolves_place_to_office_holder(self, mock_search_prompt: object, _legacy_solver: object) -> None:
-        def _fake_search(query: str, **_: object) -> list[dict[str, str]]:
+    def test_cross_source_entity_ops_resolves_place_to_office_holder(self, mock_search_prompt: Any, _legacy_solver: Any) -> None:
+        def _fake_search(query: str, **_: Any) -> list[dict[str, str]]:
             if "first named place" in query.lower():
                 return [
                     {
@@ -1972,9 +1973,9 @@ class GaiaOpsBackendTests(unittest.TestCase):
     @patch("domains.gaia_ops.backend._solve_british_museum_science_case", side_effect=AssertionError("legacy helper should not run"), create=True)
     @patch("domains.gaia_ops.backend._fetch_search_documents")
     def test_cross_source_entity_ops_joins_museum_object_to_paper_measurement(
-        self, mock_search_docs: object, _legacy_solver: object
+        self, mock_search_docs: Any, _legacy_solver: Any
     ) -> None:
-        def _fake_search(query: str, **_: object) -> list[dict[str, str]]:
+        def _fake_search(query: str, **_: Any) -> list[dict[str, str]]:
             if "museum" in query.lower():
                 return [
                     {
@@ -2486,7 +2487,7 @@ class GaiaOpsBackendTests(unittest.TestCase):
         self.assertIn("symbolic or combinatorial rules", result["result"])
 
     @patch("domains.gaia_ops.backend._solve_orcid_average_from_jsonld")
-    def test_solve_question_blind_mode_disables_erratum_override(self, mock_orcid_solver: object) -> None:
+    def test_solve_question_blind_mode_disables_erratum_override(self, mock_orcid_solver: Any) -> None:
         workspace = Path(".tmp-tests") / "gaia-blind-erratum"
         workspace.mkdir(parents=True, exist_ok=True)
         jsonld_path = workspace / "bec74516-02fc-48dc-b202-55e78d0e17cf.jsonld"
@@ -2515,7 +2516,7 @@ class GaiaOpsBackendTests(unittest.TestCase):
     @patch("domains.gaia_ops.backend._solve_symbolic_reasoning_ops")
     def test_solve_question_blind_mode_uses_generalized_symbolic_mode(
         self,
-        mock_symbolic_solver: object,
+        mock_symbolic_solver: Any,
     ) -> None:
         mock_symbolic_solver.return_value = ("ball 3", ["symbolic route"], ["symbolic:choice"])
         state = SimpleNamespace(
@@ -2599,7 +2600,7 @@ class GaiaOpsBackendTests(unittest.TestCase):
         self.assertEqual(question_plan.get("research_mode"), "github_public_artifact_ops")
 
     @patch("domains.gaia_ops.backend._solve_public_record_ops")
-    def test_solve_question_quality_control_rejects_non_time_answer_for_time_prompt(self, mock_solver: object) -> None:
+    def test_solve_question_quality_control_rejects_non_time_answer_for_time_prompt(self, mock_solver: Any) -> None:
         mock_solver.return_value = ("52618", ["max Passengers=52618"], ["https://example.com/tri-rail"])
         state = SimpleNamespace(
             problem_text="What time was the Tri-Rail train that carried the most passengers on May 27, 2019 scheduled to arrive in Pompano Beach?",
@@ -2618,7 +2619,7 @@ class GaiaOpsBackendTests(unittest.TestCase):
         self.assertFalse(result["ok"])
 
     @patch("domains.gaia_ops.backend._solve_video_transcript_ops")
-    def test_solve_question_quality_control_rejects_title_when_prompt_requires_person_name(self, mock_solver: object) -> None:
+    def test_solve_question_quality_control_rejects_title_when_prompt_requires_person_name(self, mock_solver: Any) -> None:
         mock_solver.return_value = ("The Thinking Machine", ["video title=The Thinking Machine"], ["https://example.com/video"])
         state = SimpleNamespace(
             problem_text="What is the name of the scientist predicting the future of AI? Answer using the format First name Last name",
@@ -2639,7 +2640,7 @@ class GaiaOpsBackendTests(unittest.TestCase):
         self.assertIn("quality checks", result["result"])
 
     @patch("domains.gaia_ops.backend._solve_public_record_ops")
-    def test_solve_question_quality_control_accepts_valid_time_answer(self, mock_solver: object) -> None:
+    def test_solve_question_quality_control_accepts_valid_time_answer(self, mock_solver: Any) -> None:
         mock_solver.return_value = ("6:41 pm", ["Pompano Beach arrival => 6:41 pm"], ["https://example.com/2019/tri-rail"])
         state = SimpleNamespace(
             problem_text="What time was the Tri-Rail train that carried the most passengers on May 27, 2019 scheduled to arrive in Pompano Beach? Express your answer in the 12-hour digital clock format with AM or PM.",
@@ -2659,7 +2660,7 @@ class GaiaOpsBackendTests(unittest.TestCase):
         self.assertEqual(result["answer"], "6:41 PM")
 
     @patch("domains.gaia_ops.backend._solve_paper_numeric_lookup")
-    def test_solve_question_quality_control_rejects_numeric_answer_for_textual_prompt(self, mock_solver: object) -> None:
+    def test_solve_question_quality_control_rejects_numeric_answer_for_textual_prompt(self, mock_solver: Any) -> None:
         mock_solver.return_value = ("10.4324", ["targeted numeric match -> 10.4324"])
         state = SimpleNamespace(
             problem_text='In Valentina Re’s contribution to the 2017 book "World Building: Transmedia, Fans, Industries", what horror movie does the author cite as having popularized metalepsis between a dream world and waking life?',
@@ -2679,7 +2680,7 @@ class GaiaOpsBackendTests(unittest.TestCase):
         self.assertIn("quality checks", result["result"])
 
     @patch("domains.gaia_ops.backend._solve_public_record_ops")
-    def test_solve_question_quality_control_rejects_non_code_for_ioc_prompt(self, mock_solver: object) -> None:
+    def test_solve_question_quality_control_rejects_non_code_for_ioc_prompt(self, mock_solver: Any) -> None:
         mock_solver.return_value = (
             "1896 1900 1904 1908 1912 1920 1924 1928",
             ["selected answer column Year value=1896 1900 1904 1908 1912 1920 1924 1928"],
@@ -2703,7 +2704,7 @@ class GaiaOpsBackendTests(unittest.TestCase):
         self.assertIn("quality checks", result["result"])
 
     @patch("domains.gaia_ops.backend._wikipedia_page_links")
-    def test_wikipedia_link_distance_solver_uses_graph_distance(self, mock_links: object) -> None:
+    def test_wikipedia_link_distance_solver_uses_graph_distance(self, mock_links: Any) -> None:
         graph = {
             "The Lord of the Rings": ["Fantasy", "Middle-earth", "J. R. R. Tolkien"],
             "Fantasy": ["A Song of Ice and Fire"],
@@ -2723,7 +2724,7 @@ class GaiaOpsBackendTests(unittest.TestCase):
         self.assertTrue(any("path depth=2" in item for item in evidence))
 
     @patch("domains.gaia_ops.backend._wikipedia_revision_count_until")
-    def test_wikipedia_revision_count_solver_uses_cutoff(self, mock_revision_count: object) -> None:
+    def test_wikipedia_revision_count_solver_uses_cutoff(self, mock_revision_count: Any) -> None:
         mock_revision_count.return_value = 2732
 
         answer, evidence = _solve_wikipedia_revision_count(
@@ -2735,7 +2736,7 @@ class GaiaOpsBackendTests(unittest.TestCase):
 
     @patch("domains.gaia_ops.backend._public_reference_title_candidates")
     @patch("domains.gaia_ops.backend._historical_wikipedia_documents")
-    def test_generic_public_reference_counts_year_bounded_entries_from_section_html(self, mock_historical_docs: object, mock_titles: object) -> None:
+    def test_generic_public_reference_counts_year_bounded_entries_from_section_html(self, mock_historical_docs: Any, mock_titles: Any) -> None:
         mock_titles.return_value = ["Mercedes Sosa discography"]
         mock_historical_docs.return_value = [
             {
@@ -2767,7 +2768,7 @@ class GaiaOpsBackendTests(unittest.TestCase):
 
     @patch("domains.gaia_ops.backend._public_reference_title_candidates")
     @patch("domains.gaia_ops.backend._historical_wikipedia_documents")
-    def test_generic_public_reference_selects_argmin_from_public_table(self, mock_historical_docs: object, mock_titles: object) -> None:
+    def test_generic_public_reference_selects_argmin_from_public_table(self, mock_historical_docs: Any, mock_titles: Any) -> None:
         mock_titles.return_value = ["1928 Summer Olympics"]
         mock_historical_docs.return_value = [
             {
@@ -2798,7 +2799,7 @@ class GaiaOpsBackendTests(unittest.TestCase):
 
     @patch("domains.gaia_ops.backend._public_reference_title_candidates")
     @patch("domains.gaia_ops.backend._historical_wikipedia_documents")
-    def test_generic_public_reference_returns_adjacent_roster_names(self, mock_historical_docs: object, mock_titles: object) -> None:
+    def test_generic_public_reference_returns_adjacent_roster_names(self, mock_historical_docs: Any, mock_titles: Any) -> None:
         mock_titles.return_value = ["Hokkaido Nippon-Ham Fighters"]
         mock_historical_docs.return_value = [
             {
@@ -2829,7 +2830,7 @@ class GaiaOpsBackendTests(unittest.TestCase):
 
     @patch("domains.gaia_ops.backend._public_reference_title_candidates")
     @patch("domains.gaia_ops.backend._historical_wikipedia_documents")
-    def test_generic_public_reference_counts_images_on_public_page(self, mock_historical_docs: object, mock_titles: object) -> None:
+    def test_generic_public_reference_counts_images_on_public_page(self, mock_historical_docs: Any, mock_titles: Any) -> None:
         mock_titles.return_value = ["Lego"]
         mock_historical_docs.return_value = [
             {
@@ -2860,7 +2861,7 @@ class GaiaOpsBackendTests(unittest.TestCase):
     @patch("domains.gaia_ops.backend._public_reference_search_documents")
     @patch("domains.gaia_ops.backend._public_reference_title_candidates")
     def test_generic_public_reference_uses_search_document_tables_when_title_candidates_are_empty(
-        self, mock_titles: object, mock_search_docs: object
+        self, mock_titles: Any, mock_search_docs: Any
     ) -> None:
         mock_titles.return_value = []
         mock_search_docs.return_value = [
@@ -2892,8 +2893,8 @@ class GaiaOpsBackendTests(unittest.TestCase):
     @patch("domains.gaia_ops.backend._fetch_search_documents")
     def test_public_record_search_documents_prioritizes_exact_event_title(
         self,
-        mock_fetch_search: object,
-        mock_http_get_text: object,
+        mock_fetch_search: Any,
+        mock_http_get_text: Any,
     ) -> None:
         mock_fetch_search.return_value = [
             {
@@ -2921,9 +2922,9 @@ class GaiaOpsBackendTests(unittest.TestCase):
     @patch("domains.gaia_ops.backend._fetch_search_documents")
     def test_search_documents_for_title_prefers_historical_year_aligned_result(
         self,
-        mock_fetch_search: object,
-        mock_http_get_text: object,
-        mock_wayback_url: object,
+        mock_fetch_search: Any,
+        mock_http_get_text: Any,
+        mock_wayback_url: Any,
     ) -> None:
         mock_fetch_search.return_value = [
             {
@@ -2956,9 +2957,9 @@ class GaiaOpsBackendTests(unittest.TestCase):
     @patch("domains.gaia_ops.backend._fetch_search_documents")
     def test_public_reference_search_documents_adds_archived_snapshot_for_historical_prompt(
         self,
-        mock_fetch_search: object,
-        mock_http_get_text: object,
-        mock_wayback_url: object,
+        mock_fetch_search: Any,
+        mock_http_get_text: Any,
+        mock_wayback_url: Any,
     ) -> None:
         prompt = "As of July 2023, who are the pitchers before and after Taisho Tamai?"
         current_url = "https://en.wikipedia.org/wiki/Example_roster"
@@ -2972,7 +2973,7 @@ class GaiaOpsBackendTests(unittest.TestCase):
             }
         ]
 
-        def _http_side_effect(url: str, *args: object, **kwargs: object) -> str:
+        def _http_side_effect(url: str, *args: Any, **kwargs: Any) -> str:
             if url == current_url:
                 return "<html><body>Current roster with enough surrounding text to exceed the archive materialization threshold for historical anchoring.</body></html>"
             if url == archive_url:
@@ -2991,9 +2992,9 @@ class GaiaOpsBackendTests(unittest.TestCase):
     @patch("domains.gaia_ops.backend._public_reference_title_candidates")
     def test_public_reference_history_ops_uses_historical_snapshot_for_year_count(
         self,
-        mock_titles: object,
-        mock_historical_docs: object,
-        mock_search_docs: object,
+        mock_titles: Any,
+        mock_historical_docs: Any,
+        mock_search_docs: Any,
     ) -> None:
         mock_titles.return_value = ["Mercedes Sosa discography"]
         mock_historical_docs.return_value = [
@@ -3031,9 +3032,9 @@ class GaiaOpsBackendTests(unittest.TestCase):
     @patch("domains.gaia_ops.backend._public_reference_title_candidates")
     def test_public_reference_history_ops_does_not_abort_when_search_fallback_fails(
         self,
-        mock_titles: object,
-        mock_historical_docs: object,
-        mock_search_docs: object,
+        mock_titles: Any,
+        mock_historical_docs: Any,
+        mock_search_docs: Any,
     ) -> None:
         mock_titles.return_value = ["Mercedes Sosa discography"]
         mock_historical_docs.return_value = [
@@ -3071,10 +3072,10 @@ class GaiaOpsBackendTests(unittest.TestCase):
     @patch("domains.gaia_ops.backend._public_reference_title_candidates")
     def test_public_reference_history_ops_extracts_removed_phrase_from_revision_snapshots(
         self,
-        mock_titles: object,
-        mock_snapshots: object,
-        mock_historical_docs: object,
-        mock_search_docs: object,
+        mock_titles: Any,
+        mock_snapshots: Any,
+        mock_historical_docs: Any,
+        mock_search_docs: Any,
     ) -> None:
         mock_titles.return_value = ["Example Dragon"]
         mock_historical_docs.return_value = []
@@ -3096,8 +3097,8 @@ class GaiaOpsBackendTests(unittest.TestCase):
     @patch("domains.gaia_ops.backend._public_reference_title_candidates")
     def test_public_reference_history_ops_extracts_featured_article_nominator(
         self,
-        mock_titles: object,
-        mock_search_docs: object,
+        mock_titles: Any,
+        mock_search_docs: Any,
     ) -> None:
         mock_titles.return_value = []
         mock_search_docs.return_value = [
@@ -3118,7 +3119,7 @@ class GaiaOpsBackendTests(unittest.TestCase):
         self.assertEqual(provenance, ["https://en.wikipedia.org/wiki/Wikipedia:Featured_article_candidates/Lego/archive1"])
 
     @patch("domains.gaia_ops.backend._public_record_search_documents")
-    def test_public_record_ops_counts_stops_between_named_stations(self, mock_search_docs: object) -> None:
+    def test_public_record_ops_counts_stops_between_named_stations(self, mock_search_docs: Any) -> None:
         mock_search_docs.return_value = [
             {
                 "title": "Franklin/Foxboro Line",
@@ -3148,7 +3149,7 @@ class GaiaOpsBackendTests(unittest.TestCase):
         self.assertEqual(provenance, ["https://example.com/franklin-line"])
 
     @patch("domains.gaia_ops.backend._public_record_search_documents")
-    def test_public_record_ops_extracts_first_name_for_defunct_nationality(self, mock_search_docs: object) -> None:
+    def test_public_record_ops_extracts_first_name_for_defunct_nationality(self, mock_search_docs: Any) -> None:
         mock_search_docs.return_value = [
             {
                 "title": "Competition winners",
@@ -3178,8 +3179,8 @@ class GaiaOpsBackendTests(unittest.TestCase):
     @patch("domains.gaia_ops.backend._public_record_search_documents")
     def test_public_record_ops_extracts_arrival_time_from_schedule_table(
         self,
-        mock_search_docs: object,
-        mock_schedule_docs: object,
+        mock_search_docs: Any,
+        mock_schedule_docs: Any,
     ) -> None:
         mock_search_docs.return_value = [
             {
@@ -3211,8 +3212,8 @@ class GaiaOpsBackendTests(unittest.TestCase):
     @patch("domains.gaia_ops.backend._public_record_search_documents")
     def test_public_record_ops_joins_daily_report_to_schedule_tables(
         self,
-        mock_search_docs: object,
-        mock_schedule_docs: object,
+        mock_search_docs: Any,
+        mock_schedule_docs: Any,
     ) -> None:
         documents = [
             {
@@ -3276,9 +3277,9 @@ class GaiaOpsBackendTests(unittest.TestCase):
     @patch("domains.gaia_ops.backend._public_record_search_documents")
     def test_public_record_ops_prefers_exact_participation_list_over_broad_olympics_page(
         self,
-        mock_search_docs: object,
-        mock_search_titles: object,
-        mock_rendered_text: object,
+        mock_search_docs: Any,
+        mock_search_titles: Any,
+        mock_rendered_text: Any,
     ) -> None:
         mock_search_docs.return_value = [
             {
@@ -3327,10 +3328,10 @@ class GaiaOpsBackendTests(unittest.TestCase):
     @patch("domains.gaia_ops.backend._search_documents_for_title")
     def test_paper_compare_ops_computes_numeric_difference_between_titles(
         self,
-        mock_search_title: object,
-        mock_fetch_pdf: object,
+        mock_search_title: Any,
+        mock_fetch_pdf: Any,
     ) -> None:
-        def _search_side_effect(title: str, *args: object, **kwargs: object) -> list[dict[str, str]]:
+        def _search_side_effect(title: str, *args: Any, **kwargs: Any) -> list[dict[str, str]]:
             return [{"title": title, "snippet": "Journal article", "url": f"https://example.com/{title.replace(' ', '_')}.pdf", "text": ""}]
 
         def _fetch_side_effect(url: str) -> dict[str, str]:
@@ -3353,8 +3354,8 @@ class GaiaOpsBackendTests(unittest.TestCase):
     @patch("domains.gaia_ops.backend._search_documents_for_title")
     def test_paper_numeric_lookup_passes_anchor_prompt_to_title_search(
         self,
-        mock_search_title: object,
-        mock_fetch_pdf: object,
+        mock_search_title: Any,
+        mock_fetch_pdf: Any,
     ) -> None:
         prompt = 'In Valentina Re’s contribution to the 2017 book "World Building: Transmedia, Fans, Industries", what horror movie does the author cite?'
         mock_search_title.return_value = [
@@ -3376,11 +3377,11 @@ class GaiaOpsBackendTests(unittest.TestCase):
     @patch("domains.gaia_ops.backend._search_documents_from_prompt")
     def test_paper_compare_ops_computes_integer_rounded_percentage_from_author_year_queries(
         self,
-        mock_search_prompt: object,
-        mock_search_title: object,
-        mock_fetch_pdf: object,
+        mock_search_prompt: Any,
+        mock_search_title: Any,
+        mock_fetch_pdf: Any,
     ) -> None:
-        def _search_side_effect(query: str, *args: object, **kwargs: object) -> list[dict[str, str]]:
+        def _search_side_effect(query: str, *args: Any, **kwargs: Any) -> list[dict[str, str]]:
             return [{"title": query, "snippet": "paper", "url": f"https://example.com/{query.replace(' ', '_')}.pdf", "text": ""}]
 
         def _fetch_side_effect(url: str) -> dict[str, str]:
@@ -3401,7 +3402,7 @@ class GaiaOpsBackendTests(unittest.TestCase):
         self.assertEqual(len(provenance), 2)
 
     @patch("domains.gaia_ops.backend._youtube_transcript_segments")
-    def test_video_transcript_ops_extracts_command_from_timestamp_window(self, mock_segments: object) -> None:
+    def test_video_transcript_ops_extracts_command_from_timestamp_window(self, mock_segments: Any) -> None:
         mock_segments.return_value = [
             {"start": 28.0, "end": 33.0, "text": "Now click Command Palette to open the menu."},
             {"start": 33.0, "end": 36.0, "text": "Then choose the extension."},
@@ -3416,7 +3417,7 @@ class GaiaOpsBackendTests(unittest.TestCase):
         self.assertIn("youtube:transcript", provenance)
 
     @patch("domains.gaia_ops.backend._youtube_transcript_segments")
-    def test_video_transcript_ops_extracts_response_after_question(self, mock_segments: object) -> None:
+    def test_video_transcript_ops_extracts_response_after_question(self, mock_segments: Any) -> None:
         mock_segments.return_value = [
             {"start": 10.0, "end": 12.0, "text": "Isn't that hot?"},
             {"start": 12.0, "end": 15.0, "text": "Indeed it is."},
@@ -3431,7 +3432,7 @@ class GaiaOpsBackendTests(unittest.TestCase):
         self.assertIn("youtube:transcript", provenance)
 
     @patch("domains.gaia_ops.backend._youtube_transcript_segments")
-    def test_video_transcript_ops_counts_letter_occurrences_in_transcript_phrase(self, mock_segments: object) -> None:
+    def test_video_transcript_ops_counts_letter_occurrences_in_transcript_phrase(self, mock_segments: Any) -> None:
         mock_segments.return_value = [
             {"start": 28.0, "end": 34.0, "text": '"RED EEL"'},
         ]
@@ -3448,8 +3449,8 @@ class GaiaOpsBackendTests(unittest.TestCase):
     @patch("domains.gaia_ops.backend._discover_video_url")
     def test_video_transcript_ops_falls_back_to_replit_page_structure_when_no_video_url(
         self,
-        mock_discover_video_url: object,
-        mock_search_documents: object,
+        mock_discover_video_url: Any,
+        mock_search_documents: Any,
     ) -> None:
         mock_discover_video_url.return_value = ""
         mock_search_documents.return_value = [
@@ -3469,7 +3470,7 @@ class GaiaOpsBackendTests(unittest.TestCase):
         self.assertEqual(provenance, ["https://blog.replit.com/intel"])
 
     @patch("domains.gaia_ops.backend._public_reference_search_documents")
-    def test_solve_question_replit_video_prompt_sets_candidate_answer_via_video_fallback(self, mock_search_documents: object) -> None:
+    def test_solve_question_replit_video_prompt_sets_candidate_answer_via_video_fallback(self, mock_search_documents: Any) -> None:
         backend = GaiaOpsReasoningDomain()
         task = ReasoningTask(
             task_id="replit_probe",
@@ -3503,11 +3504,11 @@ class GaiaOpsBackendTests(unittest.TestCase):
     @patch("domains.gaia_ops.backend._youtube_transcript_segments")
     def test_video_transcript_ops_uses_generic_document_scalar_without_legacy_story_helper(
         self,
-        mock_segments: object,
-        mock_search_docs: object,
-        mock_video_metadata: object,
-        _legacy_birds: object,
-        _legacy_prediction: object,
+        mock_segments: Any,
+        mock_search_docs: Any,
+        mock_video_metadata: Any,
+        _legacy_birds: Any,
+        _legacy_prediction: Any,
     ) -> None:
         mock_segments.return_value = []
         mock_video_metadata.return_value = {}
@@ -3535,11 +3536,11 @@ class GaiaOpsBackendTests(unittest.TestCase):
     @patch("domains.gaia_ops.backend._youtube_transcript_segments")
     def test_video_transcript_ops_counts_species_from_fused_evidence_without_legacy_helper(
         self,
-        mock_segments: object,
-        mock_search_docs: object,
-        mock_video_metadata: object,
-        _legacy_birds: object,
-        _legacy_prediction: object,
+        mock_segments: Any,
+        mock_search_docs: Any,
+        mock_video_metadata: Any,
+        _legacy_birds: Any,
+        _legacy_prediction: Any,
     ) -> None:
         mock_segments.return_value = [
             {"start": 1.0, "end": 4.0, "text": "An emperor penguin moves past a giant petrel."},
@@ -3572,11 +3573,11 @@ class GaiaOpsBackendTests(unittest.TestCase):
     @patch("domains.gaia_ops.backend._youtube_transcript_segments")
     def test_video_transcript_ops_uses_generic_person_evidence_graph_without_legacy_helper(
         self,
-        mock_segments: object,
-        mock_search_docs: object,
-        mock_video_metadata: object,
-        _legacy_birds: object,
-        _legacy_prediction: object,
+        mock_segments: Any,
+        mock_search_docs: Any,
+        mock_video_metadata: Any,
+        _legacy_birds: Any,
+        _legacy_prediction: Any,
     ) -> None:
         mock_segments.return_value = [
             {"start": 10.0, "end": 18.0, "text": "Claude Shannon says thinking machines will handle routine work."},
@@ -3608,10 +3609,10 @@ class GaiaOpsBackendTests(unittest.TestCase):
     @patch("domains.gaia_ops.backend._fetch_search_documents")
     def test_github_public_artifact_ops_uses_generic_issue_timeline_without_legacy_named_helper(
         self,
-        mock_search_docs: object,
-        mock_search_issues: object,
-        mock_timeline: object,
-        _legacy_solver: object,
+        mock_search_docs: Any,
+        mock_search_issues: Any,
+        mock_timeline: Any,
+        _legacy_solver: Any,
     ) -> None:
         mock_search_docs.return_value = [
             {
@@ -3646,7 +3647,7 @@ class GaiaOpsBackendTests(unittest.TestCase):
 
     @patch("domains.gaia_ops.backend._wayback_snapshot_html")
     @patch("domains.gaia_ops.backend._search_documents_from_prompt")
-    def test_web_archive_ops_extracts_removed_menu_item(self, mock_search_docs: object, mock_snapshot_html: object) -> None:
+    def test_web_archive_ops_extracts_removed_menu_item(self, mock_search_docs: Any, mock_snapshot_html: Any) -> None:
         mock_search_docs.return_value = [
             {
                 "title": "Virtue menu",
@@ -3671,7 +3672,7 @@ class GaiaOpsBackendTests(unittest.TestCase):
     @patch("domains.gaia_ops.backend._wayback_snapshot_html")
     @patch("domains.gaia_ops.backend._search_documents_from_prompt")
     def test_web_archive_ops_extracts_deleted_word_between_versions(
-        self, mock_search_docs: object, mock_snapshot_html: object
+        self, mock_search_docs: Any, mock_snapshot_html: Any
     ) -> None:
         mock_search_docs.return_value = [
             {
@@ -3695,7 +3696,7 @@ class GaiaOpsBackendTests(unittest.TestCase):
         self.assertEqual(provenance, ["https://example.com/amendment", "wayback:diff"])
 
     @patch("domains.gaia_ops.backend._easyocr_text_lines")
-    def test_image_vision_ops_extracts_fraction_list(self, mock_lines: object) -> None:
+    def test_image_vision_ops_extracts_fraction_list(self, mock_lines: Any) -> None:
         mock_lines.return_value = ["1/2 3/4", "noise"]
 
         answer, evidence, provenance = _solve_image_vision_ops(
@@ -3708,7 +3709,7 @@ class GaiaOpsBackendTests(unittest.TestCase):
         self.assertEqual(provenance, ["image:fractions.png"])
 
     @patch("domains.gaia_ops.backend._easyocr_text_lines_with_variants")
-    def test_image_vision_ops_extracts_latest_year(self, mock_lines: object) -> None:
+    def test_image_vision_ops_extracts_latest_year(self, mock_lines: Any) -> None:
         mock_lines.return_value = ["1894", "2003", "1998"]
 
         answer, evidence, provenance = _solve_image_vision_ops(
@@ -3721,7 +3722,7 @@ class GaiaOpsBackendTests(unittest.TestCase):
         self.assertEqual(provenance, ["image:poster.jpg"])
 
     @patch("domains.gaia_ops.backend._easyocr_text_lines")
-    def test_easyocr_text_lines_with_variants_tries_multiple_preprocessed_images(self, mock_lines: object) -> None:
+    def test_easyocr_text_lines_with_variants_tries_multiple_preprocessed_images(self, mock_lines: Any) -> None:
         mock_lines.side_effect = [[], ["1927"], ["1927"], [], []]
         image_path = Path(".tmp-benchmarks/gaia/tests-ocr-variants.png")
         image_path.parent.mkdir(parents=True, exist_ok=True)
@@ -3735,9 +3736,9 @@ class GaiaOpsBackendTests(unittest.TestCase):
     @patch("domains.gaia_ops.backend._solve_github_contributor_name_match", side_effect=AssertionError("legacy helper should not run"))
     @patch("domains.gaia_ops.backend._fetch_search_documents")
     def test_github_public_artifact_ops_routes_contributor_match_structurally(
-        self, mock_search_docs: object, _legacy_solver: object
+        self, mock_search_docs: Any, _legacy_solver: Any
     ) -> None:
-        def _fake_search(query: str, **_: object) -> list[dict[str, str]]:
+        def _fake_search(query: str, **_: Any) -> list[dict[str, str]]:
             if "same name as" in query.lower() or "github" in query.lower():
                 return [
                     {
@@ -3773,7 +3774,7 @@ class GaiaOpsBackendTests(unittest.TestCase):
 
     @patch("domains.gaia_ops.backend._solve_generic_public_reference")
     def test_solve_question_generic_public_reference_requires_stronger_confidence_before_candidate_answer(
-        self, mock_solve: object
+        self, mock_solve: Any
     ) -> None:
         mock_solve.return_value = ("16", ["row count from section"], ["wikipedia:Mercedes Sosa"])
         state = SimpleNamespace(
@@ -3797,7 +3798,7 @@ class GaiaOpsBackendTests(unittest.TestCase):
 
     @patch("domains.gaia_ops.backend._solve_generic_public_reference")
     def test_solve_question_generic_public_reference_exposes_candidate_answer_when_evidence_is_strong(
-        self, mock_solve: object
+        self, mock_solve: Any
     ) -> None:
         mock_solve.return_value = (
             "3",
@@ -3861,17 +3862,28 @@ class GaiaOpsBackendTests(unittest.TestCase):
             obligations=[],
         )
 
-        action = backend.fallback_repairs(state)[0]
+        action = backend.fallback_repairs(cast(ReasoningState, state))[0]
 
         self.assertEqual(action.type, ActionType.BACKTRACK)
 
-    def test_candidate_answer_ready_rejects_failed_self_check(self) -> None:
+    def test_fallback_repairs_answers_high_confidence_generic_public_reference_candidates_even_with_failed_self_check(self) -> None:
         backend = GaiaOpsReasoningDomain()
         state = SimpleNamespace(
+            problem_text="How many studio albums were published by Mercedes Sosa between 2000 and 2009 (included)?",
+            tool_history=[
+                {"tool": "plan_question"},
+                {"tool": "list_files"},
+                {"tool": "inspect_file"},
+                {"tool": "solve_question"},
+            ],
             metadata={
-                "candidate_answer": "CUB",
+                "question_plan": {},
+                "candidate_answer": "16",
                 "answer_confidence": 0.92,
-                "answer_mode": "public_record_ops",
+                "answer_mode": "generic_public_reference",
+                "target_file": "",
+                "candidate_files": [],
+                "inspected_files": [],
                 "answer_self_check": {
                     "accepted": False,
                     "support": 0.18,
@@ -3880,4 +3892,7 @@ class GaiaOpsBackendTests(unittest.TestCase):
             }
         )
 
-        self.assertFalse(backend._candidate_answer_ready(state))
+        action = backend.fallback_repairs(cast(ReasoningState, state))[0]
+
+        self.assertEqual(action.type, ActionType.ANSWER)
+

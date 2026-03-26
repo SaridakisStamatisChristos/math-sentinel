@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
+# pyright: reportMissingImports=false
 from __future__ import annotations
 
 import argparse
+import importlib
 import json
 import os
 import sys
@@ -14,9 +16,6 @@ from huggingface_hub.errors import GatedRepoError
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
-
-import pyarrow.parquet as pq  # noqa: E402
-
 
 def _first_value(row: Dict[str, Any], *keys: str, default: Any = "") -> Any:
     lowered = {str(key).lower(): value for key, value in row.items()}
@@ -45,6 +44,7 @@ def _write_jsonl(path: Path, rows: Iterable[Dict[str, Any]]) -> str:
 
 
 def _table_rows(path: str) -> List[Dict[str, Any]]:
+    pq = importlib.import_module("pyarrow.parquet")
     table = pq.read_table(path)
     return table.to_pylist()
 

@@ -4,7 +4,10 @@ import json
 import shutil
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from typing import cast
+from unittest.mock import MagicMock, patch
+
+import torch
 
 from benchmarks.base import BenchmarkSuiteResult
 from benchmarks.manifest_loader import lint_manifest_suite, load_manifest_suite
@@ -12,6 +15,7 @@ from benchmarks.official_ingest import ingest_gaia_records, ingest_swebench_reco
 from benchmarks.runners import resolve_suite_targets, run_suite_target
 from domains import create_reasoning_domain
 from sentinel.config import load_runtime_config
+from sentinel.verifier import StateVerifier
 from train_v7 import benchmark_tasks_for_backend
 
 
@@ -179,7 +183,7 @@ class BenchmarkManifestTests(unittest.TestCase):
         self.assertTrue(all(suite_name.startswith("manifest:") for suite_name, _ in tasks))
 
     @patch("benchmarks.runners.run_task_collection")
-    def test_run_suite_target_supports_manifest_suite(self, mock_run_task_collection: object) -> None:
+    def test_run_suite_target_supports_manifest_suite(self, mock_run_task_collection: MagicMock) -> None:
         mock_run_task_collection.return_value = BenchmarkSuiteResult(
             suite="gaia_medium_official_style",
             backend="gaia_ops",
@@ -197,8 +201,8 @@ class BenchmarkManifestTests(unittest.TestCase):
             "manifest",
             "benchmarks/manifests/gaia_medium_official_style.json",
             cfg,
-            prover=object(),
-            verifier=object(),
+            prover=cast(torch.nn.Module, object()),
+            verifier=cast(StateVerifier, object()),
             tokenizer=object(),
             device="cpu",
             checker_plugin="",
