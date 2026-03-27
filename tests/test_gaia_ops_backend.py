@@ -2439,7 +2439,7 @@ class GaiaOpsBackendTests(unittest.TestCase):
         self.assertEqual(question_plan.get("research_mode"), "historical_reference_navigation_ops")
         self.assertIn("historically anchored source page", result["result"])
 
-    def test_plan_question_routes_image_vision_ops_structurally(self) -> None:
+    def test_plan_question_blind_mode_keeps_image_files_generic_until_solve(self) -> None:
         state = SimpleNamespace(
             problem_text=(
                 "In the attached image, what is the latest chronological year that appears?"
@@ -2457,10 +2457,11 @@ class GaiaOpsBackendTests(unittest.TestCase):
         result = plan_question("", state)
         question_plan = result["payload"]["state_metadata"]["question_plan"]
 
-        self.assertEqual(question_plan.get("research_mode"), "image_vision_ops")
-        self.assertIn("OCR-visible text", result["result"])
+        self.assertEqual(question_plan.get("research_mode", ""), "")
+        self.assertIn("poster.jpg", result["result"])
+        self.assertIn("solve intent=", result["result"])
 
-    def test_plan_question_routes_advanced_spreadsheet_ops_structurally(self) -> None:
+    def test_plan_question_blind_mode_keeps_spreadsheets_generic_until_solve(self) -> None:
         state = SimpleNamespace(
             problem_text=(
                 "Across all sheets in the attached workbook, which project has the highest score?"
@@ -2478,9 +2479,10 @@ class GaiaOpsBackendTests(unittest.TestCase):
         result = plan_question("", state)
         question_plan = result["payload"]["state_metadata"]["question_plan"]
 
-        self.assertEqual(question_plan.get("research_mode"), "spreadsheet_reasoning_ops")
-        self.assertEqual(question_plan.get("solver_submode"), "advanced_spreadsheet_ops")
-        self.assertIn("spreadsheet reasoning task", result["result"])
+        self.assertEqual(question_plan.get("research_mode", ""), "")
+        self.assertEqual(question_plan.get("solver_submode", ""), "")
+        self.assertIn("scores.xlsx", result["result"])
+        self.assertIn("solve intent=", result["result"])
 
     @patch("domains.gaia_ops.backend._solve_spreadsheet_question")
     def test_solve_question_uses_generalized_spreadsheet_routing(self, mock_solver: Any) -> None:
@@ -2511,7 +2513,7 @@ class GaiaOpsBackendTests(unittest.TestCase):
         self.assertEqual(result["answer"], "Project Atlas")
         mock_solver.assert_called_once()
 
-    def test_plan_question_routes_office_document_ops_structurally(self) -> None:
+    def test_plan_question_blind_mode_keeps_office_documents_generic_until_solve(self) -> None:
         state = SimpleNamespace(
             problem_text=(
                 "In the attached presentation, what is the title on slide 2?"
@@ -2529,10 +2531,11 @@ class GaiaOpsBackendTests(unittest.TestCase):
         result = plan_question("", state)
         question_plan = result["payload"]["state_metadata"]["question_plan"]
 
-        self.assertEqual(question_plan.get("research_mode"), "office_document_ops")
-        self.assertIn("document units", result["result"])
+        self.assertEqual(question_plan.get("research_mode", ""), "")
+        self.assertIn("deck.pptx", result["result"])
+        self.assertIn("solve intent=", result["result"])
 
-    def test_plan_question_routes_audio_transcription_ops_structurally(self) -> None:
+    def test_plan_question_blind_mode_keeps_audio_files_generic_until_solve(self) -> None:
         state = SimpleNamespace(
             problem_text=(
                 "In the attached audio clip, what phrase is spoken at 30 seconds?"
@@ -2550,8 +2553,40 @@ class GaiaOpsBackendTests(unittest.TestCase):
         result = plan_question("", state)
         question_plan = result["payload"]["state_metadata"]["question_plan"]
 
-        self.assertEqual(question_plan.get("research_mode"), "audio_transcription_ops")
-        self.assertIn("transcribe", result["result"])
+        self.assertEqual(question_plan.get("research_mode", ""), "")
+        self.assertIn("clip.mp3", result["result"])
+        self.assertIn("solve intent=", result["result"])
+
+    @patch("domains.gaia_ops.backend._solve_office_document_ops")
+    def test_solve_question_blind_mode_uses_generic_file_fallback_for_office_documents(self, mock_solver: Any) -> None:
+        deck_path = Path("tmp_blind_office_route.pptx")
+        deck_path.write_text("placeholder", encoding="utf-8")
+        mock_solver.return_value = ("Slide Two", ["document fallback"])
+        try:
+            state = SimpleNamespace(
+                problem_text=(
+                    "In the attached presentation, what is the title on slide 2?"
+                    "\nWorkspace files:\n- tmp_blind_office_route.pptx"
+                ),
+                metadata={
+                    "workspace_dir": str(Path.cwd()),
+                    "workspace_files": ["tmp_blind_office_route.pptx"],
+                    "candidate_files": ["tmp_blind_office_route.pptx"],
+                    "target_file": "tmp_blind_office_route.pptx",
+                    "benchmark_assistance_mode": "unassisted",
+                    "oracle_hints_enabled": False,
+                    "allow_named_family_routing": False,
+                    "blind_structural_mode": True,
+                },
+            )
+
+            result = solve_question(state.problem_text, state)
+        finally:
+            deck_path.unlink(missing_ok=True)
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["answer"], "Slide Two")
+        mock_solver.assert_called_once()
 
     def test_plan_question_routes_public_scalar_transform_ops_structurally(self) -> None:
         state = SimpleNamespace(
@@ -4149,4 +4184,3 @@ class GaiaOpsBackendTests(unittest.TestCase):
         action = backend.fallback_repairs(cast(ReasoningState, state))[0]
 
         self.assertEqual(action.type, ActionType.ANSWER)
-

@@ -7927,7 +7927,12 @@ def _text_reasoning_submode(prompt: str) -> str:
     return ""
 
 
-def _extract_special_research_plan(prompt: str, evidence_files: Sequence[str]) -> Dict[str, Any]:
+def _extract_special_research_plan(
+    prompt: str,
+    evidence_files: Sequence[str],
+    *,
+    allow_named_family_routing: bool = True,
+) -> Dict[str, Any]:
     lowered = (prompt or "").lower()
     lowered_files = [str(name).lower() for name in evidence_files]
     temporal = _temporal_anchor(prompt)
@@ -7940,11 +7945,11 @@ def _extract_special_research_plan(prompt: str, evidence_files: Sequence[str]) -
     channel_video_prompt = any(marker in lowered for marker in ("on his channel", "on her channel", "on their channel"))
     if _extract_quoted_titles(prompt) and "difference in measured time span between the papers" in lowered:
         return _research_plan("scholarly_reference_ops", solver_submode="paper_compare_ops")
-    if any(name.endswith((".mp3", ".wav", ".m4a", ".flac", ".ogg")) for name in lowered_files):
+    if allow_named_family_routing and any(name.endswith((".mp3", ".wav", ".m4a", ".flac", ".ogg")) for name in lowered_files):
         return {"research_mode": "audio_transcription_ops"}
-    if any(name.endswith((".png", ".jpg", ".jpeg", ".webp", ".gif")) for name in lowered_files):
+    if allow_named_family_routing and any(name.endswith((".png", ".jpg", ".jpeg", ".webp", ".gif")) for name in lowered_files):
         return {"research_mode": "image_vision_ops"}
-    if any(name.endswith((".docx", ".pptx", ".pdf", ".zip")) for name in lowered_files):
+    if allow_named_family_routing and any(name.endswith((".docx", ".pptx", ".pdf", ".zip")) for name in lowered_files):
         return {"research_mode": "office_document_ops"}
     if any(name.endswith(".csv") for name in lowered_files):
         return {}
@@ -7996,7 +8001,7 @@ def _extract_special_research_plan(prompt: str, evidence_files: Sequence[str]) -
         )
     ):
         return {"research_mode": "public_record_ops"}
-    if evidence_files and any(str(name).lower().endswith((".xlsx", ".xlsm", ".xls")) for name in evidence_files):
+    if allow_named_family_routing and evidence_files and any(str(name).lower().endswith((".xlsx", ".xlsm", ".xls")) for name in evidence_files):
         if any(
             marker in lowered
             for marker in (
@@ -8202,7 +8207,14 @@ def plan_question(arg: str, state: Any = None) -> Dict[str, Any]:
     prompt = str(getattr(state, "problem_text", "")).split("\nWorkspace files:\n", 1)[0].strip()
     files = list(state.metadata.get("workspace_files", []))
     evidence_files = [name for name in files if name != "TASK.md"]
-    research_plan = dict(_extract_special_research_plan(prompt, evidence_files))
+    allow_named_family_routing = bool(state.metadata.get("allow_named_family_routing", True))
+    research_plan = dict(
+        _extract_special_research_plan(
+            prompt,
+            evidence_files,
+            allow_named_family_routing=allow_named_family_routing,
+        )
+    )
     target_file = _infer_target_file(prompt, files)
     candidate_files = _resolve_target_files(prompt, files, target_file)
     intent = _infer_question_intent(prompt)
@@ -8482,8 +8494,13 @@ def solve_question(arg: str, state: Any = None) -> Dict[str, Any]:
     prompt = (arg.strip() or str(getattr(state, "problem_text", ""))).split("\nWorkspace files:\n", 1)[0].strip()
     files = [name for name in state.metadata.get("workspace_files", []) if str(name) != "TASK.md"]
     plan = dict(state.metadata.get("question_plan", {}))
+    allow_named_family_routing = bool(state.metadata.get("allow_named_family_routing", True))
     if not plan:
-        plan = _extract_special_research_plan(prompt, files)
+        plan = _extract_special_research_plan(
+            prompt,
+            files,
+            allow_named_family_routing=allow_named_family_routing,
+        )
     research_mode, solver_submode = _canonicalize_research_plan(
         plan.get("research_mode", ""),
         _research_submode(plan),
