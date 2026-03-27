@@ -570,18 +570,27 @@ def _run_direct_external_solver(
     research_mode: str,
     existing_paths: Sequence[tuple[str, Path]],
     solver_submode: str,
+    *,
+    allow_case_specific_heuristics: bool = True,
 ) -> tuple[str, List[str], List[str]]:
     candidate = ""
     evidence: List[str] = []
     answer_provenance: List[str] = []
     if research_mode == "image_vision_ops":
-        candidate, evidence, answer_provenance = _solve_image_vision_ops(prompt, [path for _, path in existing_paths])
+        candidate, evidence, answer_provenance = _solve_image_vision_ops(
+            prompt,
+            [path for _, path in existing_paths],
+            allow_case_specific_heuristics=allow_case_specific_heuristics,
+        )
     elif research_mode == "office_document_ops":
         if existing_paths:
             candidate, evidence = _solve_office_document_ops(prompt, existing_paths[0][1])
             answer_provenance = [f"office:{existing_paths[0][0]}"]
     elif research_mode == "video_transcript_ops":
-        candidate, evidence, answer_provenance = _solve_video_transcript_ops(prompt)
+        candidate, evidence, answer_provenance = _solve_video_transcript_ops(
+            prompt,
+            allow_case_specific_heuristics=allow_case_specific_heuristics,
+        )
     elif research_mode == "audio_transcription_ops":
         candidate, evidence, answer_provenance = _solve_audio_transcription_ops(prompt, [path for _, path in existing_paths])
     elif research_mode == "spreadsheet_reasoning_ops":
@@ -591,7 +600,10 @@ def _run_direct_external_solver(
             answer_provenance = [f"spreadsheet:{resolved_target}"]
     elif research_mode == "scholarly_reference_ops":
         scholarly_submode = solver_submode or "quoted_paper_lookup"
-        if scholarly_submode == "paper_compare_ops":
+        if not allow_case_specific_heuristics:
+            candidate, evidence = _solve_paper_numeric_lookup(prompt)
+            answer_provenance = ["web:paper-search", "pdf:full-text"]
+        elif scholarly_submode == "paper_compare_ops":
             candidate, evidence, answer_provenance = _solve_paper_compare_ops(prompt)
         elif scholarly_submode == "author_prior_publication_lookup":
             candidate, evidence = _solve_author_prior_publication(prompt)
@@ -601,7 +613,9 @@ def _run_direct_external_solver(
             answer_provenance = ["web:paper-search", "pdf:full-text"]
     elif research_mode == "public_data_query_ops":
         data_submode = solver_submode or "public_scalar_transform_ops"
-        if data_submode == "wikipedia_capital_distance":
+        if not allow_case_specific_heuristics:
+            candidate, evidence, answer_provenance = _solve_public_scalar_transform_ops(prompt)
+        elif data_submode == "wikipedia_capital_distance":
             candidate, evidence = _solve_wikipedia_capital_distance()
             answer_provenance = ["wikipedia:ASEAN", "osm:nominatim"]
         elif data_submode == "density_removal":
@@ -620,25 +634,35 @@ def _run_direct_external_solver(
             candidate, evidence, answer_provenance = _solve_public_scalar_transform_ops(prompt)
     elif research_mode == "text_reasoning_ops":
         text_submode = solver_submode or "symbolic_reasoning_ops"
-        if text_submode == "unlambda_missing_token":
+        if allow_case_specific_heuristics and text_submode == "unlambda_missing_token":
             candidate, evidence = _solve_unlambda_missing_token(prompt)
             answer_provenance = ["unlambda:structural-analysis"]
         else:
-            candidate, evidence, answer_provenance = _solve_text_only_question(prompt)
+            candidate, evidence, answer_provenance = _solve_text_only_question(
+                prompt,
+                allow_case_specific_heuristics=allow_case_specific_heuristics,
+            )
     elif research_mode == "public_record_ops":
-        candidate, evidence, answer_provenance = _solve_public_record_ops(prompt)
+        if allow_case_specific_heuristics:
+            candidate, evidence, answer_provenance = _solve_public_record_ops(prompt)
     elif research_mode == "generic_public_reference":
-        candidate, evidence, answer_provenance = _solve_generic_public_reference(prompt)
+        if allow_case_specific_heuristics:
+            candidate, evidence, answer_provenance = _solve_generic_public_reference(prompt)
     elif research_mode == "public_reference_history_ops":
-        candidate, evidence, answer_provenance = _solve_public_reference_history_ops(prompt)
+        if allow_case_specific_heuristics:
+            candidate, evidence, answer_provenance = _solve_public_reference_history_ops(prompt)
     elif research_mode == "historical_reference_navigation_ops":
-        candidate, evidence, answer_provenance = _solve_historical_reference_navigation_ops(prompt)
+        if allow_case_specific_heuristics:
+            candidate, evidence, answer_provenance = _solve_historical_reference_navigation_ops(prompt)
     elif research_mode == "web_archive_ops":
-        candidate, evidence, answer_provenance = _solve_web_archive_ops(prompt)
+        if allow_case_specific_heuristics:
+            candidate, evidence, answer_provenance = _solve_web_archive_ops(prompt)
     elif research_mode == "cross_source_entity_ops":
-        candidate, evidence, answer_provenance = _solve_cross_source_entity_ops(prompt)
+        if allow_case_specific_heuristics:
+            candidate, evidence, answer_provenance = _solve_cross_source_entity_ops(prompt)
     elif research_mode == "github_public_artifact_ops":
-        candidate, evidence, answer_provenance = _solve_github_public_artifact_ops(prompt)
+        if allow_case_specific_heuristics:
+            candidate, evidence, answer_provenance = _solve_github_public_artifact_ops(prompt)
     elif research_mode == "pdb_first_atom_distance":
         existing_pdb = [path for _, path in existing_paths if path.suffix.lower() == ".pdb"]
         candidate, evidence = _solve_pdb_first_atom_distance(existing_pdb[0]) if existing_pdb else ("", [])
@@ -675,6 +699,7 @@ def _fallback_external_solver_bundles(
     primary_candidate: str,
     primary_evidence: Sequence[str],
     primary_provenance: Sequence[str],
+    allow_case_specific_heuristics: bool = True,
 ) -> List[Dict[str, Any]]:
     bundles: List[Dict[str, Any]] = []
     bundles.extend(
@@ -687,7 +712,13 @@ def _fallback_external_solver_bundles(
     )
     if not primary_candidate:
         for fallback_mode in _adjacent_external_solver_modes(research_mode):
-            candidate, evidence, provenance = _run_direct_external_solver(prompt, fallback_mode, existing_paths, "")
+            candidate, evidence, provenance = _run_direct_external_solver(
+                prompt,
+                fallback_mode,
+                existing_paths,
+                "",
+                allow_case_specific_heuristics=allow_case_specific_heuristics,
+            )
             if candidate:
                 bundles.append(
                     _solver_candidate_bundle(
@@ -703,7 +734,15 @@ def _fallback_external_solver_bundles(
             ("fallback:text_only", _solve_text_only_question, 0.03),
             ("fallback:broad_symbolic", _solve_broad_symbolic_ops, 0.04),
         ):
-            candidate, evidence, provenance = solver(prompt)
+            if method_name == "fallback:text_only":
+                candidate, evidence, provenance = solver(
+                    prompt,
+                    allow_case_specific_heuristics=allow_case_specific_heuristics,
+                )
+            elif allow_case_specific_heuristics:
+                candidate, evidence, provenance = solver(prompt)
+            else:
+                candidate, evidence, provenance = ("", [], [])
             if candidate:
                 bundles.append(
                     _solver_candidate_bundle(
@@ -3139,6 +3178,7 @@ def _solve_universal_ocr_reasoning(
     *,
     local_paths: Sequence[Path] = (),
     remote_image_urls: Sequence[str] = (),
+    allow_case_specific_heuristics: bool = True,
 ) -> tuple[str, List[str], List[str]]:
     lowered = str(prompt or "").lower()
     image_observations: List[Dict[str, Any]] = []
@@ -3152,7 +3192,7 @@ def _solve_universal_ocr_reasoning(
     for url in remote_image_urls:
         image_observations.append(_collect_remote_image_ocr_observation(url))
 
-    if all(token in lowered for token in ("standard population deviation", "standard sample deviation", "statistics module")):
+    if allow_case_specific_heuristics and all(token in lowered for token in ("standard population deviation", "standard sample deviation", "statistics module")):
         for observation in image_observations:
             path = observation.get("path")
             if not isinstance(path, Path):
@@ -3166,12 +3206,13 @@ def _solve_universal_ocr_reasoning(
         if candidate:
             return (candidate, evidence, list(observation.get("provenance", [])))
 
-    for observation in image_observations:
-        candidate, evidence = _solve_embedded_sorting_code_image(prompt, observation)
-        if candidate:
-            return (candidate, evidence, list(observation.get("provenance", [])))
+    if allow_case_specific_heuristics:
+        for observation in image_observations:
+            candidate, evidence = _solve_embedded_sorting_code_image(prompt, observation)
+            if candidate:
+                return (candidate, evidence, list(observation.get("provenance", [])))
 
-    if "additional cost per file" in lowered and "over the limit" in lowered:
+    if allow_case_specific_heuristics and "additional cost per file" in lowered and "over the limit" in lowered:
         for observation in image_observations:
             path = observation.get("path")
             if not isinstance(path, Path):
@@ -3180,7 +3221,7 @@ def _solve_universal_ocr_reasoning(
             if candidate:
                 return (candidate, evidence, list(observation.get("provenance", [])))
 
-    if "sample problems" in lowered and "fractions" in lowered:
+    if allow_case_specific_heuristics and "sample problems" in lowered and "fractions" in lowered:
         for observation in image_observations:
             path = observation.get("path")
             if not isinstance(path, Path):
@@ -3189,7 +3230,7 @@ def _solve_universal_ocr_reasoning(
             if candidate:
                 return (candidate, evidence, list(observation.get("provenance", [])))
 
-    if "fractions quiz" in lowered or "bonus points" in lowered:
+    if allow_case_specific_heuristics and ("fractions quiz" in lowered or "bonus points" in lowered):
         for observation in image_observations:
             path = observation.get("path")
             if not isinstance(path, Path):
@@ -3198,7 +3239,7 @@ def _solve_universal_ocr_reasoning(
             if candidate:
                 return (candidate, evidence, list(observation.get("provenance", [])))
 
-    if "green polygon" in lowered and "area" in lowered:
+    if allow_case_specific_heuristics and "green polygon" in lowered and "area" in lowered:
         for observation in image_observations:
             path = observation.get("path")
             if not isinstance(path, Path):
@@ -3207,7 +3248,7 @@ def _solve_universal_ocr_reasoning(
             if candidate:
                 return (candidate, evidence, list(observation.get("provenance", [])))
 
-    if "butterfat content" in lowered and "federal standards" in lowered:
+    if allow_case_specific_heuristics and "butterfat content" in lowered and "federal standards" in lowered:
         for observation in image_observations:
             candidate, evidence = _solve_butterfat_nutrition_image(prompt, observation)
             if candidate:
@@ -3227,7 +3268,7 @@ def _solve_universal_ocr_reasoning(
             label = str(winning_observation.get("label", "image"))
             return (str(max(years)), [f"years from {label}: {sorted(set(years))}"], list(winning_observation.get("provenance", [])))
 
-    if "text label" in lowered and ("midline" in lowered or "farthest to the left" in lowered):
+    if allow_case_specific_heuristics and "text label" in lowered and ("midline" in lowered or "farthest to the left" in lowered):
         for observation in image_observations:
             path = observation.get("path")
             if not isinstance(path, Path):
@@ -3317,11 +3358,11 @@ def _best_scalar_from_public_documents(title: str, prompt: str) -> tuple[str, Li
     return (value, [f"scalar {title}={value}"], str(document.get("url", "") or ""))
 
 
-def _solve_video_transcript_ops(prompt: str) -> tuple[str, List[str], List[str]]:
+def _solve_video_transcript_ops(prompt: str, *, allow_case_specific_heuristics: bool = True) -> tuple[str, List[str], List[str]]:
     lowered = str(prompt or "").lower()
     video_url = _discover_video_url(prompt)
     if not video_url:
-        if "replit" in lowered and "command" in lowered:
+        if allow_case_specific_heuristics and "replit" in lowered and "command" in lowered:
             documents = _public_reference_search_documents(prompt)
             candidate, evidence, provenance = _solve_replit_vscode_command(prompt, documents)
             if candidate:
@@ -3360,7 +3401,7 @@ def _solve_video_transcript_ops(prompt: str) -> tuple[str, List[str], List[str]]
     documents = [document for document in _fetch_search_documents(search_query, max_results=4) if not _is_low_value_video_document(document)]
     if documents:
         provenance.extend(str(doc.get("url", "")) for doc in documents[:2] if str(doc.get("url", "")).strip())
-    if "bird species" in lowered:
+    if allow_case_specific_heuristics and "bird species" in lowered:
         combined = "\n".join(
             [str(metadata.get("title", "")), str(metadata.get("description", ""))]
             + [str(segment.get("text", "")) for segment in segments]
@@ -3381,7 +3422,7 @@ def _solve_video_transcript_ops(prompt: str) -> tuple[str, List[str], List[str]]
         person = _normalize_answer_shape(prompt, person)
         if person:
             return (person, [f"video best person={person}"] + person_evidence[:3], provenance)
-        if "the thinking machine" in lowered and any(token in lowered for token in ("predicting", "robots", "thinking machines")):
+        if allow_case_specific_heuristics and "the thinking machine" in lowered and any(token in lowered for token in ("predicting", "robots", "thinking machines")):
             candidate, helper_evidence = _solve_thinking_machine_prediction(prompt)
             if candidate:
                 return (candidate, ["video prediction helper"] + helper_evidence, provenance)
@@ -3391,7 +3432,7 @@ def _solve_video_transcript_ops(prompt: str) -> tuple[str, List[str], List[str]]
             if match:
                 answer = match.group(1)
                 return (answer, [f"video_document_scalar url={document.get('url', '')}", f"answer={answer}"], provenance)
-    if "replit" in lowered and "command" in lowered:
+    if allow_case_specific_heuristics and "replit" in lowered and "command" in lowered:
         candidate, more_evidence, more_provenance = _solve_replit_vscode_command(prompt, documents)
         if candidate:
             merged_provenance = provenance + [item for item in more_provenance if item not in provenance]
@@ -3869,7 +3910,7 @@ def _solve_reversed_instruction(prompt: str) -> tuple[str, List[str]]:
     return ("", [])
 
 
-def _solve_text_only_question(prompt: str) -> tuple[str, List[str], List[str]]:
+def _solve_text_only_question(prompt: str, *, allow_case_specific_heuristics: bool = True) -> tuple[str, List[str], List[str]]:
     candidates: List[Dict[str, Any]] = []
     for solver, candidate_kind, source_bias in (
         (_solve_literal_word_instruction, "short_text", 0.20),
@@ -3885,11 +3926,14 @@ def _solve_text_only_question(prompt: str) -> tuple[str, List[str], List[str]]:
                     evidence,
                     [f"prompt:{getattr(solver, '__name__', 'text_only')}"],
                     method=getattr(solver, "__name__", "text_only"),
-                    source_bias=source_bias,
-                    candidate_kind=candidate_kind,
-                )
+                source_bias=source_bias,
+                candidate_kind=candidate_kind,
             )
-    broad_candidate, broad_evidence, broad_provenance = _solve_broad_symbolic_ops(prompt)
+        )
+    if allow_case_specific_heuristics:
+        broad_candidate, broad_evidence, broad_provenance = _solve_broad_symbolic_ops(prompt)
+    else:
+        broad_candidate, broad_evidence, broad_provenance = ("", [], [])
     if broad_candidate:
         candidates.append(
             _solver_candidate_bundle(
@@ -6335,8 +6379,17 @@ def _solve_board_spatial_label(prompt: str, path: Path) -> tuple[str, List[str],
     return (square, [f"board target row={target_row} col={target_column}", f"square={square}"], [f"image:{path.name}"])
 
 
-def _solve_image_vision_ops(prompt: str, image_paths: Sequence[Path]) -> tuple[str, List[str], List[str]]:
-    return _solve_universal_ocr_reasoning(prompt, local_paths=image_paths)
+def _solve_image_vision_ops(
+    prompt: str,
+    image_paths: Sequence[Path],
+    *,
+    allow_case_specific_heuristics: bool = True,
+) -> tuple[str, List[str], List[str]]:
+    return _solve_universal_ocr_reasoning(
+        prompt,
+        local_paths=image_paths,
+        allow_case_specific_heuristics=allow_case_specific_heuristics,
+    )
 
 
 def _extract_letter_board(prompt: str) -> List[str]:
@@ -8712,6 +8765,7 @@ def _extract_special_research_plan(
     evidence_files: Sequence[str],
     *,
     allow_named_family_routing: bool = True,
+    allow_case_specific_heuristics: bool = True,
 ) -> Dict[str, Any]:
     lowered = (prompt or "").lower()
     lowered_files = [str(name).lower() for name in evidence_files]
@@ -8723,6 +8777,45 @@ def _extract_special_research_plan(
         and any(marker in lowered for marker in ("video", "short", "episode", "playthrough", "channel"))
     )
     channel_video_prompt = any(marker in lowered for marker in ("on his channel", "on her channel", "on their channel"))
+    if not allow_case_specific_heuristics:
+        if allow_named_family_routing and any(name.endswith((".mp3", ".wav", ".m4a", ".flac", ".ogg")) for name in lowered_files):
+            return {"research_mode": "audio_transcription_ops"}
+        if allow_named_family_routing and any(name.endswith((".png", ".jpg", ".jpeg", ".webp", ".gif")) for name in lowered_files):
+            return {"research_mode": "image_vision_ops"}
+        if allow_named_family_routing and any(name.endswith((".docx", ".pptx", ".pdf", ".zip")) for name in lowered_files):
+            return {"research_mode": "office_document_ops"}
+        if any(name.endswith(".csv") for name in lowered_files):
+            return {}
+        if any(name.endswith(".pdb") for name in lowered_files) and {"pdb", "atom", "angstrom", "distance"} & set(_tokenize(lowered)):
+            return {"research_mode": "pdb_first_atom_distance"}
+        if any(name.endswith(".jsonld") for name in lowered_files) and ("orcid" in lowered or "researcher and contributor identification" in lowered):
+            return {"research_mode": "orcid_jsonld_average"}
+        if allow_named_family_routing and evidence_files and any(str(name).lower().endswith((".xlsx", ".xlsm", ".xls")) for name in evidence_files):
+            return _research_plan("spreadsheet_reasoning_ops", solver_submode="spreadsheet_lookup")
+        if youtube_video_prompt or channel_video_prompt or any(
+            marker in lowered
+            for marker in (
+                "youtube.com/watch",
+                "youtu.be/",
+                "youtube video",
+                "famous youtube video",
+                "last video",
+                "youtube channel",
+                "playthrough of the game",
+                "first episode",
+            )
+        ):
+            return {"research_mode": "video_transcript_ops"}
+        arxiv_plan = _extract_arxiv_research_plan(prompt)
+        if arxiv_plan:
+            return arxiv_plan
+        if _extract_quoted_titles(prompt) and any(
+            marker in lowered for marker in ("paper", "papers", "article", "articles", "journal", "authored by", "authored")
+        ):
+            return {"research_mode": "scholarly_reference_ops"}
+        if _extract_quoted_titles(prompt) and any(marker in lowered for marker in ("difference between", "percentage", "average")):
+            return _research_plan("public_data_query_ops", solver_submode="public_scalar_transform_ops")
+        return {}
     if _extract_quoted_titles(prompt) and "difference in measured time span between the papers" in lowered:
         return _research_plan("scholarly_reference_ops", solver_submode="paper_compare_ops")
     if allow_named_family_routing and any(name.endswith((".mp3", ".wav", ".m4a", ".flac", ".ogg")) for name in lowered_files):
@@ -8988,11 +9081,13 @@ def plan_question(arg: str, state: Any = None) -> Dict[str, Any]:
     files = list(state.metadata.get("workspace_files", []))
     evidence_files = [name for name in files if name != "TASK.md"]
     allow_named_family_routing = bool(state.metadata.get("allow_named_family_routing", True))
+    allow_case_specific_heuristics = bool(state.metadata.get("allow_case_specific_heuristics", True))
     research_plan = dict(
         _extract_special_research_plan(
             prompt,
             evidence_files,
             allow_named_family_routing=allow_named_family_routing,
+            allow_case_specific_heuristics=allow_case_specific_heuristics,
         )
     )
     target_file = _infer_target_file(prompt, files)
@@ -9275,11 +9370,13 @@ def solve_question(arg: str, state: Any = None) -> Dict[str, Any]:
     files = [name for name in state.metadata.get("workspace_files", []) if str(name) != "TASK.md"]
     plan = dict(state.metadata.get("question_plan", {}))
     allow_named_family_routing = bool(state.metadata.get("allow_named_family_routing", True))
+    allow_case_specific_heuristics = bool(state.metadata.get("allow_case_specific_heuristics", True))
     if not plan:
         plan = _extract_special_research_plan(
             prompt,
             files,
             allow_named_family_routing=allow_named_family_routing,
+            allow_case_specific_heuristics=allow_case_specific_heuristics,
         )
     research_mode, solver_submode = _canonicalize_research_plan(
         plan.get("research_mode", ""),
@@ -9352,7 +9449,13 @@ def solve_question(arg: str, state: Any = None) -> Dict[str, Any]:
         }
     if research_mode in _DIRECT_EXTERNAL_SOLVER_MODES:
         structural_metadata = _build_plan_metadata(prompt, research_mode)
-        candidate, evidence, answer_provenance = _run_direct_external_solver(prompt, research_mode, existing_paths, solver_submode)
+        candidate, evidence, answer_provenance = _run_direct_external_solver(
+            prompt,
+            research_mode,
+            existing_paths,
+            solver_submode,
+            allow_case_specific_heuristics=allow_case_specific_heuristics,
+        )
         primary_candidate = candidate
         primary_evidence = list(evidence)
         primary_provenance = list(answer_provenance)
@@ -9382,6 +9485,7 @@ def solve_question(arg: str, state: Any = None) -> Dict[str, Any]:
                     primary_candidate=candidate,
                     primary_evidence=evidence,
                     primary_provenance=answer_provenance,
+                    allow_case_specific_heuristics=allow_case_specific_heuristics,
                 )
             )
         candidate, evidence, answer_provenance = _select_best_solver_candidate(
@@ -9493,7 +9597,10 @@ def solve_question(arg: str, state: Any = None) -> Dict[str, Any]:
             result["solved"] = True
         return result
     if not files:
-        candidate, evidence, answer_provenance = _solve_text_only_question(prompt)
+        candidate, evidence, answer_provenance = _solve_text_only_question(
+            prompt,
+            allow_case_specific_heuristics=allow_case_specific_heuristics,
+        )
         if candidate:
             confidence = _answer_confidence(candidate, evidence, 0)
             return {
@@ -9549,7 +9656,11 @@ def solve_question(arg: str, state: Any = None) -> Dict[str, Any]:
         candidate, evidence = _solve_office_document_ops(prompt, path)
         answer_provenance = [f"office:{resolved_target}"]
     elif suffixes <= {".png", ".jpg", ".jpeg", ".webp", ".gif"}:
-        candidate, evidence, answer_provenance = _solve_image_vision_ops(prompt, [path for _, path in existing_paths])
+        candidate, evidence, answer_provenance = _solve_image_vision_ops(
+            prompt,
+            [path for _, path in existing_paths],
+            allow_case_specific_heuristics=allow_case_specific_heuristics,
+        )
     else:
         resolved_target, path = existing_paths[0]
         text = path.read_text(encoding="utf-8")
@@ -9633,6 +9744,9 @@ class GaiaOpsReasoningDomain:
         self.allow_named_family_routing = bool(
             benchmark_cfg.get("allow_named_family_routing", not self.blind_structural_mode)
         )
+        self.allow_case_specific_heuristics = bool(
+            benchmark_cfg.get("allow_case_specific_heuristics", True)
+        )
         self.allow_errata_overrides = bool(
             benchmark_cfg.get("allow_errata_overrides", not self.blind_structural_mode)
         )
@@ -9681,6 +9795,7 @@ class GaiaOpsReasoningDomain:
         metadata["claim_mode"] = self.claim_mode
         metadata["blind_structural_mode"] = self.blind_structural_mode
         metadata["allow_named_family_routing"] = self.allow_named_family_routing
+        metadata["allow_case_specific_heuristics"] = self.allow_case_specific_heuristics
         metadata["allow_errata_overrides"] = self.allow_errata_overrides
         metadata["benchmark_suite"] = str(raw_metadata.get("benchmark_suite", metadata.get("benchmark_suite", "")))
         metadata["holdout_group"] = str(raw_metadata.get("holdout_group", metadata.get("holdout_group", "")))

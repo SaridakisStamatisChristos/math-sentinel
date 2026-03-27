@@ -164,6 +164,7 @@ class GaiaOpsBackendTests(unittest.TestCase):
                 "benchmark": {
                     "blind_structural_mode": True,
                     "allow_named_family_routing": False,
+                    "allow_case_specific_heuristics": False,
                     "allow_errata_overrides": False,
                 }
             }
@@ -174,6 +175,7 @@ class GaiaOpsBackendTests(unittest.TestCase):
 
         self.assertTrue(state.metadata.get("blind_structural_mode"))
         self.assertFalse(state.metadata.get("allow_named_family_routing"))
+        self.assertFalse(state.metadata.get("allow_case_specific_heuristics"))
         self.assertFalse(state.metadata.get("allow_errata_overrides"))
 
     def test_make_state_applies_gaia_prompt_errata_override(self) -> None:
@@ -1855,6 +1857,7 @@ class GaiaOpsBackendTests(unittest.TestCase):
         mock_universal.assert_called_once_with(
             "List the fractions shown in the image.",
             local_paths=[Path("fractions.png")],
+            allow_case_specific_heuristics=True,
         )
 
     @patch("domains.gaia_ops.backend._solve_universal_ocr_reasoning")
@@ -2662,6 +2665,51 @@ class GaiaOpsBackendTests(unittest.TestCase):
         self.assertEqual(question_plan.get("solver_submode"), "symbolic_reasoning_ops")
         self.assertIn("symbolic or combinatorial rules", result["result"])
 
+    def test_plan_question_strict_generalized_blind_blocks_case_shaped_public_record_route(self) -> None:
+        state = SimpleNamespace(
+            problem_text=(
+                "I’m researching species that became invasive after people who kept them as pets released them. "
+                "There’s a certain species of fish that was popularized as a pet by being the main character of the movie Finding Nemo. "
+                "According to the USGS, where was this fish found as a nonnative species, before the year 2020?"
+                "\nWorkspace files:\n- none"
+            ),
+            metadata={
+                "workspace_files": [],
+                "allow_named_family_routing": False,
+                "allow_case_specific_heuristics": False,
+                "blind_structural_mode": True,
+                "target_file": "",
+                "candidate_files": [],
+            },
+        )
+
+        result = plan_question("", state)
+        question_plan = result["payload"]["state_metadata"]["question_plan"]
+
+        self.assertEqual(question_plan.get("research_mode", ""), "")
+
+    def test_plan_question_strict_generalized_blind_keeps_generic_scholarly_route(self) -> None:
+        state = SimpleNamespace(
+            problem_text=(
+                'What is the difference in measured time span between the papers "Paper A" and "Paper B"?'
+                "\nWorkspace files:\n- none"
+            ),
+            metadata={
+                "workspace_files": [],
+                "allow_named_family_routing": False,
+                "allow_case_specific_heuristics": False,
+                "blind_structural_mode": True,
+                "target_file": "",
+                "candidate_files": [],
+            },
+        )
+
+        result = plan_question("", state)
+        question_plan = result["payload"]["state_metadata"]["question_plan"]
+
+        self.assertEqual(question_plan.get("research_mode"), "scholarly_reference_ops")
+        self.assertEqual(question_plan.get("solver_submode", ""), "")
+
     def test_plan_question_named_lane_still_canonicalizes_to_generalized_mode(self) -> None:
         state = SimpleNamespace(
             problem_text=(
@@ -2860,6 +2908,46 @@ class GaiaOpsBackendTests(unittest.TestCase):
 
         self.assertFalse(result["ok"])
         self.assertIn("quality checks", result["result"])
+
+    @patch("domains.gaia_ops.backend._solve_public_record_ops")
+    def test_solve_question_strict_generalized_blind_skips_case_shaped_public_record_solver(self, mock_solver: Any) -> None:
+        state = SimpleNamespace(
+            problem_text="What country had the least number of athletes at the 1928 Summer Olympics? Give the IOC country code as your answer.",
+            metadata={
+                "workspace_dir": str(Path.cwd()),
+                "workspace_files": [],
+                "question_plan": {"research_mode": "public_record_ops"},
+                "candidate_files": [],
+                "benchmark_assistance_mode": "unassisted",
+                "oracle_hints_enabled": False,
+                "allow_case_specific_heuristics": False,
+            },
+        )
+
+        result = solve_question(state.problem_text, state)
+
+        self.assertFalse(result["ok"])
+        mock_solver.assert_not_called()
+
+    @patch("domains.gaia_ops.backend._solve_broad_symbolic_ops")
+    def test_solve_question_strict_generalized_blind_skips_broad_symbolic_helper(self, mock_solver: Any) -> None:
+        state = SimpleNamespace(
+            problem_text="In the puzzle Pick that Ping-Pong, which ball should be selected to maximize the chance of winning?",
+            metadata={
+                "workspace_dir": str(Path.cwd()),
+                "workspace_files": [],
+                "question_plan": {},
+                "candidate_files": [],
+                "benchmark_assistance_mode": "unassisted",
+                "oracle_hints_enabled": False,
+                "allow_case_specific_heuristics": False,
+            },
+        )
+
+        result = solve_question(state.problem_text, state)
+
+        self.assertFalse(result["ok"])
+        mock_solver.assert_not_called()
 
     @patch("domains.gaia_ops.backend._solve_generic_public_reference")
     @patch("domains.gaia_ops.backend._solve_cross_source_entity_ops")

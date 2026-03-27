@@ -1,0 +1,5 @@
+extends: profile_public_claim_blind_structural.yaml
+
+benchmark:
+  report_lane: claim_blind_generalized
+  allow_case_specific_heuristics: false

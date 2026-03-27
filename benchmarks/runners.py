@@ -148,6 +148,7 @@ def _case_audit_from_search(cfg: Dict[str, Any], task: ReasoningTask, final_stat
             "environment_issues": environment_issues,
             "blind_structural_mode": bool(cfg.get("benchmark", {}).get("blind_structural_mode", False)),
             "allow_named_family_routing": bool(cfg.get("benchmark", {}).get("allow_named_family_routing", True)),
+            "allow_case_specific_heuristics": bool(cfg.get("benchmark", {}).get("allow_case_specific_heuristics", True)),
             "allow_errata_overrides": bool(cfg.get("benchmark", {}).get("allow_errata_overrides", True)),
         }
     )
@@ -312,6 +313,7 @@ def run_task_collection(
             "task_count": len(task_list),
             "blind_structural_mode": bool(cfg.get("benchmark", {}).get("blind_structural_mode", False)),
             "allow_named_family_routing": bool(cfg.get("benchmark", {}).get("allow_named_family_routing", True)),
+            "allow_case_specific_heuristics": bool(cfg.get("benchmark", {}).get("allow_case_specific_heuristics", True)),
             "allow_errata_overrides": bool(cfg.get("benchmark", {}).get("allow_errata_overrides", True)),
             "benchmark_integrity_passed": all(bool(case.audit.get("benchmark_integrity_passed", True)) for case in case_results),
             "claim_profile_passed": all(bool(case.audit.get("claim_profile_passed", True)) for case in case_results),
