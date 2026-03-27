@@ -1,0 +1,13 @@
+extends: profile_public_claim_no_repairs.yaml
+
+benchmark:
+  claim_mode: false
+  report_lane: claim_search_assisted_diag
+
+search:
+  enable_fallback_repairs: true
+  deterministic_fallback_chain: false
+  guided_fallback_rollout: true
+
+memory:
+  retrieval_mode: hybrid

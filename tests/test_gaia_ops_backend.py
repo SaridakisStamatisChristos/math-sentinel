@@ -12,7 +12,10 @@ from PIL import Image, ImageDraw, ImageFont
 
 from domains.gaia_ops.backend import (
     GaiaOpsReasoningDomain,
+    _best_person_name_from_documents,
+    _extract_special_research_plan,
     _extract_usgs_collection_locations,
+    _infer_csv_answer,
     _infer_text_answer,
     _infer_xlsx_answer,
     _nature_article_type_counts,
@@ -970,6 +973,38 @@ class GaiaOpsBackendTests(unittest.TestCase):
         self.assertTrue(result["solved"])
         self.assertEqual(result["answer"], "15")
         self.assertEqual(result["payload"]["candidate_answer"], "15")
+
+    def test_extract_special_research_plan_does_not_hijack_csv_prompt_to_public_history(self) -> None:
+        prompt = (
+            "What percentage of the penguin species in the attached table that don't live on Dream Island have beaks longer than 42 mm? "
+            "Use the upper value from the Wikipedia population range as of the end of 2012."
+        )
+
+        plan = _extract_special_research_plan(prompt, ["penguins.csv"])
+
+        self.assertEqual(plan, {})
+
+    @patch("domains.gaia_ops.backend._historical_population_list_upper_total")
+    def test_infer_csv_answer_computes_penguin_population_percentage_from_structured_filters(self, mock_population_total: Any) -> None:
+        csv_path = (
+            Path("data")
+            / "official_corpus"
+            / "gaia"
+            / "attachments"
+            / "8d46b8d6-b38a-47ff-ac74-cda14cf2d19b"
+            / "8d46b8d6-b38a-47ff-ac74-cda14cf2d19b.csv"
+        )
+        mock_population_total.return_value = (39808770.0, ["upper population total=39808770"])
+
+        answer, evidence = _infer_csv_answer(
+            "What percentage of the penguin species in the attached table that don't live on Dream Island have beaks longer than 42 mm? Use the upper value from the Wikipedia population range as of the end of 2012.",
+            [(csv_path.name, csv_path.read_text(encoding="utf-8"))],
+        )
+
+        self.assertEqual(answer, "0.00033")
+        self.assertTrue(any("island!=dream" in item for item in evidence))
+        self.assertTrue(any("bill_length_mm>42" in item for item in evidence))
+        self.assertTrue(any("rows considered: 132" in item for item in evidence))
 
     def test_executor_surfaces_failed_tool_result_text_in_note(self) -> None:
         backend = GaiaOpsReasoningDomain()
@@ -2120,6 +2155,25 @@ class GaiaOpsBackendTests(unittest.TestCase):
         self.assertTrue(any("person-name fit" in item for item in evidence))
         self.assertEqual(provenance, ["https://example.com/video", "youtube:transcript"])
 
+    def test_best_person_name_from_documents_aggregates_across_all_documents(self) -> None:
+        name, evidence = _best_person_name_from_documents(
+            [
+                {
+                    "title": "Archive note",
+                    "snippet": "",
+                    "text": "The Thinking Machine featured Alan Turing.",
+                },
+                {
+                    "title": "Companion article",
+                    "snippet": "Claude Shannon made the prediction.",
+                    "text": "Claude Shannon appears again in the transcript notes.",
+                },
+            ]
+        )
+
+        self.assertEqual(name, "Claude Shannon")
+        self.assertTrue(any("Claude Shannon" in item for item in evidence))
+
     def test_plan_question_blind_mode_routes_public_species_lookup_structurally(self) -> None:
         state = SimpleNamespace(
             problem_text=(
@@ -2252,8 +2306,9 @@ class GaiaOpsBackendTests(unittest.TestCase):
         result = plan_question("", state)
         question_plan = result["payload"]["state_metadata"]["question_plan"]
 
-        self.assertEqual(question_plan.get("research_mode"), "paper_compare_ops")
-        self.assertIn("referenced papers", result["result"])
+        self.assertEqual(question_plan.get("research_mode"), "scholarly_reference_ops")
+        self.assertEqual(question_plan.get("solver_submode"), "paper_compare_ops")
+        self.assertIn("cited scholarly source", result["result"])
 
     def test_plan_question_routes_video_transcript_ops_structurally(self) -> None:
         state = SimpleNamespace(
@@ -2275,6 +2330,72 @@ class GaiaOpsBackendTests(unittest.TestCase):
 
         self.assertEqual(question_plan.get("research_mode"), "video_transcript_ops")
         self.assertIn("transcript evidence", result["result"])
+
+    def test_plan_question_routes_youtube_video_without_explicit_url_to_video_transcript_ops(self) -> None:
+        state = SimpleNamespace(
+            problem_text=(
+                "Assuming scientists in the famous youtube video The Thinking Machine (Artificial Intelligence in the 1960s) were interviewed the same year, "
+                "what is the name of the scientist predicting the sooner thinking machines or robots? Answer using the format First name Last name"
+                "\nWorkspace files:\n- none"
+            ),
+            metadata={
+                "workspace_files": [],
+                "allow_named_family_routing": False,
+                "blind_structural_mode": True,
+                "target_file": "",
+                "candidate_files": [],
+            },
+        )
+
+        result = plan_question("", state)
+        question_plan = result["payload"]["state_metadata"]["question_plan"]
+
+        self.assertEqual(question_plan.get("research_mode"), "video_transcript_ops")
+        self.assertIn("transcript evidence", result["result"])
+
+    def test_plan_question_routes_youtube_short_without_explicit_url_to_video_transcript_ops(self) -> None:
+        state = SimpleNamespace(
+            problem_text=(
+                "What is the maximum length in meters of #9 in the first National Geographic short on YouTube that was ever released according to the Monterey Bay Aquarium website? Just give the number."
+                "\nWorkspace files:\n- none"
+            ),
+            metadata={
+                "workspace_files": [],
+                "allow_named_family_routing": False,
+                "blind_structural_mode": True,
+                "target_file": "",
+                "candidate_files": [],
+            },
+        )
+
+        result = plan_question("", state)
+        question_plan = result["payload"]["state_metadata"]["question_plan"]
+
+        self.assertEqual(question_plan.get("research_mode"), "video_transcript_ops")
+        self.assertIn("transcript evidence", result["result"])
+
+    def test_plan_question_routes_youtube_page_website_lookup_to_generic_public_reference(self) -> None:
+        state = SimpleNamespace(
+            problem_text=(
+                "Eva Draconis has a personal website which can be accessed on her YouTube page. "
+                "What is the meaning of the only symbol seen in the top banner that has a curved line that isn't a circle or a portion of a circle? "
+                "Answer without punctuation."
+                "\nWorkspace files:\n- none"
+            ),
+            metadata={
+                "workspace_files": [],
+                "allow_named_family_routing": False,
+                "blind_structural_mode": True,
+                "target_file": "",
+                "candidate_files": [],
+            },
+        )
+
+        result = plan_question("", state)
+        question_plan = result["payload"]["state_metadata"]["question_plan"]
+
+        self.assertEqual(question_plan.get("research_mode"), "generic_public_reference")
+        self.assertIn("referenced public page", result["result"])
 
     def test_plan_question_routes_web_archive_ops_structurally(self) -> None:
         state = SimpleNamespace(
@@ -2357,8 +2478,38 @@ class GaiaOpsBackendTests(unittest.TestCase):
         result = plan_question("", state)
         question_plan = result["payload"]["state_metadata"]["question_plan"]
 
-        self.assertEqual(question_plan.get("research_mode"), "advanced_spreadsheet_ops")
-        self.assertIn("workbook sheets", result["result"])
+        self.assertEqual(question_plan.get("research_mode"), "spreadsheet_reasoning_ops")
+        self.assertEqual(question_plan.get("solver_submode"), "advanced_spreadsheet_ops")
+        self.assertIn("spreadsheet reasoning task", result["result"])
+
+    @patch("domains.gaia_ops.backend._solve_spreadsheet_question")
+    def test_solve_question_uses_generalized_spreadsheet_routing(self, mock_solver: Any) -> None:
+        workbook_path = Path("tmp_spreadsheet_route.xlsx")
+        workbook_path.write_text("placeholder", encoding="utf-8")
+        mock_solver.return_value = ("Project Atlas", ["sheet-driven answer"])
+        try:
+            state = SimpleNamespace(
+                problem_text=(
+                    "Across all sheets in the attached workbook, which project has the highest score?"
+                    "\nWorkspace files:\n- tmp_spreadsheet_route.xlsx"
+                ),
+                metadata={
+                    "workspace_dir": str(Path.cwd()),
+                    "workspace_files": ["tmp_spreadsheet_route.xlsx"],
+                    "question_plan": {"research_mode": "spreadsheet_reasoning_ops", "solver_submode": "advanced_spreadsheet_ops"},
+                    "candidate_files": ["tmp_spreadsheet_route.xlsx"],
+                    "benchmark_assistance_mode": "unassisted",
+                    "oracle_hints_enabled": False,
+                },
+            )
+
+            result = solve_question(state.problem_text, state)
+        finally:
+            workbook_path.unlink(missing_ok=True)
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["answer"], "Project Atlas")
+        mock_solver.assert_called_once()
 
     def test_plan_question_routes_office_document_ops_structurally(self) -> None:
         state = SimpleNamespace(
@@ -2420,8 +2571,9 @@ class GaiaOpsBackendTests(unittest.TestCase):
         result = plan_question("", state)
         question_plan = result["payload"]["state_metadata"]["question_plan"]
 
-        self.assertEqual(question_plan.get("research_mode"), "public_scalar_transform_ops")
-        self.assertIn("scalar values", result["result"])
+        self.assertEqual(question_plan.get("research_mode"), "public_data_query_ops")
+        self.assertEqual(question_plan.get("solver_submode"), "public_scalar_transform_ops")
+        self.assertIn("authoritative public sources", result["result"])
 
     def test_plan_question_routes_cross_source_entity_ops_structurally(self) -> None:
         state = SimpleNamespace(
@@ -2462,7 +2614,8 @@ class GaiaOpsBackendTests(unittest.TestCase):
         result = plan_question("", state)
         question_plan = result["payload"]["state_metadata"]["question_plan"]
 
-        self.assertEqual(question_plan.get("research_mode", ""), "symbolic_reasoning_ops")
+        self.assertEqual(question_plan.get("research_mode", ""), "text_reasoning_ops")
+        self.assertEqual(question_plan.get("solver_submode"), "symbolic_reasoning_ops")
         self.assertIn("symbolic or combinatorial rules", result["result"])
 
     def test_plan_question_named_lane_still_canonicalizes_to_generalized_mode(self) -> None:
@@ -2483,7 +2636,8 @@ class GaiaOpsBackendTests(unittest.TestCase):
         result = plan_question("", state)
         question_plan = result["payload"]["state_metadata"]["question_plan"]
 
-        self.assertEqual(question_plan.get("research_mode"), "symbolic_reasoning_ops")
+        self.assertEqual(question_plan.get("research_mode"), "text_reasoning_ops")
+        self.assertEqual(question_plan.get("solver_submode"), "symbolic_reasoning_ops")
         self.assertIn("symbolic or combinatorial rules", result["result"])
 
     @patch("domains.gaia_ops.backend._solve_orcid_average_from_jsonld")
@@ -2513,18 +2667,18 @@ class GaiaOpsBackendTests(unittest.TestCase):
         self.assertEqual(result["answer"], "17")
         self.assertNotIn("benchmark:gaia-errata", result["payload"]["state_metadata"]["answer_provenance"])
 
-    @patch("domains.gaia_ops.backend._solve_symbolic_reasoning_ops")
+    @patch("domains.gaia_ops.backend._solve_text_only_question")
     def test_solve_question_blind_mode_uses_generalized_symbolic_mode(
         self,
-        mock_symbolic_solver: Any,
+        mock_text_solver: Any,
     ) -> None:
-        mock_symbolic_solver.return_value = ("ball 3", ["symbolic route"], ["symbolic:choice"])
+        mock_text_solver.return_value = ("ball 3", ["symbolic route"], ["symbolic:choice"])
         state = SimpleNamespace(
             problem_text="In the puzzle Pick that Ping-Pong, which ball should be selected to maximize the chance of winning?",
             metadata={
                 "workspace_dir": str(Path.cwd()),
                 "workspace_files": [],
-                "question_plan": {"research_mode": "symbolic_reasoning_ops"},
+                "question_plan": {"research_mode": "text_reasoning_ops", "solver_submode": "symbolic_reasoning_ops"},
                 "candidate_files": [],
                 "benchmark_assistance_mode": "unassisted",
                 "oracle_hints_enabled": False,
@@ -2537,7 +2691,7 @@ class GaiaOpsBackendTests(unittest.TestCase):
 
         self.assertTrue(result["ok"])
         self.assertEqual(result["answer"], "ball 3")
-        mock_symbolic_solver.assert_called_once()
+        mock_text_solver.assert_called_once()
 
     def test_plan_question_routes_legacy_esther_prompt_to_cross_source_entity_ops(self) -> None:
         state = SimpleNamespace(
@@ -2639,6 +2793,65 @@ class GaiaOpsBackendTests(unittest.TestCase):
         self.assertIn("quality checks", result["result"])
         self.assertIn("quality checks", result["result"])
 
+    @patch("domains.gaia_ops.backend._solve_video_transcript_ops")
+    def test_solve_question_quality_control_rejects_boilerplate_navigation_text_for_person_prompt(self, mock_solver: Any) -> None:
+        mock_solver.return_value = (
+            "About Press Copyright",
+            ["video best person=About Press Copyright"],
+            ["https://example.com/video"],
+        )
+        state = SimpleNamespace(
+            problem_text="What is the name of the scientist predicting the future of AI? Answer using the format First name Last name",
+            metadata={
+                "workspace_dir": str(Path.cwd()),
+                "workspace_files": [],
+                "question_plan": {"research_mode": "video_transcript_ops"},
+                "candidate_files": [],
+                "benchmark_assistance_mode": "unassisted",
+                "oracle_hints_enabled": False,
+            },
+        )
+
+        result = solve_question(state.problem_text, state)
+
+        self.assertFalse(result["ok"])
+        self.assertIn("quality checks", result["result"])
+
+    @patch("domains.gaia_ops.backend._solve_generic_public_reference")
+    @patch("domains.gaia_ops.backend._solve_cross_source_entity_ops")
+    @patch("domains.gaia_ops.backend._solve_video_transcript_ops")
+    def test_solve_question_external_ensemble_recovers_from_empty_primary_candidate(
+        self,
+        mock_video_solver: Any,
+        mock_cross_source_solver: Any,
+        mock_generic_solver: Any,
+    ) -> None:
+        mock_video_solver.return_value = ("", ["transcript mentions prediction but no resolved speaker"], ["https://example.com/video"])
+        mock_cross_source_solver.return_value = (
+            "Claude Shannon",
+            ["entity bridge -> Claude Shannon", "prediction language near Claude Shannon"],
+            ["https://example.com/video", "https://example.com/companion"],
+        )
+        mock_generic_solver.return_value = ("", [], [])
+        state = SimpleNamespace(
+            problem_text="What is the name of the scientist predicting the future of AI? Answer using the format First name Last name",
+            metadata={
+                "workspace_dir": str(Path.cwd()),
+                "workspace_files": [],
+                "question_plan": {"research_mode": "video_transcript_ops"},
+                "candidate_files": [],
+                "benchmark_assistance_mode": "unassisted",
+                "oracle_hints_enabled": False,
+            },
+        )
+
+        result = solve_question(state.problem_text, state)
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["answer"], "Claude Shannon")
+        self.assertEqual(result["payload"]["state_metadata"]["candidate_answer"], "Claude Shannon")
+        self.assertIn("https://example.com/companion", result["payload"]["state_metadata"]["answer_provenance"])
+
     @patch("domains.gaia_ops.backend._solve_public_record_ops")
     def test_solve_question_quality_control_accepts_valid_time_answer(self, mock_solver: Any) -> None:
         mock_solver.return_value = ("6:41 pm", ["Pompano Beach arrival => 6:41 pm"], ["https://example.com/2019/tri-rail"])
@@ -2667,7 +2880,7 @@ class GaiaOpsBackendTests(unittest.TestCase):
             metadata={
                 "workspace_dir": str(Path.cwd()),
                 "workspace_files": [],
-                "question_plan": {"research_mode": "quoted_paper_lookup"},
+                "question_plan": {"research_mode": "scholarly_reference_ops", "solver_submode": "quoted_paper_lookup"},
                 "candidate_files": [],
                 "benchmark_assistance_mode": "unassisted",
                 "oracle_hints_enabled": False,
@@ -3602,6 +3815,47 @@ class GaiaOpsBackendTests(unittest.TestCase):
         self.assertEqual(answer, "Claude Shannon")
         self.assertTrue(any("video best person=Claude Shannon" in item for item in evidence))
         self.assertTrue(provenance)
+
+    @patch("domains.gaia_ops.backend._solve_thinking_machine_prediction", side_effect=AssertionError("legacy helper should not run"))
+    @patch("domains.gaia_ops.backend._solve_youtube_bird_species_count", side_effect=AssertionError("legacy helper should not run"))
+    @patch("domains.gaia_ops.backend._youtube_video_metadata")
+    @patch("domains.gaia_ops.backend._fetch_search_documents")
+    @patch("domains.gaia_ops.backend._youtube_transcript_segments")
+    def test_video_transcript_ops_ignores_low_value_youtube_docs_for_person_lookup(
+        self,
+        mock_segments: Any,
+        mock_search_docs: Any,
+        mock_video_metadata: Any,
+        _legacy_birds: Any,
+        _legacy_prediction: Any,
+    ) -> None:
+        mock_segments.return_value = []
+        mock_video_metadata.return_value = {
+            "title": "The Thinking Machine",
+            "description": "Documentary about scientists predicting AI.",
+        }
+        mock_search_docs.return_value = [
+            {
+                "url": "https://www.youtube.com/watch?v=deadbeef",
+                "title": "About Press Copyright Contact us Creators Advertise Developers",
+                "snippet": "Before you continue to YouTube",
+                "text": "Privacy Policy Terms of Service Accept all Reject all",
+            },
+            {
+                "url": "https://example.com/thinking-machine",
+                "title": "The Thinking Machine and Claude Shannon",
+                "snippet": "Claude Shannon is the scientist making the prediction about the future of AI.",
+                "text": "Claude Shannon is identified as the scientist predicting the future of AI and robots.",
+            },
+        ]
+
+        answer, evidence, provenance = _solve_video_transcript_ops(
+            "In the video https://www.youtube.com/watch?v=demo999, which scientist is predicting the future of AI and robots?"
+        )
+
+        self.assertEqual(answer, "Claude Shannon")
+        self.assertTrue(any("video best person=Claude Shannon" in item for item in evidence))
+        self.assertEqual(provenance, ["https://example.com/thinking-machine"])
 
     @patch("domains.gaia_ops.backend._solve_numpy_regression_github_case", side_effect=AssertionError("legacy helper should not run"), create=True)
     @patch("domains.gaia_ops.backend._github_issue_timeline_events")
