@@ -52,10 +52,19 @@ from domains.gaia_ops.backend import (
     _solve_generic_public_reference,
     _fetch_benjerry_graveyard_entries,
     _first_citation_reference_url,
+    _best_quiz_arithmetic_match,
+    _best_quiz_improper_to_mixed_match,
+    _best_quiz_mixed_to_improper_match,
     _solve_orcid_average_from_jsonld,
     _solve_usda_standards_supersession,
     _solve_video_transcript_ops,
+    _solve_butterfat_nutrition_image,
+    _solve_embedded_sorting_code_image,
     _solver_candidate_bundle,
+    _infer_fraction_pair_from_ocr_sequences,
+    _green_step_area,
+    _round_segments_to_total,
+    _solve_storage_plan_upgrade_math,
     _solve_web_archive_ops,
     _solve_wikipedia_link_distance,
     _solve_wikipedia_revision_count,
@@ -4009,6 +4018,108 @@ class GaiaOpsBackendTests(unittest.TestCase):
         self.assertEqual(answer, "2003")
         self.assertTrue(any("years from poster.jpg" in item for item in evidence))
         self.assertEqual(provenance, ["image:poster.jpg"])
+
+    def test_image_code_solver_reconstructs_archive_url_and_sums_sorted_positions(self) -> None:
+        observation = {
+            "lines": [
+                "archive_prefix",
+                "'https / Iweb.archive_",
+                "org/web/20230609112831/'",
+                "url_indices",
+                "[33,4,8,9,10,14,17,18,19,20,21,22,24,23,0,26,27,28,5,30,31,32,2]",
+            ],
+            "variant_lines": [],
+        }
+
+        answer, evidence = _solve_embedded_sorting_code_image(
+            "The attached image contains a Python script. Run the Python code against an array of strings, listed below. "
+            "The output of the Python script will be a URL containing C++ source code. Compile and run this C++ code "
+            "against the array [35, 12, 8, 99, 21, 5] and return the sum of the third and fifth integers in the sorted list.\n\n"
+            "arr = ['_alg', 'ghi', 'C++', 'jkl', 'tps', '/Q', 'pqr', 'stu', ':', '//', 'rose', 'vwx', 'yz1', '234', 'tta', "
+            "'567', '890', 'cod', 'e.', 'or', 'g/', 'wiki', '/', 'ing', 'sort', 'abc' , 'or', 'it', 'hms', 'mno' , 'uic', 'ksort', '#', 'ht' ]",
+            observation,
+        )
+
+        self.assertEqual(answer, "47")
+        self.assertTrue(any("web.archive.org" in item for item in evidence))
+        self.assertTrue(any("sorted numbers=[5, 8, 12, 21, 35, 99]" in item for item in evidence))
+
+    def test_storage_plan_upgrade_math_chooses_minimum_fitting_tier(self) -> None:
+        boxes = [
+            (((90, 54, 230, 84)), "Standard"),
+            (((412, 54, 482, 84)), "Plus"),
+            (((672, 51, 809, 87)), "Premium"),
+            (((46, 102, 192, 132)), "$9.99/month"),
+            (((334, 100, 492, 128)), "$19.99/month"),
+            (((622, 102, 782, 130)), "$39.99/month"),
+            (((74, 150, 200, 178)), "2 TB storage"),
+            (((362, 146, 501, 177)), "10 TB storage"),
+            (((648, 144, 787, 175)), "50 TB storage"),
+        ]
+
+        answer, evidence = _solve_storage_plan_upgrade_math(
+            "I have the Standard plan in the image below, and I just uploaded 60 equally sized files and got a message that I'm 100GB over the limit. "
+            "I have 980 more files of the same size to upload. What is the average additional cost per file in dollar that goes over my current plan limit "
+            "rounded to the nearest cent if I have to upgrade to the minimum possible plan to store them all? Answer with the following format: x.xx",
+            boxes,
+        )
+
+        self.assertEqual(answer, "0.03")
+        self.assertTrue(any("target plan=Premium" in item for item in evidence))
+
+    def test_infer_fraction_pair_prefers_reducible_candidate(self) -> None:
+        pair = _infer_fraction_pair_from_ocr_sequences(
+            2,
+            [
+                [2, 1, 60],
+                [2, 4, 60],
+                [2, 60],
+                [2, 68],
+            ],
+        )
+
+        self.assertEqual(pair, (4, 60))
+
+    def test_best_quiz_arithmetic_match_finds_nearest_exact_fraction(self) -> None:
+        match = _best_quiz_arithmetic_match(("20", "35", "18", "47"), "522/1645")
+
+        self.assertIsNotNone(match)
+        self.assertEqual(match["operation"], "mul")
+        self.assertEqual(match["numbers"], ("29", "35", "18", "47"))
+        self.assertEqual(match["score"], 1)
+
+    def test_quiz_conversion_match_handles_improper_and_mixed_rows(self) -> None:
+        improper_to_mixed = _best_quiz_improper_to_mixed_match("85", "32", "2 21/32")
+        mixed_to_improper = _best_quiz_mixed_to_improper_match("32", "8", "9", "293/9")
+
+        self.assertIsNotNone(improper_to_mixed)
+        self.assertEqual(improper_to_mixed["score"], 0)
+        self.assertIsNotNone(mixed_to_improper)
+        self.assertEqual(mixed_to_improper["mixed"], "32 5/9")
+        self.assertEqual(mixed_to_improper["score"], 1)
+
+    def test_butterfat_nutrition_solver_uses_noisy_label_tokens(self) -> None:
+        answer, evidence = _solve_butterfat_nutrition_image(
+            "If this whole pint is made up of ice cream, how many percent above or below the US federal standards for butterfat content is it when using the standards as reported by Wikipedia in 2020?",
+            {
+                "variant_lines": [
+                    "Serving size 2/3 cup (96g)",
+                    "Total Fat 814%",
+                    "Calories 2224",
+                ]
+            },
+        )
+
+        self.assertEqual(answer, "+4.6")
+        self.assertTrue(any("fat_grams=14" in item for item in evidence))
+
+    def test_green_step_area_helpers_snap_segments_to_expected_area(self) -> None:
+        x_units = _round_segments_to_total([55.5, 62.5, 58.0, 21.0, 59.0], 10.0)
+        y_units = [max(0.5, round((value / (40.5 / 1.5)) * 2.0) / 2.0) for value in [59.5, 68.5, 40.5, 59.0, 82.5]]
+
+        self.assertEqual(x_units, [2.0, 2.5, 2.0, 1.0, 2.5])
+        self.assertEqual(y_units, [2.0, 2.5, 1.5, 2.0, 3.0])
+        self.assertEqual(int(round(_green_step_area(x_units, y_units))), 39)
 
     @patch("domains.gaia_ops.backend._easyocr_text_lines")
     def test_easyocr_text_lines_with_variants_tries_multiple_preprocessed_images(self, mock_lines: Any) -> None:

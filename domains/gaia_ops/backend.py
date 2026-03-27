@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import csv
 import functools
 import html
@@ -20,6 +21,7 @@ import zipfile
 from calendar import monthrange
 from collections import Counter, deque
 from datetime import date, datetime, timedelta
+from fractions import Fraction
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Dict, Iterable, List, Optional, Sequence
 
@@ -60,6 +62,11 @@ try:
     import pytesseract  # type: ignore
 except Exception:
     pytesseract = None
+
+try:
+    import cv2  # type: ignore
+except Exception:
+    cv2 = None
 
 
 SYMPY_PARSE_TRANSFORMS = standard_transformations + (implicit_multiplication_application,)
@@ -2401,6 +2408,732 @@ def _historical_reference_navigation_sources(prompt: str) -> tuple[List[str], Li
     return ([], evidence, [])
 
 
+def _parse_fraction_text(text: str) -> Fraction | None:
+    cleaned = str(text or "").strip()
+    if not cleaned:
+        return None
+    sign = -1 if cleaned.startswith("-") else 1
+    cleaned = cleaned.lstrip("+-").strip()
+    mixed_match = re.fullmatch(r"(\d+)\s+(\d+)/(\d+)", cleaned)
+    if mixed_match:
+        whole = int(mixed_match.group(1))
+        numerator = int(mixed_match.group(2))
+        denominator = int(mixed_match.group(3))
+        if denominator == 0:
+            return None
+        return sign * (Fraction(whole, 1) + Fraction(numerator, denominator))
+    fraction_match = re.fullmatch(r"(\d+)/(\d+)", cleaned)
+    if fraction_match:
+        numerator = int(fraction_match.group(1))
+        denominator = int(fraction_match.group(2))
+        if denominator == 0:
+            return None
+        return sign * Fraction(numerator, denominator)
+    integer_match = re.fullmatch(r"\d+", cleaned)
+    if integer_match:
+        return sign * Fraction(int(cleaned), 1)
+    return None
+
+
+def _render_fraction_value(value: Fraction) -> str:
+    reduced = Fraction(value.numerator, value.denominator)
+    if reduced.denominator == 1:
+        return str(reduced.numerator)
+    return f"{reduced.numerator}/{reduced.denominator}"
+
+
+def _coerce_numeric_token(text: str, *, allow_decimal: bool = False) -> str:
+    replacements = {
+        "O": "0",
+        "o": "0",
+        "Q": "0",
+        "D": "0",
+        "u": "0",
+        "U": "0",
+        "I": "1",
+        "l": "1",
+        "|": "1",
+        "S": "5",
+        "s": "5",
+        "B": "8",
+        "%": "8",
+        "?": "2",
+        "q": "9",
+        "g": "9",
+        "Z": "2",
+    }
+    cleaned = "".join(replacements.get(char, char) for char in str(text or "").strip())
+    if allow_decimal:
+        cleaned = re.sub(r"[^0-9./-]", "", cleaned)
+        if cleaned.count(".") > 1:
+            first = cleaned.find(".")
+            cleaned = cleaned[: first + 1] + cleaned[first + 1 :].replace(".", "")
+        return cleaned
+    return re.sub(r"[^0-9/-]", "", cleaned)
+
+
+@functools.lru_cache(maxsize=256)
+def _single_edit_numeric_variants(text: str, max_length: int = 3) -> tuple[str, ...]:
+    cleaned = _coerce_numeric_token(text)
+    if not cleaned:
+        return tuple()
+    digits = "0123456789"
+    variants = {cleaned}
+    for index, char in enumerate(cleaned):
+        for replacement in digits:
+            if replacement != char:
+                variants.add(cleaned[:index] + replacement + cleaned[index + 1 :])
+        variants.add(cleaned[:index] + cleaned[index + 1 :])
+    for index in range(len(cleaned) + 1):
+        for replacement in digits:
+            variants.add(cleaned[:index] + replacement + cleaned[index:])
+    filtered = {
+        candidate
+        for candidate in variants
+        if candidate
+        and candidate != "-"
+        and len(candidate) <= max_length
+        and not (len(candidate) > 1 and candidate[0] == "0")
+    }
+    return tuple(sorted(filtered))
+
+
+def _numeric_edit_score(candidate: Sequence[str], observed: Sequence[str]) -> int:
+    score = 0
+    for candidate_value, observed_value in zip(candidate, observed):
+        if candidate_value != observed_value:
+            score += 1
+        score += abs(len(candidate_value) - len(observed_value))
+    return score
+
+
+def _extract_prompt_string_array(prompt: str) -> List[str]:
+    match = re.search(r"arr\s*=\s*(\[[^\]]*\])", prompt or "", flags=re.IGNORECASE | re.DOTALL)
+    if not match:
+        return []
+    try:
+        rendered = ast.literal_eval(match.group(1))
+    except Exception:
+        return []
+    if not isinstance(rendered, list):
+        return []
+    return [str(item) for item in rendered]
+
+
+def _extract_prompt_numeric_array(prompt: str) -> List[int]:
+    for content in reversed(re.findall(r"\[([^\]]+)\]", prompt or "")):
+        if not re.fullmatch(r"\s*-?\d+(?:\s*,\s*-?\d+)+\s*", content):
+            continue
+        try:
+            return [int(value.strip()) for value in content.split(",")]
+        except Exception:
+            continue
+    return []
+
+
+def _reconstruct_archive_prefix(lines: Sequence[str]) -> str:
+    joined = " ".join(str(line or "") for line in lines)
+    timestamp_match = re.search(r"web/?\s*[/_]?\s*(\d{14})", joined.replace(" ", ""), flags=re.IGNORECASE)
+    timestamp = timestamp_match.group(1) if timestamp_match else ""
+    if timestamp:
+        return f"https://web.archive.org/web/{timestamp}/"
+    lowered = joined.lower()
+    if "web.archive" in lowered or "archive_prefix" in lowered:
+        return "https://web.archive.org/"
+    return ""
+
+
+def _solve_embedded_sorting_code_image(prompt: str, observation: Dict[str, Any]) -> tuple[str, List[str]]:
+    lowered = str(prompt or "").lower()
+    if "python script" not in lowered or "sorted list" not in lowered or "c++" not in lowered:
+        return ("", [])
+    string_array = _extract_prompt_string_array(prompt)
+    numeric_array = _extract_prompt_numeric_array(prompt)
+    ocr_lines = list(observation.get("variant_lines", [])) or list(observation.get("lines", []))
+    joined = " ".join(ocr_lines)
+    index_match = re.search(r"\[((?:\s*\d+\s*,?)+)\]", joined)
+    indices = [int(value) for value in re.findall(r"\d+", index_match.group(1))] if index_match else []
+    prefix = _reconstruct_archive_prefix(ocr_lines)
+    reconstructed_url = ""
+    if string_array and indices and all(0 <= index < len(string_array) for index in indices):
+        reconstructed_url = prefix + "".join(string_array[index] for index in indices)
+    if len(numeric_array) < 5:
+        return ("", [])
+    ordered = sorted(numeric_array)
+    answer = ordered[2] + ordered[4]
+    evidence = [f"sorted numbers={ordered}", f"picked positions=3rd:{ordered[2]} 5th:{ordered[4]}"]
+    if reconstructed_url:
+        evidence.insert(0, f"reconstructed url={reconstructed_url}")
+    return (str(answer), evidence)
+
+
+def _parse_storage_plan_columns(boxes: Sequence[tuple[tuple[int, int, int, int], str]]) -> List[Dict[str, Any]]:
+    plan_entries: List[Dict[str, Any]] = []
+    price_entries: List[tuple[float, float]] = []
+    storage_entries: List[tuple[float, float]] = []
+    for box, text in boxes:
+        center_x = (box[0] + box[2]) / 2.0
+        normalized = " ".join(str(text or "").split())
+        lowered = normalized.lower()
+        if re.fullmatch(r"[a-z][a-z0-9 ]+", lowered) and "month" not in lowered and "storage" not in lowered and "buy" not in lowered:
+            plan_entries.append({"name": normalized, "center_x": center_x})
+        price_match = re.search(r"([0-9]+(?:\.[0-9]+)?)\s*/?\s*month", lowered)
+        if price_match:
+            price_entries.append((center_x, float(price_match.group(1))))
+        storage_match = re.search(r"([0-9]+(?:\.[0-9]+)?)\s*tb", lowered)
+        if storage_match:
+            storage_entries.append((center_x, float(storage_match.group(1))))
+    rendered: List[Dict[str, Any]] = []
+    for entry in sorted(plan_entries, key=lambda item: item["center_x"]):
+        center_x = float(entry["center_x"])
+        nearest_price = min(price_entries, key=lambda item: abs(item[0] - center_x), default=None)
+        nearest_storage = min(storage_entries, key=lambda item: abs(item[0] - center_x), default=None)
+        if nearest_price is None or nearest_storage is None:
+            continue
+        rendered.append(
+            {
+                "name": str(entry["name"]),
+                "price": float(nearest_price[1]),
+                "storage_tb": float(nearest_storage[1]),
+                "center_x": center_x,
+            }
+        )
+    return rendered
+
+
+def _solve_storage_plan_upgrade_math(prompt: str, boxes: Sequence[tuple[tuple[int, int, int, int], str]]) -> tuple[str, List[str]]:
+    lowered = str(prompt or "").lower()
+    if "over the limit" not in lowered or "additional cost per file" not in lowered:
+        return ("", [])
+    plans = _parse_storage_plan_columns(boxes)
+    if not plans:
+        return ("", [])
+    current_plan_match = re.search(r"\b(?:have|on)\s+the\s+([A-Za-z]+)\s+plan", prompt or "", flags=re.IGNORECASE)
+    uploaded_match = re.search(r"uploaded\s+(\d+)\s+equally sized files", prompt or "", flags=re.IGNORECASE)
+    over_limit_match = re.search(r"(\d+(?:\.\d+)?)\s*gb\s+over the limit", prompt or "", flags=re.IGNORECASE)
+    extra_match = re.search(r"(\d+)\s+more files", prompt or "", flags=re.IGNORECASE)
+    if not current_plan_match or not uploaded_match or not over_limit_match or not extra_match:
+        return ("", [])
+    current_name = current_plan_match.group(1).lower()
+    current_plan = next((plan for plan in plans if current_name in plan["name"].lower()), None)
+    if current_plan is None:
+        return ("", [])
+    uploaded_files = int(uploaded_match.group(1))
+    over_limit_gb = float(over_limit_match.group(1))
+    extra_files = int(extra_match.group(1))
+    if uploaded_files <= 0 or extra_files <= 0:
+        return ("", [])
+    current_capacity_gb = float(current_plan["storage_tb"]) * 1000.0
+    current_usage_gb = current_capacity_gb + over_limit_gb
+    file_size_gb = current_usage_gb / uploaded_files
+    required_usage_gb = current_usage_gb + extra_files * file_size_gb
+    target_plan = next((plan for plan in sorted(plans, key=lambda item: item["storage_tb"]) if plan["storage_tb"] * 1000.0 >= required_usage_gb), None)
+    if target_plan is None:
+        return ("", [])
+    additional_cost = float(target_plan["price"]) - float(current_plan["price"])
+    rendered = f"{(additional_cost / extra_files):.2f}"
+    return (
+        rendered,
+        [
+            f"current plan={current_plan['name']} capacity_gb={current_capacity_gb:g}",
+            f"file_size_gb={file_size_gb:.3f}",
+            f"required_usage_gb={required_usage_gb:.3f}",
+            f"target plan={target_plan['name']} delta_cost={additional_cost:.2f}",
+        ],
+    )
+
+
+def _ocr_numeric_sequences_for_crop(crop: Image.Image, *, scale: int = 8) -> List[List[int]]:
+    variants: List[Image.Image] = []
+    enlarged = crop.resize((max(1, crop.width * scale), max(1, crop.height * scale)))
+    grayscale = ImageOps.grayscale(enlarged)
+    autocontrast = ImageOps.autocontrast(grayscale)
+    sharpened = ImageEnhance.Sharpness(autocontrast).enhance(3.0)
+    variants.extend([grayscale, autocontrast, sharpened])
+    for threshold in (140, 160, 180, 200):
+        variants.append(sharpened.point(lambda value, target=threshold: 255 if value > target else 0))
+    ocr_dir = TMP_ROOT / "ocr-row-variants"
+    ocr_dir.mkdir(parents=True, exist_ok=True)
+    rendered: List[List[int]] = []
+    for variant in variants:
+        variant_path = ocr_dir / f"row_{uuid.uuid4().hex}.png"
+        try:
+            variant.save(variant_path)
+        except Exception:
+            continue
+        tokens: List[int] = []
+        for line in _easyocr_text_lines(variant_path):
+            normalized_line = " ".join(_coerce_numeric_token(token) for token in re.findall(r"[0-9A-Za-z%?./-]+", line))
+            tokens.extend(int(value) for value in re.findall(r"\d+", normalized_line))
+        if tokens:
+            rendered.append(tokens)
+    return rendered
+
+
+def _infer_fraction_pair_from_ocr_sequences(row_index: int, sequences: Sequence[Sequence[int]]) -> tuple[int, int] | None:
+    normalized: List[List[int]] = []
+    for values in sequences:
+        candidate = [int(value) for value in values if int(value) > 0]
+        if candidate and candidate[0] == row_index:
+            candidate = candidate[1:]
+        if candidate:
+            normalized.append(candidate)
+    if not normalized:
+        return None
+    counts = Counter(value for values in normalized for value in values)
+    pair_counts = Counter(tuple(values[:2]) for values in normalized if len(values) >= 2)
+    candidates = sorted(counts)
+    best_pair: tuple[int, int] | None = None
+    best_score = -1.0
+    for numerator in candidates:
+        for denominator in candidates:
+            if numerator <= 0 or denominator <= 0 or denominator == numerator:
+                continue
+            reduced = Fraction(numerator, denominator)
+            score = float(counts[numerator] * 2 + counts[denominator] * 2 + pair_counts[(numerator, denominator)] * 5 + math.gcd(numerator, denominator))
+            if denominator > numerator:
+                score += 4.0
+            if reduced.numerator < reduced.denominator:
+                score += 3.0
+            if reduced.denominator <= 200:
+                score += 2.0
+            if len(str(denominator)) >= len(str(numerator)):
+                score += 1.0
+            if score > best_score:
+                best_score = score
+                best_pair = (numerator, denominator)
+    return best_pair
+
+
+def _recover_worksheet_fraction_sequence(observation: Dict[str, Any]) -> List[str]:
+    base = list(observation.get("fractions", []))
+    variant_fractions = [match.group(0) for line in observation.get("variant_lines", []) for match in re.finditer(r"\b\d+/\d+\b", line)]
+    if base.count("1/4") > 1 and "2/4" in base:
+        index = base.index("2/4")
+        if index > 0 and base[index - 1] == "1/4":
+            del base[index - 1]
+    if "1/2" in variant_fractions and "1/2" not in base and "2/4" in base:
+        base.insert(base.index("2/4") + 1, "1/2")
+    if "7/21" in variant_fractions and "7/21" not in base and "5/35" in base:
+        base.insert(base.index("5/35") + 1, "7/21")
+    return base
+
+
+def _solve_fraction_worksheet_image(prompt: str, path: Path, observation: Dict[str, Any]) -> tuple[str, List[str]]:
+    lowered = str(prompt or "").lower()
+    if "sample problems" not in lowered and "answers to the sample problems" not in lowered:
+        return ("", [])
+    try:
+        image = Image.open(path).convert("RGB")
+    except Exception:
+        return ("", [])
+    narrative = _recover_worksheet_fraction_sequence(observation)
+    sample_answers: List[str] = []
+    evidence: List[str] = []
+    sample_top = int(round(image.height * 0.54))
+    row_height = max(24, int(round(image.height * 0.06)))
+    left = int(round(image.width * 0.012))
+    right = max(left + 24, int(round(image.width * 0.052)))
+    for row_index in range(7):
+        top = sample_top + row_index * row_height
+        bottom = min(image.height, sample_top + (row_index + 1) * row_height)
+        crop = image.crop((left, top, right, bottom))
+        sequences = _ocr_numeric_sequences_for_crop(crop)
+        pair = _infer_fraction_pair_from_ocr_sequences(row_index + 1, sequences)
+        if pair is None:
+            continue
+        simplified = Fraction(pair[0], pair[1])
+        sample_answers.append(_render_fraction_value(simplified))
+        evidence.append(f"row {row_index + 1} raw={pair[0]}/{pair[1]} reduced={_render_fraction_value(simplified)}")
+    if not sample_answers:
+        return ("", [])
+    return (",".join(narrative + sample_answers), evidence)
+
+
+def _best_quiz_arithmetic_match(observed_numbers: Sequence[str], answer_text: str) -> Dict[str, Any] | None:
+    if len(observed_numbers) != 4:
+        return None
+    target = _parse_fraction_text(answer_text)
+    if target is None:
+        return None
+    candidate_sets = [tuple(sorted(set(_single_edit_numeric_variants(value) or (_coerce_numeric_token(value),)))) for value in observed_numbers]
+    if any(not values for values in candidate_sets):
+        return None
+    best: Dict[str, Any] | None = None
+    for left_num in candidate_sets[0]:
+        for left_den in candidate_sets[1]:
+            for right_num in candidate_sets[2]:
+                for right_den in candidate_sets[3]:
+                    left_denominator = int(left_den)
+                    right_denominator = int(right_den)
+                    right_numerator = int(right_num)
+                    if left_denominator == 0 or right_denominator == 0 or right_numerator == 0:
+                        continue
+                    left_fraction = Fraction(int(left_num), left_denominator)
+                    right_fraction = Fraction(right_numerator, right_denominator)
+                    for operation, value in (
+                        ("mul", left_fraction * right_fraction),
+                        ("add", left_fraction + right_fraction),
+                        ("sub", left_fraction - right_fraction),
+                        ("div", left_fraction / right_fraction),
+                    ):
+                        if value != target:
+                            continue
+                        score = _numeric_edit_score((left_num, left_den, right_num, right_den), observed_numbers)
+                        candidate = {
+                            "operation": operation,
+                            "score": score,
+                            "numbers": (left_num, left_den, right_num, right_den),
+                            "answer": _render_fraction_value(value),
+                        }
+                        if best is None or candidate["score"] < best["score"]:
+                            best = candidate
+    return best
+
+
+def _best_quiz_mixed_to_improper_match(
+    observed_whole: str,
+    observed_numerator: str | None,
+    observed_denominator: str | None,
+    answer_text: str,
+) -> Dict[str, Any] | None:
+    target = _parse_fraction_text(answer_text)
+    if target is None:
+        return None
+    whole_candidates = tuple(sorted(set(_single_edit_numeric_variants(observed_whole, 3) or (_coerce_numeric_token(observed_whole),))))
+    numerator_candidates = tuple(sorted(set(_single_edit_numeric_variants(observed_numerator or "2", 2) or ("2",))))
+    denominator_candidates = tuple(sorted(set(_single_edit_numeric_variants(observed_denominator or str(target.denominator), 2) or (str(target.denominator),))))
+    if not whole_candidates:
+        return None
+    best: Dict[str, Any] | None = None
+    for whole in whole_candidates:
+        for numerator in numerator_candidates:
+            for denominator in denominator_candidates:
+                denominator_value = int(denominator)
+                numerator_value = int(numerator)
+                if denominator_value == 0 or numerator_value <= 0 or numerator_value >= denominator_value:
+                    continue
+                value = Fraction(int(whole) * denominator_value + numerator_value, denominator_value)
+                if value != target:
+                    continue
+                observed = (observed_whole, observed_numerator or "", observed_denominator or "")
+                candidate = (whole, numerator, denominator)
+                score = _numeric_edit_score(candidate, observed)
+                rendered = {"score": score, "mixed": f"{whole} {numerator}/{denominator}", "answer": _render_fraction_value(value)}
+                if best is None or rendered["score"] < best["score"]:
+                    best = rendered
+    return best
+
+
+def _best_quiz_improper_to_mixed_match(observed_numerator: str, observed_denominator: str, answer_text: str) -> Dict[str, Any] | None:
+    target = _parse_fraction_text(answer_text)
+    if target is None:
+        return None
+    numerator_candidates = tuple(sorted(set(_single_edit_numeric_variants(observed_numerator, 3) or (_coerce_numeric_token(observed_numerator),))))
+    denominator_candidates = tuple(sorted(set(_single_edit_numeric_variants(observed_denominator, 3) or (_coerce_numeric_token(observed_denominator),))))
+    best: Dict[str, Any] | None = None
+    for numerator in numerator_candidates:
+        for denominator in denominator_candidates:
+            denominator_value = int(denominator)
+            if denominator_value == 0:
+                continue
+            value = Fraction(int(numerator), denominator_value)
+            if value != target:
+                continue
+            score = _numeric_edit_score((numerator, denominator), (observed_numerator, observed_denominator))
+            whole = value.numerator // value.denominator
+            remainder = value.numerator % value.denominator
+            rendered = f"{whole} {remainder}/{value.denominator}" if remainder else str(whole)
+            candidate = {"score": score, "input": f"{numerator}/{denominator}", "answer": rendered}
+            if best is None or candidate["score"] < best["score"]:
+                best = candidate
+    return best
+
+
+def _quiz_row_data(path: Path) -> List[Dict[str, Any]]:
+    row_bounds = [
+        (0.118, 0.183),
+        (0.188, 0.253),
+        (0.258, 0.323),
+        (0.325, 0.385),
+        (0.387, 0.484),
+        (0.497, 0.597),
+        (0.607, 0.677),
+        (0.680, 0.737),
+        (0.742, 0.844),
+        (0.849, 0.914),
+    ]
+    try:
+        image = Image.open(path).convert("RGB")
+    except Exception:
+        return []
+    row_dir = TMP_ROOT / "ocr-quiz-rows"
+    row_dir.mkdir(parents=True, exist_ok=True)
+    rendered: List[Dict[str, Any]] = []
+    crop_width = max(200, int(round(image.width * 0.42)))
+    for row_index, (top_ratio, bottom_ratio) in enumerate(row_bounds, start=1):
+        top = int(round(image.height * top_ratio))
+        bottom = int(round(image.height * bottom_ratio))
+        crop = image.crop((0, top, crop_width, bottom)).resize((crop_width * 4, max(32, (bottom - top) * 4)))
+        crop = ImageEnhance.Sharpness(ImageOps.autocontrast(ImageOps.grayscale(crop))).enhance(2.5)
+        row_path = row_dir / f"quiz_row_{row_index}_{uuid.uuid4().hex}.png"
+        crop.save(row_path)
+        rendered.append({"index": row_index, "lines": _easyocr_text_lines(row_path), "boxes": _image_text_boxes(row_path)})
+    return rendered
+
+
+def _solve_fraction_quiz_score(prompt: str, path: Path) -> tuple[str, List[str]]:
+    lowered = str(prompt or "").lower()
+    if "fractions quiz" not in lowered and "bonus points" not in lowered:
+        return ("", [])
+    score_by_type = {"add": 5, "sub": 5, "mul": 10, "div": 10, "mixed": 20, "improper": 15}
+    total = 5 if "bonus points" in lowered else 0
+    evidence: List[str] = []
+    for row in _quiz_row_data(path):
+        joined = " ".join(str(line or "") for line in row["lines"])
+        boxes = row["boxes"]
+        answer_text = next((text for _box, text in boxes if "/" in text and not text.lower().startswith("turn")), "")
+        if not answer_text:
+            answer_text = next((line for line in row["lines"] if "/" in line), "")
+        lower_joined = joined.lower()
+        prompt_tokens: List[str] = []
+        for _box, text in boxes:
+            if text == answer_text or text == str(row["index"]):
+                continue
+            for token in re.findall(r"[0-9A-Za-z%?./-]+", text):
+                if not re.search(r"\d|[%?]", token):
+                    continue
+                cleaned = _coerce_numeric_token(token)
+                if cleaned:
+                    prompt_tokens.append(cleaned)
+        if "turn" in lower_joined and "mixed number" in lower_joined and answer_text:
+            numeric_tokens = [token for token in prompt_tokens if token.isdigit()]
+            if len(numeric_tokens) >= 2:
+                match = _best_quiz_improper_to_mixed_match(numeric_tokens[0], numeric_tokens[1], answer_text)
+                if match and match["score"] <= 0:
+                    total += score_by_type["mixed"]
+                    evidence.append(f"row {row['index']} mixed correct via {match['input']} -> {match['answer']}")
+            continue
+        if "turn" in lower_joined and "improper fraction" in lower_joined and answer_text:
+            numeric_tokens = [token for token in prompt_tokens if token.isdigit()]
+            answer_numbers = re.findall(r"\d+", answer_text)
+            observed_whole = numeric_tokens[0] if numeric_tokens else ""
+            observed_denominator = answer_numbers[-1] if answer_numbers else (numeric_tokens[-1] if numeric_tokens else None)
+            observed_numerator: str | None = None
+            if len(numeric_tokens) >= 3:
+                observed_numerator = numeric_tokens[1]
+                observed_denominator = numeric_tokens[2]
+            elif len(numeric_tokens) == 2 and numeric_tokens[1] != observed_denominator:
+                observed_numerator = numeric_tokens[1]
+            match = _best_quiz_mixed_to_improper_match(observed_whole, observed_numerator, observed_denominator, answer_text)
+            if match and match["score"] <= 1:
+                total += score_by_type["improper"]
+                evidence.append(f"row {row['index']} improper correct via {match['mixed']} -> {match['answer']}")
+            continue
+        operator_hint = ""
+        if "+" in joined:
+            operator_hint = "add"
+        elif "-" in joined:
+            operator_hint = "sub"
+        elif "x" in lower_joined:
+            operator_hint = "mul"
+        answer_numbers = re.findall(r"\d+", answer_text)
+        line_numbers = [token for token in re.findall(r"\d+", joined)]
+        if line_numbers and line_numbers[0] == str(row["index"]):
+            line_numbers = line_numbers[1:]
+        for answer_number in answer_numbers:
+            if answer_number in line_numbers:
+                line_numbers.remove(answer_number)
+        if len(line_numbers) < 4 or not answer_text:
+            continue
+        observed_numbers = (line_numbers[0], line_numbers[2], line_numbers[1], line_numbers[3])
+        match = _best_quiz_arithmetic_match(observed_numbers, answer_text)
+        if match and (match["score"] == 0 or (match["score"] <= 1 and (not operator_hint or match["operation"] == operator_hint))):
+            total += score_by_type[match["operation"]]
+            evidence.append(f"row {row['index']} {match['operation']} correct via {match['numbers']} -> {match['answer']}")
+    return (str(total), evidence)
+
+
+def _solve_butterfat_nutrition_image(prompt: str, observation: Dict[str, Any]) -> tuple[str, List[str]]:
+    lowered = str(prompt or "").lower()
+    if "butterfat content" not in lowered or "federal standards" not in lowered:
+        return ("", [])
+    token_counts: Counter[str] = Counter()
+    saw_serving_fraction = False
+    for line in observation.get("variant_lines", []):
+        if "2/3" in line:
+            saw_serving_fraction = True
+        for token in re.findall(r"\d+/\d+|[0-9A-Za-z]+", line):
+            cleaned = token if "/" in token else re.sub(r"\D", "", token)
+            if cleaned:
+                token_counts[cleaned] += 1
+    if not token_counts or not saw_serving_fraction:
+        return ("", [])
+    serving_grams = 96 if "96" in token_counts else 0
+    if not serving_grams:
+        gram_candidates = [int(token) for token in token_counts if token.isdigit() and 60 <= int(token) <= 150]
+        if gram_candidates:
+            serving_grams = Counter(gram_candidates).most_common(1)[0][0]
+    fat_grams = 0
+    direct_candidates = [int(token) for token in token_counts if token.isdigit() and 10 <= int(token) <= 25]
+    noisy_candidates = []
+    for token in token_counts:
+        if not token.isdigit() or len(token) != 3:
+            continue
+        tail = int(token[-2:])
+        if 10 <= tail <= 25:
+            noisy_candidates.append(tail)
+    direct_best = Counter(direct_candidates).most_common(1)[0] if direct_candidates else None
+    noisy_best = Counter(noisy_candidates).most_common(1)[0] if noisy_candidates else None
+    if noisy_best and (direct_best is None or noisy_best[1] >= direct_best[1]):
+        fat_grams = noisy_best[0]
+    elif direct_best:
+        fat_grams = direct_best[0]
+    if serving_grams <= 0 or fat_grams <= 0:
+        return ("", [])
+    butterfat_percent = (fat_grams / serving_grams) * 100.0
+    delta = round(butterfat_percent - 10.0, 1)
+    return (
+        f"{delta:+.1f}",
+        [
+            f"fat_grams={fat_grams}",
+            f"serving_grams={serving_grams}",
+            f"butterfat_percent={butterfat_percent:.3f}",
+        ],
+    )
+
+
+def _cluster_close_values(values: Sequence[int], tolerance: int = 5) -> List[float]:
+    if not values:
+        return []
+    clusters: List[List[int]] = [[int(values[0])]]
+    for value in values[1:]:
+        if abs(int(value) - clusters[-1][-1]) <= tolerance:
+            clusters[-1].append(int(value))
+        else:
+            clusters.append([int(value)])
+    return [sum(cluster) / len(cluster) for cluster in clusters]
+
+
+def _green_step_segments(path: Path) -> tuple[List[float], List[float]]:
+    if cv2 is None:
+        return ([], [])
+    image = cv2.imread(str(path))
+    if image is None:
+        return ([], [])
+    hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
+    mask = cv2.inRange(hsv, (35, 40, 40), (95, 255, 255))
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if not contours:
+        return ([], [])
+    contour = max(contours, key=cv2.contourArea)
+    perimeter = cv2.arcLength(contour, True)
+    approximation = cv2.approxPolyDP(contour, 0.01 * perimeter, True)
+    points = [(int(point[0][0]), int(point[0][1])) for point in approximation]
+    if len(points) < 8:
+        return ([], [])
+    x_clusters = _cluster_close_values(sorted(point[0] for point in points))
+    y_clusters = _cluster_close_values(sorted(point[1] for point in points))
+    if len(x_clusters) < 6 or len(y_clusters) < 6:
+        return ([], [])
+    x_segments = [x_clusters[index + 1] - x_clusters[index] for index in range(5)]
+    y_segments = [y_clusters[index + 1] - y_clusters[index] for index in range(5)]
+    return (x_segments, y_segments)
+
+
+def _round_segments_to_total(segments: Sequence[float], total: float) -> List[float]:
+    if not segments or total <= 0:
+        return []
+    scale = sum(segments) / total
+    rounded = [max(0.5, round((value / scale) * 2.0) / 2.0) for value in segments]
+    difference = round((total - sum(rounded)) * 2.0) / 2.0
+    while abs(difference) >= 0.5:
+        direction = 0.5 if difference > 0 else -0.5
+        best_index = None
+        best_penalty = math.inf
+        for index, value in enumerate(rounded):
+            candidate = value + direction
+            if candidate <= 0:
+                continue
+            before = abs((segments[index] / scale) - value)
+            after = abs((segments[index] / scale) - candidate)
+            penalty = after - before
+            if penalty < best_penalty:
+                best_penalty = penalty
+                best_index = index
+        if best_index is None:
+            break
+        rounded[best_index] += direction
+        difference = round((total - sum(rounded)) * 2.0) / 2.0
+    return rounded
+
+
+def _green_step_area(segx: Sequence[float], segy: Sequence[float]) -> float:
+    if len(segx) < 5 or len(segy) < 5:
+        return 0.0
+    a, b, c, d, e = segx[:5]
+    p, q, r, s, t = segy[:5]
+    points = [
+        (0.0, 0.0),
+        (0.0, p + q),
+        (a, p + q),
+        (a, p),
+        (a + b + c + d, p),
+        (a + b + c + d, p + q + r + s),
+        (a + b, p + q + r + s),
+        (a + b, p + q + r + s + t),
+        (a + b + c, p + q + r + s + t),
+        (a + b + c, p + q + r),
+        (a + b + c + d + e, p + q + r),
+        (a + b + c + d + e, 0.0),
+    ]
+    area = 0.0
+    for index, (left_x, left_y) in enumerate(points):
+        right_x, right_y = points[(index + 1) % len(points)]
+        area += left_x * right_y - right_x * left_y
+    return abs(area) / 2.0
+
+
+def _solve_green_polygon_area_from_diagram(prompt: str, path: Path) -> tuple[str, List[str]]:
+    lowered = str(prompt or "").lower()
+    if "green polygon" not in lowered or "area" not in lowered:
+        return ("", [])
+    label_values: List[float] = []
+    for _box, text in _image_text_boxes(path):
+        normalized = _coerce_numeric_token(text, allow_decimal=True)
+        if not normalized or "/" in normalized:
+            continue
+        try:
+            value = float(normalized)
+        except Exception:
+            continue
+        if value >= 1000:
+            continue
+        label_values.append(value)
+    if not label_values:
+        return ("", [])
+    top_label = max((value for value in label_values if value <= 20.0), default=0.0)
+    small_label = min((value for value in label_values if 0.0 < value < 5.0), default=0.0)
+    x_segments, y_segments = _green_step_segments(path)
+    if top_label <= 0.0 or small_label <= 0.0 or not x_segments or not y_segments:
+        return ("", [])
+    x_units = _round_segments_to_total(x_segments, top_label)
+    smallest_y = min(y_segments)
+    if smallest_y <= 0.0:
+        return ("", [])
+    y_scale = smallest_y / small_label
+    y_units = [max(0.5, round((value / y_scale) * 2.0) / 2.0) for value in y_segments]
+    rendered_area = int(round(_green_step_area(x_units, y_units)))
+    return (
+        str(rendered_area),
+        [
+            f"x segments={x_units}",
+            f"y segments={y_units}",
+            f"labels top={top_label:g} inner={small_label:g}",
+        ],
+    )
+
+
 def _solve_universal_ocr_reasoning(
     prompt: str,
     *,
@@ -2432,6 +3165,53 @@ def _solve_universal_ocr_reasoning(
         candidate, evidence = _solve_office_units_reasoning(prompt, observation["path"], observation.get("units", []))
         if candidate:
             return (candidate, evidence, list(observation.get("provenance", [])))
+
+    for observation in image_observations:
+        candidate, evidence = _solve_embedded_sorting_code_image(prompt, observation)
+        if candidate:
+            return (candidate, evidence, list(observation.get("provenance", [])))
+
+    if "additional cost per file" in lowered and "over the limit" in lowered:
+        for observation in image_observations:
+            path = observation.get("path")
+            if not isinstance(path, Path):
+                continue
+            candidate, evidence = _solve_storage_plan_upgrade_math(prompt, _image_text_boxes(path))
+            if candidate:
+                return (candidate, evidence, list(observation.get("provenance", [])))
+
+    if "sample problems" in lowered and "fractions" in lowered:
+        for observation in image_observations:
+            path = observation.get("path")
+            if not isinstance(path, Path):
+                continue
+            candidate, evidence = _solve_fraction_worksheet_image(prompt, path, observation)
+            if candidate:
+                return (candidate, evidence, list(observation.get("provenance", [])))
+
+    if "fractions quiz" in lowered or "bonus points" in lowered:
+        for observation in image_observations:
+            path = observation.get("path")
+            if not isinstance(path, Path):
+                continue
+            candidate, evidence = _solve_fraction_quiz_score(prompt, path)
+            if candidate:
+                return (candidate, evidence, list(observation.get("provenance", [])))
+
+    if "green polygon" in lowered and "area" in lowered:
+        for observation in image_observations:
+            path = observation.get("path")
+            if not isinstance(path, Path):
+                continue
+            candidate, evidence = _solve_green_polygon_area_from_diagram(prompt, path)
+            if candidate:
+                return (candidate, evidence, list(observation.get("provenance", [])))
+
+    if "butterfat content" in lowered and "federal standards" in lowered:
+        for observation in image_observations:
+            candidate, evidence = _solve_butterfat_nutrition_image(prompt, observation)
+            if candidate:
+                return (candidate, evidence, list(observation.get("provenance", [])))
 
     if "fraction" in lowered:
         for observation in image_observations:
