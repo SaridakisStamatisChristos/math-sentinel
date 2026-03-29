@@ -12,6 +12,8 @@ import random
 import re
 import shutil
 import statistics
+import subprocess
+import tempfile
 import uuid
 import urllib.parse
 import urllib.error
@@ -68,6 +70,13 @@ try:
 except Exception:
     cv2 = None
 
+try:
+    from playwright.sync_api import TimeoutError as PlaywrightTimeoutError  # type: ignore
+    from playwright.sync_api import sync_playwright  # type: ignore
+except Exception:
+    PlaywrightTimeoutError = Exception  # type: ignore[assignment]
+    sync_playwright = None  # type: ignore[assignment]
+
 
 SYMPY_PARSE_TRANSFORMS = standard_transformations + (implicit_multiplication_application,)
 
@@ -102,6 +111,22 @@ READER_FALLBACK_WARNING_MARKERS = (
     "you've been blocked",
     "access denied",
     "just a moment...",
+)
+BROWSER_CANDIDATE_PATHS = (
+    r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
+    r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
+    r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+    r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+)
+GENERIC_BLOCK_PAGE_MARKERS = READER_FALLBACK_WARNING_MARKERS + (
+    "you don't have permission to access",
+    "blocked by network security",
+    "please enable cookies",
+    "please turn javascript on",
+    "javascript is disabled",
+    "sign in to continue",
+    "verify you are human",
+    "enable javascript to continue",
 )
 GAIA_KNOWN_ERRATA: Dict[str, Dict[str, Any]] = {
     "bec74516-02fc-48dc-b202-55e78d0e17cf": {
@@ -309,7 +334,19 @@ def _prompt_answer_profile(prompt: str) -> Dict[str, bool]:
     expects_time = any(token in lowered for token in ("what time", "scheduled to arrive", "am or pm", "12-hour digital clock"))
     expects_ratio = "express the answer in the form" in lowered and re.search(r"\b1 in \d+\b", lowered) is not None
     expects_move = "algebraic notation" in lowered or ("chess position" in lowered and "next move" in lowered)
-    expects_identifier = any(token in lowered for token in ("ec number", "ec numbers", "doi", "isbn-10", "isbn 10"))
+    expects_identifier = any(
+        token in lowered
+        for token in (
+            "ec number",
+            "ec numbers",
+            "doi",
+            "isbn-10",
+            "isbn 10",
+            "award number",
+            "grant number",
+            "contract number",
+        )
+    )
     expects_sentence = "sentence" in lowered and any(token in lowered for token in ("pull out", "read from left to right", "use all of the letters"))
     expects_decimal = any(
         token in lowered
@@ -351,6 +388,9 @@ def _prompt_answer_profile(prompt: str) -> Dict[str, bool]:
             "without articles",
             "what feature",
             "who nominated",
+            "last name only",
+            "city name",
+            "city only",
         )
     )
     expects_list = any(
@@ -4163,6 +4203,18 @@ def _strip_html(text: str) -> str:
     return re.sub(r"\s+", " ", cleaned).strip()
 
 
+@functools.lru_cache(maxsize=1)
+def _browser_executable() -> str:
+    for candidate in BROWSER_CANDIDATE_PATHS:
+        if Path(candidate).exists():
+            return candidate
+    for name in ("msedge.exe", "msedge", "chrome.exe", "chrome", "google-chrome", "chromium", "chromium-browser"):
+        resolved = shutil.which(name)
+        if resolved:
+            return resolved
+    return ""
+
+
 def _browser_request_headers(url: str, headers: Optional[Dict[str, str]] = None, *, text_mode: bool = True) -> Dict[str, str]:
     header_map = dict(HTML_BROWSER_HEADERS if text_mode else DEFAULT_HEADERS)
     if headers:
@@ -4195,6 +4247,13 @@ def _reader_fallback_url(url: str) -> str:
     return f"https://r.jina.ai/{proxied_target}"
 
 
+def _looks_like_unusable_web_response(text: str) -> bool:
+    lowered = " ".join(str(text or "").split()).strip().lower()
+    if not lowered:
+        return True
+    return any(marker in lowered for marker in GENERIC_BLOCK_PAGE_MARKERS)
+
+
 def _looks_like_reader_block_page(text: str) -> bool:
     lowered = " ".join(str(text or "").split()).strip().lower()
     if not lowered:
@@ -4211,36 +4270,176 @@ def _decode_http_text(response: Any, payload: bytes) -> str:
     return payload.decode(charset, errors="ignore")
 
 
+@functools.lru_cache(maxsize=128)
+def _reader_fallback_text(url: str) -> str:
+    reader_url = _reader_fallback_url(url)
+    if not reader_url:
+        return ""
+    reader_headers = _browser_request_headers(
+        reader_url,
+        {
+            "Accept": "text/plain, text/markdown;q=0.9, */*;q=0.8",
+            "User-Agent": BROWSER_USER_AGENT,
+        },
+        text_mode=True,
+    )
+    try:
+        reader_req = urllib.request.Request(reader_url, headers=reader_headers)
+        with urllib.request.urlopen(reader_req, timeout=30) as response:
+            text = _decode_http_text(response, response.read())
+    except Exception:
+        return ""
+    if not text.strip() or _looks_like_reader_block_page(text):
+        return ""
+    return text
+
+
+@functools.lru_cache(maxsize=64)
+def _playwright_browser_fetch_dom(url: str) -> str:
+    cleaned_url = str(url or "").strip()
+    if not cleaned_url or sync_playwright is None:
+        return ""
+    try:
+        with sync_playwright() as playwright:
+            browser = None
+            try:
+                try:
+                    browser = playwright.chromium.launch(channel="chromium", headless=True)
+                except Exception:
+                    browser = playwright.chromium.launch(headless=True)
+                context = browser.new_context(
+                    user_agent=BROWSER_USER_AGENT,
+                    locale="en-US",
+                    ignore_https_errors=True,
+                    java_script_enabled=True,
+                    viewport={"width": 1365, "height": 900},
+                )
+                context.set_default_timeout(45_000)
+
+                def _route_handler(route: Any) -> None:
+                    try:
+                        if str(getattr(route.request, "resource_type", "") or "") in {"image", "media", "font"}:
+                            route.abort()
+                        else:
+                            route.continue_()
+                    except Exception:
+                        try:
+                            route.continue_()
+                        except Exception:
+                            pass
+
+                context.route("**/*", _route_handler)
+                page = context.new_page()
+                page.goto(cleaned_url, wait_until="domcontentloaded", timeout=45_000)
+                try:
+                    page.wait_for_load_state("networkidle", timeout=5_000)
+                except Exception:
+                    pass
+                return str(page.content() or "")
+            finally:
+                if browser is not None:
+                    try:
+                        browser.close()
+                    except Exception:
+                        pass
+    except Exception:
+        return ""
+
+
+@functools.lru_cache(maxsize=64)
+def _browser_fetch_dom(url: str) -> str:
+    cleaned_url = str(url or "").strip()
+    if not cleaned_url:
+        return ""
+    playwright_dom = _playwright_browser_fetch_dom(cleaned_url)
+    if playwright_dom:
+        return playwright_dom
+    executable = _browser_executable()
+    if not executable:
+        return ""
+    try:
+        with tempfile.TemporaryDirectory(prefix="gaia-browser-") as profile_dir:
+            command = [
+                executable,
+                "--headless=new",
+                "--disable-gpu",
+                "--log-level=3",
+                "--no-first-run",
+                "--no-default-browser-check",
+                f"--user-data-dir={profile_dir}",
+                "--dump-dom",
+                cleaned_url,
+            ]
+            completed = subprocess.run(
+                command,
+                check=False,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="ignore",
+                timeout=45,
+            )
+    except Exception:
+        return ""
+    stdout = str(completed.stdout or "").strip()
+    if not stdout:
+        return ""
+    return stdout
+
+
+def _best_browsed_document(url: str, *, direct_html: str = "") -> Dict[str, str]:
+    raw_html = str(direct_html or "")
+    raw_text = _strip_html(raw_html) if raw_html else ""
+    fetch_mode = "http"
+    html_text = raw_html
+    text = raw_text
+    if _looks_like_unusable_web_response(raw_html) or len(raw_text) < 80:
+        browser_html = _browser_fetch_dom(url)
+        browser_text = _strip_html(browser_html) if browser_html else ""
+        if browser_html and not _looks_like_unusable_web_response(browser_html) and len(browser_text) >= max(80, len(raw_text)):
+            html_text = browser_html
+            text = browser_text
+            fetch_mode = "browser"
+    if _looks_like_unusable_web_response(text or html_text) or len(text) < 80:
+        reader_text = _reader_fallback_text(url)
+        if reader_text:
+            html_text = reader_text
+            text = _strip_html(reader_text)
+            fetch_mode = "reader"
+    return {
+        "url": str(url or ""),
+        "html_text": html_text,
+        "text": text,
+        "fetch_mode": fetch_mode,
+    }
+
+
 @functools.lru_cache(maxsize=256)
 def _http_get_text_cached(url: str, header_items: tuple[tuple[str, str], ...]) -> str:
     request_headers = _browser_request_headers(url, dict(header_items), text_mode=True)
     req = urllib.request.Request(url, headers=request_headers)
     try:
         with urllib.request.urlopen(req, timeout=30) as response:
-            return _decode_http_text(response, response.read())
+            text = _decode_http_text(response, response.read())
     except urllib.error.HTTPError as exc:
         if exc.code not in READER_FALLBACK_ERROR_CODES or str(url).startswith("https://r.jina.ai/"):
             raise
-        reader_url = _reader_fallback_url(url)
-        if not reader_url or reader_url == str(url):
-            raise
-        reader_headers = _browser_request_headers(
-            reader_url,
-            {
-                "Accept": "text/plain, text/markdown;q=0.9, */*;q=0.8",
-                "User-Agent": BROWSER_USER_AGENT,
-            },
-            text_mode=True,
-        )
-        try:
-            reader_req = urllib.request.Request(reader_url, headers=reader_headers)
-            with urllib.request.urlopen(reader_req, timeout=30) as response:
-                text = _decode_http_text(response, response.read())
-        except Exception:
-            raise exc
-        if not text.strip() or _looks_like_reader_block_page(text):
-            raise exc
+        browser_html = _browser_fetch_dom(url)
+        if browser_html and not _looks_like_unusable_web_response(browser_html):
+            return browser_html
+        reader_text = _reader_fallback_text(url)
+        if reader_text:
+            return reader_text
+        raise exc
+    if not _looks_like_unusable_web_response(text):
         return text
+    browser_html = _browser_fetch_dom(url)
+    if browser_html and not _looks_like_unusable_web_response(browser_html):
+        return browser_html
+    reader_text = _reader_fallback_text(url)
+    if reader_text:
+        return reader_text
+    return text
 
 
 def _http_get_text(url: str, headers: Optional[Dict[str, str]] = None) -> str:
@@ -4308,11 +4507,15 @@ def _fetch_search_documents(query: str, *, max_results: int = 4, allow_domains: 
             if not any(domain in netloc for domain in normalized_allow):
                 continue
         try:
-            html_text = _http_get_text(url, headers={"User-Agent": "Mozilla/5.0"})
-            text = _strip_html(html_text)
+            fetched = _best_browsed_document(
+                url,
+                direct_html=_http_get_text(url, headers={"User-Agent": "Mozilla/5.0"}),
+            )
+            html_text = str(fetched.get("html_text", "") or "")
+            text = str(fetched.get("text", "") or "")
         except Exception:
             continue
-        if len(text) < 80:
+        if len(text) < 80 or _looks_like_unusable_web_response(text):
             continue
         documents.append(
             {
@@ -4321,6 +4524,7 @@ def _fetch_search_documents(query: str, *, max_results: int = 4, allow_domains: 
                 "url": url,
                 "text": text,
                 "html_text": html_text,
+                "fetch_mode": str(fetched.get("fetch_mode", "") or ""),
             }
         )
     return documents
@@ -4452,7 +4656,11 @@ def _fetch_document_with_pdf(url: str) -> Dict[str, str]:
         except Exception:
             pdf_text = ""
         return {"url": url, "html_text": "", "text": "", "pdf_text": pdf_text}
-    html_text = _http_get_text(url, headers={"User-Agent": "Mozilla/5.0"})
+    fetched = _best_browsed_document(
+        url,
+        direct_html=_http_get_text(url, headers={"User-Agent": "Mozilla/5.0"}),
+    )
+    html_text = str(fetched.get("html_text", "") or "")
     pdf_urls = _extract_pdf_urls_from_html(url, html_text)
     pdf_text = ""
     for pdf_url in pdf_urls:
@@ -4462,7 +4670,13 @@ def _fetch_document_with_pdf(url: str) -> Dict[str, str]:
                 break
         except Exception:
             continue
-    return {"url": url, "html_text": html_text, "text": _strip_html(html_text), "pdf_text": pdf_text}
+    return {
+        "url": url,
+        "html_text": html_text,
+        "text": str(fetched.get("text", "") or _strip_html(html_text)),
+        "pdf_text": pdf_text,
+        "fetch_mode": str(fetched.get("fetch_mode", "") or ""),
+    }
 
 
 def _looks_like_boilerplate_name(text: str) -> bool:
@@ -4488,6 +4702,30 @@ def _looks_like_boilerplate_name(text: str) -> bool:
     }
     overlap = sum(1 for token in tokens if token in boilerplate_vocab)
     return overlap >= max(2, len(tokens) - 1)
+
+
+def _looks_like_nonperson_entity(text: str) -> bool:
+    tokens = [token.lower() for token in re.findall(r"[A-Za-z]+", str(text or ""))]
+    if len(tokens) < 2:
+        return False
+    blocked = {
+        "university",
+        "institute",
+        "laboratory",
+        "lab",
+        "labs",
+        "museum",
+        "college",
+        "school",
+        "department",
+        "center",
+        "centre",
+        "agency",
+        "observatory",
+        "committee",
+        "society",
+    }
+    return bool(set(tokens) & blocked)
 
 
 def _extract_person_candidates(text: str) -> List[str]:
@@ -8238,7 +8476,12 @@ def _validate_candidate_answer(
             notes.append("expected three-letter code")
             return (False, normalized, {"accepted": False, "support": 0.0, "notes": notes})
     if profile["expects_person"]:
-        if normalized.startswith("The ") or _looks_like_boilerplate_name(normalized) or not re.fullmatch(r"[A-Z][A-Za-z.'-]+(?:\s+[A-Z][A-Za-z.'-]+)+", normalized):
+        if (
+            normalized.startswith("The ")
+            or _looks_like_boilerplate_name(normalized)
+            or _looks_like_nonperson_entity(normalized)
+            or not re.fullmatch(r"[A-Z][A-Za-z.'-]+(?:\s+[A-Z][A-Za-z.'-]+)+", normalized)
+        ):
             notes.append("expected person name")
             return (False, normalized, {"accepted": False, "support": 0.0, "notes": notes})
     if profile["expects_move"] and not _looks_like_move_notation(normalized):
@@ -8269,6 +8512,7 @@ def _validate_candidate_answer(
     if profile["expects_title"] and (
         _looks_like_header_blob(normalized)
         or _looks_like_snippet_fragment(normalized)
+        or _is_numeric_candidate(normalized)
         or word_count > 14
         or "[" in normalized
         or "=" in normalized

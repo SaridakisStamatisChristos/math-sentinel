@@ -53,10 +53,12 @@ from domains.gaia_ops.backend import (
     _solve_unlambda_missing_token,
     _solve_generic_public_reference,
     _fetch_benjerry_graveyard_entries,
+    _fetch_search_documents,
     _first_citation_reference_url,
     _best_quiz_arithmetic_match,
     _best_quiz_improper_to_mixed_match,
     _best_quiz_mixed_to_improper_match,
+    _browser_fetch_dom,
     _http_get_text,
     _http_get_text_cached,
     _solve_orcid_average_from_jsonld,
@@ -179,6 +181,47 @@ class GaiaOpsBackendTests(unittest.TestCase):
                 _http_get_text("https://www.researchgate.net/publication/example")
         finally:
             _http_get_text_cached.cache_clear()
+
+    @patch("domains.gaia_ops.backend._browser_fetch_dom")
+    @patch("domains.gaia_ops.backend._http_get_text")
+    @patch("domains.gaia_ops.backend._duckduckgo_search")
+    def test_fetch_search_documents_uses_browser_rendered_dom_when_direct_html_is_block_page(
+        self,
+        mock_search: Any,
+        mock_http_get_text: Any,
+        mock_browser_fetch_dom: Any,
+    ) -> None:
+        mock_search.return_value = [
+            {
+                "title": "DeepFruits",
+                "snippet": "Fruit detection graph",
+                "url": "https://example.com/deepfruits",
+            }
+        ]
+        mock_http_get_text.return_value = "<html><body><h1>Access Denied</h1></body></html>"
+        mock_browser_fetch_dom.return_value = (
+            "<html><body><main><h1>DeepFruits</h1>"
+            "<p>Citations are used to size the bubble in Connected Papers because the graph sizes nodes by citation influence and link structure.</p>"
+            "</main></body></html>"
+        )
+
+        documents = _fetch_search_documents("deepfruits bubble", max_results=1)
+
+        self.assertEqual(len(documents), 1)
+        self.assertEqual(documents[0]["fetch_mode"], "browser")
+        self.assertIn("Citations are used to size the bubble", documents[0]["text"])
+
+    @patch("domains.gaia_ops.backend._playwright_browser_fetch_dom")
+    def test_browser_fetch_dom_prefers_playwright_when_available(self, mock_playwright_fetch: Any) -> None:
+        mock_playwright_fetch.return_value = "<html><body><main>playwright dom</main></body></html>"
+        _browser_fetch_dom.cache_clear()
+        try:
+            html = _browser_fetch_dom("https://example.com/")
+        finally:
+            _browser_fetch_dom.cache_clear()
+
+        self.assertIn("playwright dom", html)
+        mock_playwright_fetch.assert_called_once_with("https://example.com/")
 
     def test_evidence_driven_fallback_loop_solves_csv_case_without_oracle_tool_hints(self) -> None:
         backend = GaiaOpsReasoningDomain()
@@ -3119,6 +3162,39 @@ class GaiaOpsBackendTests(unittest.TestCase):
 
         self.assertFalse(accepted)
         self.assertIn("decimal-form", " ".join(report.get("notes", [])))
+
+    def test_validate_candidate_answer_rejects_institution_for_person_prompt(self) -> None:
+        accepted, _, report = _validate_candidate_answer(
+            "Assuming scientists in the famous youtube video were interviewed the same year, what is the name of the scientist? Answer using the format First name Last name",
+            "Massachusetts Institute",
+            research_mode="video_transcript_ops",
+            method="video_transcript_ops",
+        )
+
+        self.assertFalse(accepted)
+        self.assertIn("person name", " ".join(report.get("notes", [])))
+
+    def test_validate_candidate_answer_rejects_non_identifier_for_contract_number_prompt(self) -> None:
+        accepted, _, report = _validate_candidate_answer(
+            "Under what NASA award number was the work performed by R. G. Arendt supported by?",
+            "There Are Hundreds of Mysterious Filaments at the Center",
+            research_mode="scholarly_reference_ops",
+            method="scholarly_reference_ops",
+        )
+
+        self.assertFalse(accepted)
+        self.assertIn("identifier-shaped", " ".join(report.get("notes", [])))
+
+    def test_validate_candidate_answer_rejects_numeric_for_title_prompt(self) -> None:
+        accepted, _, report = _validate_candidate_answer(
+            'Of the authors (First M. Last) that worked on the paper "Pie Menus or Linear Menus, Which Is Better?" in 2015, what was the title of the first paper authored by the one that had authored prior papers?',
+            "325509",
+            research_mode="scholarly_reference_ops",
+            method="scholarly_reference_ops",
+        )
+
+        self.assertFalse(accepted)
+        self.assertIn("title-like", " ".join(report.get("notes", [])))
 
     @patch("domains.gaia_ops.backend._solve_public_record_ops")
     def test_solve_question_quality_control_rejects_non_time_answer_for_time_prompt(self, mock_solver: Any) -> None:

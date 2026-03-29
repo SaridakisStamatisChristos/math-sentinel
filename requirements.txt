@@ -7,6 +7,7 @@ easyocr
 pypdf
 sympy
 transformers
+playwright
 peft
 accelerate
 safetensors
