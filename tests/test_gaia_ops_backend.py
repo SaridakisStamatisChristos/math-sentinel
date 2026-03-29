@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import statistics
 import unittest
+import urllib.error
 from pathlib import Path
 from typing import Any, cast
 from types import SimpleNamespace
@@ -13,6 +14,7 @@ from PIL import Image, ImageDraw, ImageFont
 from domains.gaia_ops.backend import (
     GaiaOpsReasoningDomain,
     _best_person_name_from_documents,
+    _classify_no_file_source_families,
     _extract_special_research_plan,
     _extract_usgs_collection_locations,
     _infer_csv_answer,
@@ -55,12 +57,15 @@ from domains.gaia_ops.backend import (
     _best_quiz_arithmetic_match,
     _best_quiz_improper_to_mixed_match,
     _best_quiz_mixed_to_improper_match,
+    _http_get_text,
+    _http_get_text_cached,
     _solve_orcid_average_from_jsonld,
     _solve_usda_standards_supersession,
     _solve_video_transcript_ops,
     _solve_butterfat_nutrition_image,
     _solve_embedded_sorting_code_image,
     _solver_candidate_bundle,
+    _validate_candidate_answer,
     _infer_fraction_pair_from_ocr_sequences,
     _green_step_area,
     _round_segments_to_total,
@@ -102,6 +107,78 @@ class GaiaOpsBackendTests(unittest.TestCase):
             self.assertEqual(_pdf_text_from_url("https://example.com/not-pdf"), "")
         finally:
             _pdf_text_from_url.cache_clear()
+
+    @patch("domains.gaia_ops.backend.urllib.request.urlopen")
+    def test_http_get_text_uses_reader_fallback_after_403(self, mock_urlopen: Any) -> None:
+        class _FakeHeaders:
+            @staticmethod
+            def get_content_charset() -> str:
+                return "utf-8"
+
+        class _FakeResponse:
+            headers = _FakeHeaders()
+
+            def __enter__(self) -> "_FakeResponse":
+                return self
+
+            def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> bool:
+                return False
+
+            def read(self) -> bytes:
+                return b"Title: DeepFruits\n\nMarkdown Content:\nRecovered article text"
+
+        seen_urls: list[str] = []
+
+        def _side_effect(req: Any, timeout: int = 30) -> Any:
+            url = req.full_url if hasattr(req, "full_url") else str(req)
+            seen_urls.append(url)
+            if len(seen_urls) == 1:
+                raise urllib.error.HTTPError(url, 403, "Forbidden", hdrs=None, fp=None)
+            return _FakeResponse()
+
+        mock_urlopen.side_effect = _side_effect
+        _http_get_text_cached.cache_clear()
+        try:
+            text = _http_get_text("https://www.mdpi.com/1424-8220/16/8/1222")
+        finally:
+            _http_get_text_cached.cache_clear()
+
+        self.assertIn("Recovered article text", text)
+        self.assertEqual(seen_urls[0], "https://www.mdpi.com/1424-8220/16/8/1222")
+        self.assertEqual(seen_urls[1], "https://r.jina.ai/http://www.mdpi.com/1424-8220/16/8/1222")
+
+    @patch("domains.gaia_ops.backend.urllib.request.urlopen")
+    def test_http_get_text_re_raises_when_reader_fallback_is_block_page(self, mock_urlopen: Any) -> None:
+        class _FakeHeaders:
+            @staticmethod
+            def get_content_charset() -> str:
+                return "utf-8"
+
+        class _FakeResponse:
+            headers = _FakeHeaders()
+
+            def __enter__(self) -> "_FakeResponse":
+                return self
+
+            def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> bool:
+                return False
+
+            def read(self) -> bytes:
+                return b"Warning: Target URL returned error 403: Forbidden"
+
+        def _side_effect(req: Any, timeout: int = 30) -> Any:
+            url = req.full_url if hasattr(req, "full_url") else str(req)
+            if url.startswith("https://r.jina.ai/"):
+                return _FakeResponse()
+            raise urllib.error.HTTPError(url, 403, "Forbidden", hdrs=None, fp=None)
+
+        mock_urlopen.side_effect = _side_effect
+        _http_get_text_cached.cache_clear()
+        try:
+            with self.assertRaises(urllib.error.HTTPError):
+                _http_get_text("https://www.researchgate.net/publication/example")
+        finally:
+            _http_get_text_cached.cache_clear()
 
     def test_evidence_driven_fallback_loop_solves_csv_case_without_oracle_tool_hints(self) -> None:
         backend = GaiaOpsReasoningDomain()
@@ -1925,7 +2002,11 @@ class GaiaOpsBackendTests(unittest.TestCase):
         self.assertEqual(answer, "1927")
         self.assertEqual(provenance, ["https://example.com/reference-page"])
         self.assertTrue(any("reference url=https://example.com/reference-page" in item for item in evidence))
-        mock_universal.assert_called_once_with(prompt, remote_image_urls=["https://example.com/historic.jpg"])
+        mock_universal.assert_called_once_with(
+            prompt,
+            remote_image_urls=["https://example.com/historic.jpg"],
+            allow_case_specific_heuristics=True,
+        )
 
     @patch("domains.gaia_ops.backend._best_scalar_from_public_documents")
     @patch("domains.gaia_ops.backend._search_documents_for_title")
@@ -2665,7 +2746,7 @@ class GaiaOpsBackendTests(unittest.TestCase):
         self.assertEqual(question_plan.get("solver_submode"), "symbolic_reasoning_ops")
         self.assertIn("symbolic or combinatorial rules", result["result"])
 
-    def test_plan_question_strict_generalized_blind_blocks_case_shaped_public_record_route(self) -> None:
+    def test_plan_question_strict_generalized_blind_routes_public_record_from_coarse_source_cues(self) -> None:
         state = SimpleNamespace(
             problem_text=(
                 "I’m researching species that became invasive after people who kept them as pets released them. "
@@ -2686,7 +2767,55 @@ class GaiaOpsBackendTests(unittest.TestCase):
         result = plan_question("", state)
         question_plan = result["payload"]["state_metadata"]["question_plan"]
 
-        self.assertEqual(question_plan.get("research_mode", ""), "")
+        self.assertEqual(question_plan.get("research_mode"), "public_record_ops")
+        self.assertTrue(question_plan.get("route_candidates"))
+        self.assertGreaterEqual(float(question_plan.get("route_confidence", 0.0)), 0.48)
+        self.assertEqual(question_plan.get("expected_evidence_kind"), "structured_public_record")
+
+    def test_plan_question_strict_generalized_blind_keeps_structural_spreadsheet_file_routing(self) -> None:
+        state = SimpleNamespace(
+            problem_text=(
+                "The attached spreadsheet contains a list of books I read in the year 2022. "
+                "What is the title of the book that I read the slowest, using the rate of words per day?"
+                "\nWorkspace files:\n- books.xlsx"
+            ),
+            metadata={
+                "workspace_files": ["books.xlsx"],
+                "allow_named_family_routing": False,
+                "allow_case_specific_heuristics": False,
+                "blind_structural_mode": True,
+                "target_file": "",
+                "candidate_files": [],
+            },
+        )
+
+        result = plan_question("", state)
+        question_plan = result["payload"]["state_metadata"]["question_plan"]
+
+        self.assertEqual(question_plan.get("research_mode"), "spreadsheet_reasoning_ops")
+        self.assertEqual(question_plan.get("solver_submode"), "spreadsheet_lookup")
+
+    def test_plan_question_strict_generalized_blind_keeps_structural_document_file_routing(self) -> None:
+        state = SimpleNamespace(
+            problem_text=(
+                "The attached file shows a list of books in the collection of Scribe County Public Library. "
+                "How many of the library’s books that are authored by Rick Riordan are not currently on the library’s shelves?"
+                "\nWorkspace files:\n- library.pdf"
+            ),
+            metadata={
+                "workspace_files": ["library.pdf"],
+                "allow_named_family_routing": False,
+                "allow_case_specific_heuristics": False,
+                "blind_structural_mode": True,
+                "target_file": "",
+                "candidate_files": [],
+            },
+        )
+
+        result = plan_question("", state)
+        question_plan = result["payload"]["state_metadata"]["question_plan"]
+
+        self.assertEqual(question_plan.get("research_mode"), "office_document_ops")
 
     def test_plan_question_strict_generalized_blind_keeps_generic_scholarly_route(self) -> None:
         state = SimpleNamespace(
@@ -2708,7 +2837,87 @@ class GaiaOpsBackendTests(unittest.TestCase):
         question_plan = result["payload"]["state_metadata"]["question_plan"]
 
         self.assertEqual(question_plan.get("research_mode"), "scholarly_reference_ops")
-        self.assertEqual(question_plan.get("solver_submode", ""), "")
+        self.assertEqual(question_plan.get("solver_submode"), "paper_compare_ops")
+        self.assertEqual(question_plan.get("expected_evidence_kind"), "scholarly_source")
+
+    def test_plan_question_strict_generalized_blind_routes_github_prompt_from_source_family(self) -> None:
+        state = SimpleNamespace(
+            problem_text=(
+                "According to GitHub, what date was the earliest closed issue with the label component: numpy.polynomial labeled as regression? Answer in MM/DD/YY."
+                "\nWorkspace files:\n- none"
+            ),
+            metadata={
+                "workspace_files": [],
+                "allow_named_family_routing": False,
+                "allow_case_specific_heuristics": False,
+                "blind_structural_mode": True,
+                "target_file": "",
+                "candidate_files": [],
+            },
+        )
+
+        result = plan_question("", state)
+        question_plan = result["payload"]["state_metadata"]["question_plan"]
+
+        self.assertEqual(question_plan.get("research_mode"), "github_public_artifact_ops")
+        self.assertTrue(question_plan.get("route_candidates"))
+        self.assertEqual(question_plan.get("expected_evidence_kind"), "repository_record")
+
+    def test_plan_question_strict_generalized_blind_routes_unlambda_prompt_generically(self) -> None:
+        state = SimpleNamespace(
+            problem_text=(
+                'In Unlambda, what exact character or text needs to be added to correct the following code to output "For penguins"? Code: r`````.F.o.r'
+                "\nWorkspace files:\n- none"
+            ),
+            metadata={
+                "workspace_files": [],
+                "allow_named_family_routing": False,
+                "allow_case_specific_heuristics": False,
+                "blind_structural_mode": True,
+                "target_file": "",
+                "candidate_files": [],
+            },
+        )
+
+        result = plan_question("", state)
+        question_plan = result["payload"]["state_metadata"]["question_plan"]
+
+        self.assertEqual(question_plan.get("research_mode"), "text_reasoning_ops")
+        self.assertEqual(question_plan.get("solver_submode"), "unlambda_missing_token")
+        self.assertEqual(question_plan.get("expected_evidence_kind"), "prompt_text")
+
+    def test_plan_question_strict_generalized_blind_routes_reversed_instruction_generically(self) -> None:
+        state = SimpleNamespace(
+            problem_text=(
+                '.rewsna eht sa "tfel" drow eht fo etisoppo eht etirw ,ecnetnes siht dnatsrednu uoy fI'
+                "\nWorkspace files:\n- none"
+            ),
+            metadata={
+                "workspace_files": [],
+                "allow_named_family_routing": False,
+                "allow_case_specific_heuristics": False,
+                "blind_structural_mode": True,
+                "target_file": "",
+                "candidate_files": [],
+            },
+        )
+
+        result = plan_question("", state)
+        question_plan = result["payload"]["state_metadata"]["question_plan"]
+
+        self.assertEqual(question_plan.get("research_mode"), "text_reasoning_ops")
+        self.assertEqual(question_plan.get("solver_submode"), "generic_text_reasoning")
+        self.assertEqual(question_plan.get("expected_evidence_kind"), "prompt_text")
+
+    def test_classify_no_file_source_families_does_not_treat_plain_release_verb_as_github_signal(self) -> None:
+        candidates = _classify_no_file_source_families(
+            "I’m researching species that became invasive after people who kept them as pets released them. "
+            "According to the USGS, where was this fish found as a nonnative species, before the year 2020?"
+        )
+
+        self.assertTrue(candidates)
+        self.assertEqual(candidates[0].get("research_mode"), "public_record_ops")
+        self.assertEqual(candidates[0].get("expected_evidence_kind"), "structured_public_record")
 
     def test_plan_question_named_lane_still_canonicalizes_to_generalized_mode(self) -> None:
         state = SimpleNamespace(
@@ -2845,6 +3054,72 @@ class GaiaOpsBackendTests(unittest.TestCase):
 
         self.assertEqual(question_plan.get("research_mode"), "github_public_artifact_ops")
 
+    def test_validate_candidate_answer_rejects_url_for_title_prompt(self) -> None:
+        accepted, _, report = _validate_candidate_answer(
+            'Of the authors that worked on the paper "Pie Menus or Linear Menus, Which Is Better?" in 2015, what was the title of the first paper authored by the one that had authored prior papers?',
+            "https://fau.digital.flvc.org/islandora/object/fau%3A4238",
+            research_mode="scholarly_reference_ops",
+            method="scholarly_reference_ops",
+        )
+
+        self.assertFalse(accepted)
+        self.assertIn("url-shaped", " ".join(report.get("notes", [])))
+
+    def test_validate_candidate_answer_rejects_non_numeric_for_numeric_prompt(self) -> None:
+        accepted, _, report = _validate_candidate_answer(
+            "I have the Standard plan in the image below. What is the average additional cost per file rounded to the nearest cent?",
+            "Standard",
+            research_mode="image_vision_ops",
+            method="image_vision_ops",
+        )
+
+        self.assertFalse(accepted)
+        self.assertIn("numeric", " ".join(report.get("notes", [])))
+
+    def test_validate_candidate_answer_rejects_header_blob_for_short_text_prompt(self) -> None:
+        accepted, _, report = _validate_candidate_answer(
+            "The attached PDF lists accommodations in the resort community of Seahorse Island. Which type of accommodation has a higher average rating in Seahorse Island?",
+            "Name Rating (out of 5) Vacancy Pool Sample Review",
+            research_mode="office_document_ops",
+            method="office_document_ops",
+        )
+
+        self.assertFalse(accepted)
+        self.assertTrue(any("numeric" in note or "header" in note or "intermediate extraction" in note for note in report.get("notes", [])))
+
+    def test_validate_candidate_answer_rejects_numeric_for_short_text_prompt(self) -> None:
+        accepted, _, report = _validate_candidate_answer(
+            "The attached PDF lists accommodations in the resort community of Seahorse Island. Which type of accommodation has a higher average rating in Seahorse Island?",
+            "1",
+            research_mode="office_document_ops",
+            method="office_document_ops",
+        )
+
+        self.assertFalse(accepted)
+        self.assertIn("short text", " ".join(report.get("notes", [])))
+
+    def test_validate_candidate_answer_rejects_metadata_dump_for_title_prompt(self) -> None:
+        accepted, _, report = _validate_candidate_answer(
+            'Of the authors (First M. Last) that worked on the paper "Pie Menus or Linear Menus, Which Is Better?" in 2015, what was the title of the first paper authored by the one that had authored prior papers?',
+            "paper authors=['Pie Menus', 'Or Linear', 'Which Is']",
+            research_mode="scholarly_reference_ops",
+            method="scholarly_reference_ops",
+        )
+
+        self.assertFalse(accepted)
+        self.assertIn("title-like", " ".join(report.get("notes", [])))
+
+    def test_validate_candidate_answer_rejects_integer_for_decimal_prompt(self) -> None:
+        accepted, _, report = _validate_candidate_answer(
+            "When you take the average of the standard population deviation of the red numbers and the standard sample deviation of the green numbers in this image using the statistics module in Python 3.11, what is the result rounded to the nearest three decimal points?",
+            "4540",
+            research_mode="image_vision_ops",
+            method="image_vision_ops",
+        )
+
+        self.assertFalse(accepted)
+        self.assertIn("decimal-form", " ".join(report.get("notes", [])))
+
     @patch("domains.gaia_ops.backend._solve_public_record_ops")
     def test_solve_question_quality_control_rejects_non_time_answer_for_time_prompt(self, mock_solver: Any) -> None:
         mock_solver.return_value = ("52618", ["max Passengers=52618"], ["https://example.com/tri-rail"])
@@ -2909,8 +3184,78 @@ class GaiaOpsBackendTests(unittest.TestCase):
         self.assertFalse(result["ok"])
         self.assertIn("quality checks", result["result"])
 
+    @patch("domains.gaia_ops.backend._solve_image_vision_ops")
+    def test_solve_question_quality_control_rejects_raw_ocr_fragment_for_numeric_image_prompt(self, mock_solver: Any) -> None:
+        mock_solver.return_value = ("archive_prefix", ["ocr from image"], ["image:script.png"])
+        state = SimpleNamespace(
+            problem_text="The attached image contains a Python script. Run the Python code and return the sum of the third and fifth integers in the sorted list.",
+            metadata={
+                "workspace_dir": str(Path.cwd()),
+                "workspace_files": ["script.png"],
+                "question_plan": {"research_mode": "image_vision_ops"},
+                "candidate_files": ["script.png"],
+                "benchmark_assistance_mode": "unassisted",
+                "oracle_hints_enabled": False,
+                "allow_case_specific_heuristics": False,
+            },
+        )
+
+        result = solve_question(state.problem_text, state)
+
+        self.assertFalse(result["ok"])
+        self.assertIn("quality checks", result["result"])
+
+    @patch("domains.gaia_ops.backend._solve_office_document_ops")
+    def test_solve_question_quality_control_rejects_office_header_blob(self, mock_solver: Any) -> None:
+        workspace = Path(".tmp-tests") / "gaia-office-quality"
+        workspace.mkdir(parents=True, exist_ok=True)
+        pdf_path = workspace / "stay.pdf"
+        pdf_path.write_bytes(b"%PDF-1.4\n")
+        mock_solver.return_value = ("Name Rating (out of 5) Vacancy Pool Sample Review", ["document header blob"])
+        state = SimpleNamespace(
+            problem_text="The attached PDF lists accommodations in the resort community of Seahorse Island. Which type of accommodation has a higher average rating in Seahorse Island?",
+            metadata={
+                "workspace_dir": str(workspace),
+                "workspace_files": [pdf_path.name],
+                "question_plan": {"research_mode": "office_document_ops"},
+                "candidate_files": [pdf_path.name],
+                "benchmark_assistance_mode": "unassisted",
+                "oracle_hints_enabled": False,
+                "allow_case_specific_heuristics": False,
+            },
+        )
+
+        result = solve_question(state.problem_text, state)
+
+        self.assertFalse(result["ok"])
+        self.assertIn("quality checks", result["result"])
+
+    def test_solve_question_quality_control_rejects_raw_first_line_file_fallback(self) -> None:
+        workspace = Path(".tmp-tests") / "gaia-fallback-quality"
+        workspace.mkdir(parents=True, exist_ok=True)
+        script_path = workspace / "program.py"
+        script_path.write_text("from random import randint\nprint(0)\n", encoding="utf-8")
+        state = SimpleNamespace(
+            problem_text="What is the final numeric output from the attached Python code?",
+            metadata={
+                "workspace_dir": str(workspace),
+                "workspace_files": [script_path.name],
+                "candidate_files": [script_path.name],
+                "target_file": script_path.name,
+                "benchmark_assistance_mode": "unassisted",
+                "oracle_hints_enabled": False,
+                "allow_case_specific_heuristics": False,
+            },
+        )
+
+        result = solve_question(state.problem_text, state)
+
+        self.assertFalse(result["ok"])
+        self.assertIn("quality checks", result["result"])
+
     @patch("domains.gaia_ops.backend._solve_public_record_ops")
-    def test_solve_question_strict_generalized_blind_skips_case_shaped_public_record_solver(self, mock_solver: Any) -> None:
+    def test_solve_question_strict_generalized_blind_uses_public_record_family_with_generic_flag(self, mock_solver: Any) -> None:
+        mock_solver.return_value = ("CUB", ["metric column=Athletes"], ["https://example.com/olympics"])
         state = SimpleNamespace(
             problem_text="What country had the least number of athletes at the 1928 Summer Olympics? Give the IOC country code as your answer.",
             metadata={
@@ -2926,8 +3271,12 @@ class GaiaOpsBackendTests(unittest.TestCase):
 
         result = solve_question(state.problem_text, state)
 
-        self.assertFalse(result["ok"])
-        mock_solver.assert_not_called()
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["answer"], "CUB")
+        mock_solver.assert_called_once_with(
+            state.problem_text,
+            allow_case_specific_heuristics=False,
+        )
 
     @patch("domains.gaia_ops.backend._solve_broad_symbolic_ops")
     def test_solve_question_strict_generalized_blind_skips_broad_symbolic_helper(self, mock_solver: Any) -> None:
