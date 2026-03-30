@@ -36,10 +36,12 @@ from domains.gaia_ops.backend import (
     _solve_office_document_ops,
     _solve_paper_numeric_lookup,
     _solve_paper_compare_ops,
+    _solve_scholarly_reference_ops,
     _solve_pubchem_food_additive_transformations,
     _solve_historical_reference_navigation_ops,
     _solve_public_record_ops,
     _public_record_search_documents,
+    _public_record_search_queries,
     _parse_service_daily_metric_line,
     _solve_public_record_schedule_arrival_time,
     _solve_public_reference_history_ops,
@@ -473,6 +475,65 @@ class GaiaOpsBackendTests(unittest.TestCase):
 
         self.assertEqual(answer, "0.1777")
         self.assertTrue(any("targeted numeric match" in item for item in evidence))
+
+    @patch("domains.gaia_ops.backend._search_documents_from_prompt")
+    @patch("domains.gaia_ops.backend._fetch_document_with_pdf")
+    def test_scholarly_reference_ops_extracts_award_identifier_from_support_window(
+        self,
+        mock_fetch_pdf: Any,
+        mock_search_prompt: Any,
+    ) -> None:
+        prompt = "Under what NASA award number was the work performed by R. G. Arendt supported by?"
+        mock_search_prompt.return_value = [
+            {
+                "title": "Astronomy note",
+                "snippet": "Supported by NASA award",
+                "url": "https://example.com/astronomy-award.pdf",
+                "text": "",
+            }
+        ]
+        mock_fetch_pdf.return_value = {
+            "text": "",
+            "pdf_text": "Acknowledgements. The work performed by R. G. Arendt was supported under NASA award 80GSFC21M0002.",
+            "html_text": "",
+        }
+
+        answer, evidence, provenance = _solve_scholarly_reference_ops(prompt)
+
+        self.assertEqual(answer, "80GSFC21M0002")
+        self.assertTrue(any("identifier window" in item for item in evidence))
+        self.assertEqual(provenance, ["https://example.com/astronomy-award.pdf"])
+
+    @patch("domains.gaia_ops.backend._search_documents_from_prompt")
+    @patch("domains.gaia_ops.backend._search_documents_for_title")
+    @patch("domains.gaia_ops.backend._fetch_document_with_pdf")
+    def test_scholarly_reference_ops_extracts_contextual_numeric_answer(
+        self,
+        mock_fetch_pdf: Any,
+        mock_search_title: Any,
+        mock_search_prompt: Any,
+    ) -> None:
+        prompt = 'What was the volume in m^3 of the fish bag that was calculated in the University of Leicester paper "Can Hiccup Supply Enough Fish to Maintain a Dragon’s Diet?"'
+        mock_search_title.return_value = [
+            {
+                "title": "Can Hiccup Supply Enough Fish to Maintain a Dragon's Diet?",
+                "snippet": "Journal article",
+                "url": "https://journals.le.ac.uk/index.php/jist/article/view/733",
+                "text": "",
+            }
+        ]
+        mock_search_prompt.return_value = []
+        mock_fetch_pdf.return_value = {
+            "text": "",
+            "pdf_text": "Methods. The bag dimensions were measured carefully. Therefore, the bag has a capacity of 0.1777 m3.",
+            "html_text": "",
+        }
+
+        answer, evidence, provenance = _solve_scholarly_reference_ops(prompt)
+
+        self.assertEqual(answer, "0.1777")
+        self.assertTrue(any("scholarly window" in item or "paper source=" in item for item in evidence))
+        self.assertEqual(provenance, ["https://journals.le.ac.uk/index.php/jist/article/view/733"])
 
     @patch("domains.gaia_ops.backend._search_documents_from_prompt")
     @patch("domains.gaia_ops.backend._search_documents_for_title")
@@ -2351,7 +2412,8 @@ class GaiaOpsBackendTests(unittest.TestCase):
         result = plan_question("", state)
         question_plan = result["payload"]["state_metadata"]["question_plan"]
 
-        self.assertEqual(question_plan.get("research_mode"), "generic_public_reference")
+        self.assertEqual(question_plan.get("research_mode"), "public_data_query_ops")
+        self.assertEqual(question_plan.get("solver_submode"), "wikipedia_revision_count")
 
     def test_plan_question_routes_public_reference_history_ops_structurally(self) -> None:
         state = SimpleNamespace(
@@ -2423,6 +2485,112 @@ class GaiaOpsBackendTests(unittest.TestCase):
         self.assertEqual(task_algebra.get("equation"), "time x source x operator x contract x rival")
         self.assertEqual(task_algebra.get("source_axis"), "public_record")
         self.assertEqual(role_machine.get("roles"), "framer -> retriever -> resolver -> judge -> closer")
+
+    def test_plan_question_routes_public_data_density_submode_structurally(self) -> None:
+        state = SimpleNamespace(
+            problem_text=(
+                "Use density measures from the chemistry materials licensed by Marisa Alviar-Agnew & Henry Agnew under the CK-12 license in LibreText's Introductory Chemistry materials as compiled by LibreTexts. "
+                "If I have a gallon of ethanol and a gallon of water, how many cups must I remove from the ethanol until it has less mass than the water?"
+                "\nWorkspace files:\n- none"
+            ),
+            metadata={
+                "workspace_files": [],
+                "allow_named_family_routing": False,
+                "blind_structural_mode": True,
+                "target_file": "",
+                "candidate_files": [],
+            },
+        )
+
+        result = plan_question("", state)
+        question_plan = result["payload"]["state_metadata"]["question_plan"]
+
+        self.assertEqual(question_plan.get("research_mode"), "public_data_query_ops")
+        self.assertEqual(question_plan.get("solver_submode"), "density_removal")
+
+    def test_plan_question_routes_public_data_script_submode_structurally(self) -> None:
+        state = SimpleNamespace(
+            problem_text=(
+                "In Series 9, Episode 11 of Doctor Who, the Doctor is trapped inside an ever-shifting maze. What is this location called in the official script for the episode? Give the setting exactly as it appears."
+                "\nWorkspace files:\n- none"
+            ),
+            metadata={
+                "workspace_files": [],
+                "allow_named_family_routing": False,
+                "blind_structural_mode": True,
+                "target_file": "",
+                "candidate_files": [],
+            },
+        )
+
+        result = plan_question("", state)
+        question_plan = result["payload"]["state_metadata"]["question_plan"]
+
+        self.assertEqual(question_plan.get("research_mode"), "public_data_query_ops")
+        self.assertEqual(question_plan.get("solver_submode"), "script_scene_heading")
+
+    def test_plan_question_routes_public_data_revision_count_submode_structurally(self) -> None:
+        state = SimpleNamespace(
+            problem_text=(
+                "How many edits were made to the Wikipedia page on Antidisestablishmentarianism from its inception until June 2023?"
+                "\nWorkspace files:\n- none"
+            ),
+            metadata={
+                "workspace_files": [],
+                "allow_named_family_routing": False,
+                "blind_structural_mode": True,
+                "target_file": "",
+                "candidate_files": [],
+            },
+        )
+
+        result = plan_question("", state)
+        question_plan = result["payload"]["state_metadata"]["question_plan"]
+
+        self.assertEqual(question_plan.get("research_mode"), "public_data_query_ops")
+        self.assertEqual(question_plan.get("solver_submode"), "wikipedia_revision_count")
+
+    def test_plan_question_routes_public_data_wikipedia_link_distance_structurally(self) -> None:
+        state = SimpleNamespace(
+            problem_text=(
+                "What is the minimum number of page links a person must click on to go from the English Wikipedia page on The Lord of the Rings to the English Wikipedia page on Frodo Baggins?"
+                "\nWorkspace files:\n- none"
+            ),
+            metadata={
+                "workspace_files": [],
+                "allow_named_family_routing": False,
+                "blind_structural_mode": True,
+                "target_file": "",
+                "candidate_files": [],
+            },
+        )
+
+        result = plan_question("", state)
+        question_plan = result["payload"]["state_metadata"]["question_plan"]
+
+        self.assertEqual(question_plan.get("research_mode"), "public_data_query_ops")
+        self.assertEqual(question_plan.get("solver_submode"), "wikipedia_link_distance")
+
+    def test_plan_question_routes_public_data_usda_supersession_structurally(self) -> None:
+        state = SimpleNamespace(
+            problem_text=(
+                "In July 2, 1959 United States standards for grades of processed fruits, vegetables, and certain other products listed as dehydrated, what integer-rounded percentage had newer USDA standards become effective by 2020?"
+                "\nWorkspace files:\n- none"
+            ),
+            metadata={
+                "workspace_files": [],
+                "allow_named_family_routing": False,
+                "blind_structural_mode": True,
+                "target_file": "",
+                "candidate_files": [],
+            },
+        )
+
+        result = plan_question("", state)
+        question_plan = result["payload"]["state_metadata"]["question_plan"]
+
+        self.assertEqual(question_plan.get("research_mode"), "public_data_query_ops")
+        self.assertEqual(question_plan.get("solver_submode"), "usda_standards_supersession")
 
     def test_plan_question_routes_paper_compare_ops_structurally(self) -> None:
         state = SimpleNamespace(
@@ -2883,6 +3051,30 @@ class GaiaOpsBackendTests(unittest.TestCase):
         self.assertEqual(question_plan.get("solver_submode"), "paper_compare_ops")
         self.assertEqual(question_plan.get("expected_evidence_kind"), "scholarly_source")
 
+    def test_plan_question_strict_generalized_blind_routes_book_chapter_citation_prompt_to_scholarly(self) -> None:
+        state = SimpleNamespace(
+            problem_text=(
+                'In Valentina Re’s contribution to the 2017 book "World Building: Transmedia, Fans, Industries", '
+                "what horror movie does the author cite as having popularized metalepsis between a dream world and reality?"
+                "\nWorkspace files:\n- none"
+            ),
+            metadata={
+                "workspace_files": [],
+                "allow_named_family_routing": False,
+                "allow_case_specific_heuristics": False,
+                "blind_structural_mode": True,
+                "target_file": "",
+                "candidate_files": [],
+            },
+        )
+
+        result = plan_question("", state)
+        question_plan = result["payload"]["state_metadata"]["question_plan"]
+
+        self.assertEqual(question_plan.get("research_mode"), "scholarly_reference_ops")
+        self.assertEqual(question_plan.get("solver_submode"), "quoted_paper_lookup")
+        self.assertEqual(question_plan.get("expected_evidence_kind"), "scholarly_source")
+
     def test_plan_question_strict_generalized_blind_routes_github_prompt_from_source_family(self) -> None:
         state = SimpleNamespace(
             problem_text=(
@@ -3097,6 +3289,15 @@ class GaiaOpsBackendTests(unittest.TestCase):
 
         self.assertEqual(question_plan.get("research_mode"), "github_public_artifact_ops")
 
+    def test_classify_no_file_source_families_prefers_wikipedia_history_over_scholarly_article_wording(self) -> None:
+        candidates = _classify_no_file_source_families(
+            "How many images are there in the latest 2022 Lego english wikipedia article?"
+        )
+
+        self.assertTrue(candidates)
+        self.assertEqual(candidates[0].get("research_mode"), "public_reference_history_ops")
+        self.assertNotEqual(candidates[0].get("research_mode"), "scholarly_reference_ops")
+
     def test_validate_candidate_answer_rejects_url_for_title_prompt(self) -> None:
         accepted, _, report = _validate_candidate_answer(
             'Of the authors that worked on the paper "Pie Menus or Linear Menus, Which Is Better?" in 2015, what was the title of the first paper authored by the one that had authored prior papers?',
@@ -3185,10 +3386,34 @@ class GaiaOpsBackendTests(unittest.TestCase):
         self.assertFalse(accepted)
         self.assertIn("identifier-shaped", " ".join(report.get("notes", [])))
 
+    def test_validate_candidate_answer_accepts_contract_number_identifier(self) -> None:
+        accepted, normalized, report = _validate_candidate_answer(
+            "Under what NASA award number was the work performed by R. G. Arendt supported by?",
+            "80GSFC21M0002",
+            research_mode="scholarly_reference_ops",
+            method="scholarly_reference_ops",
+        )
+
+        self.assertTrue(accepted)
+        self.assertEqual(normalized, "80GSFC21M0002")
+        self.assertTrue(report.get("accepted"))
+
     def test_validate_candidate_answer_rejects_numeric_for_title_prompt(self) -> None:
         accepted, _, report = _validate_candidate_answer(
             'Of the authors (First M. Last) that worked on the paper "Pie Menus or Linear Menus, Which Is Better?" in 2015, what was the title of the first paper authored by the one that had authored prior papers?',
             "325509",
+            research_mode="scholarly_reference_ops",
+            method="scholarly_reference_ops",
+        )
+
+        self.assertFalse(accepted)
+        self.assertIn("title-like", " ".join(report.get("notes", [])))
+
+    def test_validate_candidate_answer_rejects_title_echo_of_quoted_source(self) -> None:
+        accepted, _, report = _validate_candidate_answer(
+            'In Valentina Re’s contribution to the 2017 book "World Building: Transmedia, Fans, Industries", '
+            "what horror movie does the author cite as having popularized metalepsis between a dream world and reality?",
+            "Industries Mapping",
             research_mode="scholarly_reference_ops",
             method="scholarly_reference_ops",
         )
@@ -3354,6 +3579,36 @@ class GaiaOpsBackendTests(unittest.TestCase):
             allow_case_specific_heuristics=False,
         )
 
+    @patch("domains.gaia_ops.backend._solve_public_scalar_transform_ops", side_effect=AssertionError("generic scalar path should not run"))
+    @patch("domains.gaia_ops.backend._solve_wikipedia_revision_count")
+    def test_solve_question_strict_generalized_blind_uses_public_data_submode_operator(
+        self,
+        mock_revision_solver: Any,
+        _scalar_solver: Any,
+    ) -> None:
+        mock_revision_solver.return_value = ("123", ["revision count=123"])
+        state = SimpleNamespace(
+            problem_text="How many edits were made to the Wikipedia page on Antidisestablishmentarianism from its inception until June 2023?",
+            metadata={
+                "workspace_dir": str(Path.cwd()),
+                "workspace_files": [],
+                "question_plan": {
+                    "research_mode": "public_data_query_ops",
+                    "solver_submode": "wikipedia_revision_count",
+                },
+                "candidate_files": [],
+                "benchmark_assistance_mode": "unassisted",
+                "oracle_hints_enabled": False,
+                "allow_case_specific_heuristics": False,
+            },
+        )
+
+        result = solve_question(state.problem_text, state)
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["answer"], "123")
+        mock_revision_solver.assert_called_once_with(state.problem_text)
+
     @patch("domains.gaia_ops.backend._solve_broad_symbolic_ops")
     def test_solve_question_strict_generalized_blind_skips_broad_symbolic_helper(self, mock_solver: Any) -> None:
         state = SimpleNamespace(
@@ -3429,9 +3684,9 @@ class GaiaOpsBackendTests(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.assertEqual(result["answer"], "6:41 PM")
 
-    @patch("domains.gaia_ops.backend._solve_paper_numeric_lookup")
+    @patch("domains.gaia_ops.backend._solve_scholarly_reference_ops")
     def test_solve_question_quality_control_rejects_numeric_answer_for_textual_prompt(self, mock_solver: Any) -> None:
-        mock_solver.return_value = ("10.4324", ["targeted numeric match -> 10.4324"])
+        mock_solver.return_value = ("10.4324", ["targeted numeric match -> 10.4324"], ["https://example.com/chapter"])
         state = SimpleNamespace(
             problem_text='In Valentina Re’s contribution to the 2017 book "World Building: Transmedia, Fans, Industries", what horror movie does the author cite as having popularized metalepsis between a dream world and waking life?',
             metadata={
@@ -3503,6 +3758,51 @@ class GaiaOpsBackendTests(unittest.TestCase):
 
         self.assertEqual(answer, "2732")
         self.assertTrue(any("2732" in item for item in evidence))
+
+    @patch("domains.gaia_ops.backend._wikipedia_revision_count_until")
+    def test_wikipedia_revision_count_solver_accepts_month_of_year_form(self, mock_revision_count: Any) -> None:
+        mock_revision_count.return_value = 2732
+
+        answer, evidence = _solve_wikipedia_revision_count(
+            "How many edits were made to the Wikipedia page on Antidisestablishmentarianism from its inception until June of 2023?"
+        )
+
+        self.assertEqual(answer, "2732")
+        self.assertTrue(any("revision cutoff=2023-06-30T23:59:59Z" in item for item in evidence))
+
+    @patch("domains.gaia_ops.backend._geocode_zip")
+    @patch("domains.gaia_ops.backend._public_record_search_documents")
+    def test_solve_public_record_ops_extracts_zip_from_structured_agency_record(
+        self,
+        mock_search_documents: Any,
+        mock_geocode_zip: Any,
+    ) -> None:
+        mock_search_documents.return_value = [
+            {
+                "title": "clown anemonefish (Amphiprion ocellaris) - Collection record",
+                "url": "https://nas.er.usgs.gov/queries/SpecimenViewer.aspx?SpecimenID=1468741",
+                "text": (
+                    "Specimen Information Amphiprion ocellaris (clown anemonefish) "
+                    "State FL County Pinellas Locality Gulf of America, Florida, Fred Howard Park "
+                    "Collection Year 2018"
+                ),
+                "html_text": "",
+                "snippet": "",
+            }
+        ]
+        mock_geocode_zip.return_value = "34689"
+
+        answer, evidence, provenance = _solve_public_record_ops(
+            "I’m researching species that became invasive after people who kept them as pets released them. "
+            "There’s a certain species of fish that was popularized as a pet by being the main character of the movie Finding Nemo. "
+            "According to the USGS, where was this fish found as a nonnative species, before the year 2020? "
+            "I need the answer formatted as the five-digit zip codes of the places the species was found.",
+            allow_case_specific_heuristics=False,
+        )
+
+        self.assertEqual(answer, "34689")
+        self.assertTrue(any("Fred Howard Park" in item for item in evidence))
+        self.assertEqual(provenance, ["https://nas.er.usgs.gov/queries/SpecimenViewer.aspx?SpecimenID=1468741"])
 
     @patch("domains.gaia_ops.backend._public_reference_title_candidates")
     @patch("domains.gaia_ops.backend._historical_wikipedia_documents")
@@ -3686,6 +3986,68 @@ class GaiaOpsBackendTests(unittest.TestCase):
 
         self.assertGreaterEqual(len(documents), 2)
         self.assertEqual(documents[0]["title"], "1928 Summer Olympics - Wikipedia")
+
+    @patch("domains.gaia_ops.backend._fetch_search_documents")
+    def test_public_record_search_queries_expand_with_resolved_species_candidates(self, mock_fetch_search: Any) -> None:
+        def _fake_search(query: str, **_: Any) -> list[dict[str, str]]:
+            if "Finding Nemo" in query:
+                return [
+                    {
+                        "title": "Clown anemonefish",
+                        "url": "https://example.com/species",
+                        "snippet": "The clown anemonefish (Amphiprion ocellaris) is the species popularized by the film.",
+                        "text": "The clown anemonefish (Amphiprion ocellaris) is the species popularized by the film.",
+                    }
+                ]
+            return []
+
+        mock_fetch_search.side_effect = _fake_search
+
+        queries = _public_record_search_queries(
+            "I’m researching species that became invasive after people who kept them as pets released them. "
+            "There’s a certain species of fish that was popularized as a pet by being the main character of the movie Finding Nemo. "
+            "According to the USGS, where was this fish found as a nonnative species, before the year 2020?"
+        )
+
+        self.assertIn("USGS clown anemonefish nonnative species", queries)
+        self.assertIn("USGS Amphiprion ocellaris collection record", queries)
+
+    @patch("domains.gaia_ops.backend._fetch_search_documents")
+    def test_cross_source_entity_ops_restricts_same_name_primary_lookup_to_github_domain(self, mock_search_docs: Any) -> None:
+        calls: list[tuple[str, dict[str, Any]]] = []
+
+        def _fake_search(query: str, **kwargs: Any) -> list[dict[str, str]]:
+            calls.append((query, dict(kwargs)))
+            if "github" in query.lower():
+                return [
+                    {
+                        "url": "https://github.com/opencv/opencv/issues/11412",
+                        "title": "Support Mask RCNN models · Issue #11412 · opencv/opencv - GitHub",
+                        "snippet": "Issue discussion mentions Li Peng among contributors.",
+                        "text": "Li Peng appears in the issue discussion as a contributor name candidate.",
+                    }
+                ]
+            if "former chinese head of government" in query.lower():
+                return [
+                    {
+                        "url": "https://example.com/china-leaders",
+                        "title": "Leaders of China",
+                        "snippet": "Li Peng served as premier.",
+                        "text": "Li Peng served as premier of China.",
+                    }
+                ]
+            return []
+
+        mock_search_docs.side_effect = _fake_search
+
+        answer, evidence, provenance = _solve_cross_source_entity_ops(
+            "Which contributor to the version of OpenCV where support was added for the Mask-RCNN model has the same name as a former Chinese head of government when the names are transliterated to the Latin alphabet?"
+        )
+
+        self.assertEqual(answer, "Li Peng")
+        self.assertTrue(any(kwargs.get("allow_domains") == ("github.com",) for query, kwargs in calls if "github" in query.lower()))
+        self.assertTrue(any("cross-source matched person=Li Peng" in item for item in evidence))
+        self.assertEqual(provenance, ["https://github.com/opencv/opencv/issues/11412", "https://example.com/china-leaders"])
 
     @patch("domains.gaia_ops.backend._wayback_snapshot_url")
     @patch("domains.gaia_ops.backend._http_get_text")
