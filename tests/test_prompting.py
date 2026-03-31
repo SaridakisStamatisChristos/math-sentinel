@@ -88,6 +88,36 @@ class PromptCompactionTests(unittest.TestCase):
                         "contract=comma-separated list with no whitespace",
                     ],
                 },
+                "gaia_compact_state": {
+                    "task_id": "task_prompt_compact",
+                    "question": "Return the answer as a comma-separated list in alphabetical order after checking the relevant evidence source.",
+                    "research_mode": "generic_public_reference",
+                    "solver_submode": "table_rank",
+                    "answer_contract": "list_text",
+                    "operator_chain": ["discover_public_pages", "rank_page_evidence", "extract_page_answer", "normalize_answer"],
+                    "route_candidates": ["generic_public_reference", "public_reference_history_ops"],
+                    "expected_evidence_kind": "public_page",
+                    "target_file": "report.xlsx",
+                    "candidate_files": ["report.xlsx", "notes.txt", "image.png"],
+                    "inspected_files": ["report.xlsx"],
+                    "evidence": ["page:alpha", "page:beta", "page:gamma"],
+                    "obligations": ["inspect the relevant source", "format the final answer"],
+                    "recent_browse_events": ["browse_search(query=alpha beta)", "browse_http_fetch(status=ok)"],
+                    "rejected_candidates": ["beta alpha", "alpha"],
+                    "best_candidate": "alpha, beta",
+                    "answer_confidence": 0.73,
+                    "provenance": ["https://example.com/page"],
+                },
+                "gaia_runtime_stage": "solve",
+                "gaia_recent_progress": [
+                    "solve_start (research_mode=generic_public_reference)",
+                    "browse_search (query=alpha beta)",
+                    "contract_retry_candidate (candidate=alpha, beta; accepted=True)",
+                ],
+                "gaia_recent_candidates": [
+                    {"candidate": "beta alpha", "accepted": False},
+                    {"candidate": "alpha, beta", "accepted": True},
+                ],
                 "prompt_compaction": {
                     "enabled": True,
                     "problem_chars": 420,
@@ -126,6 +156,8 @@ class PromptCompactionTests(unittest.TestCase):
         self.assertIn("[ROLE_MACHINE]", prompt)
         self.assertIn("[REASONING_SCHEMA]", prompt)
         self.assertIn("[SELF_CHECK]", prompt)
+        self.assertIn("[GAIA_COMPACT_STATE]", prompt)
+        self.assertIn("[GAIA_RUNTIME]", prompt)
         self.assertNotIn("[METADATA]", prompt)
         self.assertLess(len(prompt), len(state.serialize()) + 500)
         self.assertIn("target_file=report.xlsx", prompt)
@@ -138,6 +170,8 @@ class PromptCompactionTests(unittest.TestCase):
         self.assertIn("roles=framer -> retriever -> resolver -> judge -> closer", prompt)
         self.assertIn("source_family=public_reference", prompt)
         self.assertIn("contract=comma-separated list with no whitespace", prompt)
+        self.assertIn("research_mode=generic_public_reference", prompt)
+        self.assertIn("recent_progress=solve_start", prompt)
         self.assertNotIn("fact one about the target entity | fact two about the supporting source | fact three with a candidate answer | fact four with a date filter | fact five should force truncation", prompt)
 
     def test_prompt_defaults_to_full_state_without_compaction(self) -> None:

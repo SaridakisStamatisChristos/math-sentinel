@@ -47,7 +47,7 @@ def _default_state_signature(state: ProofState) -> str:
 
 
 def _score_state(verifier: StateVerifier, tokenizer: StructuredTokenizer, device: str, state: ProofState) -> Dict[str, float]:
-    ids = tokenizer.encode(state.serialize(), seq_len=384)
+    ids = tokenizer.encode(state.serialize(), seq_len=int(getattr(verifier, "max_seq_len", 384)))
     x = torch.tensor([ids], dtype=torch.long, device=device)
     with torch.no_grad():
         pred = verifier.predict_scores(x)

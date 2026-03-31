@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 import statistics
 import unittest
 import urllib.error
@@ -14,9 +15,11 @@ from PIL import Image, ImageDraw, ImageFont
 from domains.gaia_ops.backend import (
     GaiaOpsReasoningDomain,
     _best_person_name_from_documents,
+    _build_plan_metadata,
     _classify_no_file_source_families,
     _extract_special_research_plan,
     _extract_usgs_collection_locations,
+    _generalized_browse_candidate_bundles,
     _infer_csv_answer,
     _infer_text_answer,
     _infer_xlsx_answer,
@@ -75,6 +78,8 @@ from domains.gaia_ops.backend import (
     _round_segments_to_total,
     _solve_storage_plan_upgrade_math,
     _solve_web_archive_ops,
+    _wikipedia_bidirectional_link_distance,
+    _wikipedia_page_links_as_of,
     _solve_wikipedia_link_distance,
     _solve_wikipedia_revision_count,
     _solve_youtube_bird_species_count,
@@ -299,6 +304,68 @@ class GaiaOpsBackendTests(unittest.TestCase):
         self.assertFalse(state.metadata.get("allow_named_family_routing"))
         self.assertFalse(state.metadata.get("allow_case_specific_heuristics"))
         self.assertFalse(state.metadata.get("allow_errata_overrides"))
+
+    def test_make_state_injects_runtime_prompt_compaction(self) -> None:
+        backend = GaiaOpsReasoningDomain(
+            runtime_config={
+                "search": {
+                    "prompt_compaction": True,
+                    "prompt_problem_chars": 420,
+                    "prompt_fact_limit": 3,
+                    "prompt_subgoal_limit": 2,
+                    "prompt_obligation_limit": 3,
+                    "prompt_evidence_limit": 3,
+                    "prompt_tool_limit": 1,
+                    "prompt_action_limit": 1,
+                    "prompt_file_limit": 4,
+                    "prompt_retrieval_item_limit": 2,
+                    "prompt_text_item_chars": 80,
+                }
+            }
+        )
+        task = backend.benchmark_tasks()[0]
+
+        state = backend.make_state(task)
+
+        self.assertEqual(
+            state.metadata.get("prompt_compaction"),
+            {
+                "enabled": True,
+                "problem_chars": 420,
+                "fact_limit": 3,
+                "subgoal_limit": 2,
+                "obligation_limit": 3,
+                "evidence_limit": 3,
+                "tool_limit": 1,
+                "action_limit": 1,
+                "file_limit": 4,
+                "retrieval_item_limit": 2,
+                "text_item_chars": 80,
+            },
+        )
+
+    def test_build_search_prompt_backfills_runtime_prompt_compaction(self) -> None:
+        backend = GaiaOpsReasoningDomain(
+            runtime_config={
+                "search": {
+                    "prompt_compaction": True,
+                    "prompt_problem_chars": 420,
+                }
+            }
+        )
+        state = ReasoningState(
+            task_id="manual_gaia_prompt_compaction",
+            domain="gaia_csv_reasoning",
+            problem_text="Use the files in the workspace to answer this question: what is the total sales amount?",
+            goal="Return the shortest correct final answer",
+            metadata={},
+        )
+
+        prompt = backend.build_search_prompt(state)
+
+        self.assertIn("[TASK]", prompt)
+        self.assertEqual(state.metadata.get("prompt_compaction", {}).get("enabled"), True)
+        self.assertEqual(state.metadata.get("prompt_compaction", {}).get("problem_chars"), 420)
 
     def test_make_state_applies_gaia_prompt_errata_override(self) -> None:
         backend = GaiaOpsReasoningDomain(runtime_config={"benchmark": {"allow_errata_overrides": True}})
@@ -1956,6 +2023,17 @@ class GaiaOpsBackendTests(unittest.TestCase):
         self.assertEqual(anchor.get("month"), 12)
         self.assertEqual(anchor.get("day"), 31)
 
+    def test_temporal_anchor_recognizes_end_of_day_snapshot_prompt(self) -> None:
+        anchor = _temporal_anchor(
+            "Use the pages as they appeared at the end of the day on July 3, 2023."
+        )
+
+        self.assertEqual(anchor.get("mode"), "snapshot_year")
+        self.assertEqual(anchor.get("year"), 2023)
+        self.assertEqual(anchor.get("month"), 7)
+        self.assertEqual(anchor.get("day"), 3)
+        self.assertTrue(bool(anchor.get("historical")))
+
     def test_temporal_query_variants_include_range_and_cutoff_hints(self) -> None:
         range_variants = _temporal_query_variants(
             "Mercedes Sosa discography",
@@ -2351,6 +2429,73 @@ class GaiaOpsBackendTests(unittest.TestCase):
         self.assertEqual(answer, "Claude Shannon")
         self.assertTrue(any("person-name fit" in item for item in evidence))
         self.assertEqual(provenance, ["https://example.com/video", "youtube:transcript"])
+
+    def test_select_best_solver_candidate_contract_retry_skips_invalid_header_blob(self) -> None:
+        prompt = "What horror movie is cited in the chapter? Answer with the exact movie title."
+        invalid = _solver_candidate_bundle(
+            "Name Rating Vacancy Pool Sample Review",
+            ["table header blob from supporting page"],
+            ["https://example.com/chapter"],
+            method="header_blob_extract",
+            source_bias=0.95,
+            candidate_kind="short_text",
+            answer_contract="title",
+        )
+        valid = _solver_candidate_bundle(
+            "A Nightmare on Elm Street",
+            ["quoted title near chapter citation", "movie title supported by chapter evidence"],
+            ["https://example.com/chapter"],
+            method="quoted_title_extract",
+            source_bias=0.05,
+            candidate_kind="short_text",
+            answer_contract="title",
+        )
+
+        answer, evidence, provenance = _select_best_solver_candidate(
+            prompt,
+            [invalid, valid],
+            research_mode="scholarly_reference_ops",
+        )
+
+        self.assertEqual(answer, "A Nightmare on Elm Street")
+        self.assertTrue(any("selected candidate via quoted_title_extract" in item for item in evidence))
+        self.assertEqual(provenance, ["https://example.com/chapter"])
+
+    def test_plan_question_emits_gaia_runtime_metadata_and_snapshot(self) -> None:
+        task_id = "runtime_plan_metadata_case"
+        runtime_dir = Path(__file__).resolve().parents[1] / "logs" / "gaia_query_engine" / task_id
+        if runtime_dir.exists():
+            shutil.rmtree(runtime_dir)
+        self.addCleanup(lambda: shutil.rmtree(runtime_dir, ignore_errors=True))
+
+        state = SimpleNamespace(
+            task_id=task_id,
+            problem_text="What word repairs the expression? Answer with the missing token only.",
+            metadata={
+                "workspace_dir": str(Path(__file__).resolve().parents[1]),
+                "workspace_files": [],
+                "gaia_progress_logging": True,
+                "gaia_resume_enabled": True,
+            },
+        )
+
+        result = plan_question(state.problem_text, state)
+
+        state_metadata = result["payload"]["state_metadata"]
+        progress_path = Path(state_metadata["gaia_progress_log_path"])
+        resume_path = Path(state_metadata["gaia_resume_snapshot_path"])
+
+        self.assertEqual(state_metadata["gaia_runtime_stage"], "plan")
+        self.assertIn("gaia_compact_state", state_metadata)
+        self.assertTrue(state_metadata["gaia_recent_progress"])
+        self.assertTrue(state_metadata["gaia_operator_registry"])
+        self.assertTrue(progress_path.exists())
+        self.assertTrue(resume_path.exists())
+
+        snapshot = json.loads(resume_path.read_text(encoding="utf-8"))
+        self.assertEqual(snapshot["task_id"], task_id)
+        self.assertEqual(snapshot["stage"], "plan")
+        self.assertIn("compact_state", snapshot)
 
     def test_best_person_name_from_documents_aggregates_across_all_documents(self) -> None:
         name, evidence = _best_person_name_from_documents(
@@ -3298,6 +3443,49 @@ class GaiaOpsBackendTests(unittest.TestCase):
         self.assertEqual(candidates[0].get("research_mode"), "public_reference_history_ops")
         self.assertNotEqual(candidates[0].get("research_mode"), "scholarly_reference_ops")
 
+    def test_classify_no_file_source_families_emits_answer_contract_and_operator_chain(self) -> None:
+        candidates = _classify_no_file_source_families(
+            "What country had the least number of athletes at the 1928 Summer Olympics? Give the IOC country code as your answer."
+        )
+
+        self.assertTrue(candidates)
+        self.assertEqual(candidates[0].get("research_mode"), "public_record_ops")
+        self.assertEqual(candidates[0].get("answer_contract"), "three_letter_code")
+        self.assertIn("extract_structured_rows", list(candidates[0].get("operator_chain", [])))
+
+    def test_build_plan_metadata_includes_operator_graph_and_contract(self) -> None:
+        metadata = _build_plan_metadata(
+            "What country had the least number of athletes at the 1928 Summer Olympics? Give the IOC country code as your answer.",
+            "public_record_ops",
+        )
+
+        self.assertEqual(metadata["reasoning_schema"].get("answer_contract"), "three_letter_code")
+        self.assertEqual(metadata["operator_graph"].get("primary_operator"), "discover_records")
+        self.assertIn("normalize_answer", metadata["operator_graph"].get("operator_chain", ""))
+
+    @patch("domains.gaia_ops.backend._public_record_search_documents")
+    def test_generalized_browse_candidate_bundles_extract_table_code_answer(self, mock_search: Any) -> None:
+        mock_search.return_value = [
+            {
+                "url": "https://example.com/olympics",
+                "title": "1928 Summer Olympics medal table",
+                "html_text": (
+                    "<table><tr><th>Country</th><th>IOC</th><th>Athletes</th></tr>"
+                    "<tr><td>Cuba</td><td>CUB</td><td>1</td></tr>"
+                    "<tr><td>Peru</td><td>PER</td><td>2</td></tr></table>"
+                ),
+                "text": "Country IOC Athletes Cuba CUB 1 Peru PER 2",
+            }
+        ]
+
+        bundles = _generalized_browse_candidate_bundles(
+            "What country had the least number of athletes at the 1928 Summer Olympics? Give the IOC country code as your answer.",
+            "public_record_ops",
+        )
+
+        self.assertTrue(any(bundle.get("candidate") == "CUB" for bundle in bundles))
+        self.assertTrue(any(bundle.get("answer_contract") == "three_letter_code" for bundle in bundles))
+
     def test_validate_candidate_answer_rejects_url_for_title_prompt(self) -> None:
         accepted, _, report = _validate_candidate_answer(
             'Of the authors that worked on the paper "Pie Menus or Linear Menus, Which Is Better?" in 2015, what was the title of the first paper authored by the one that had authored prior papers?',
@@ -3704,6 +3892,54 @@ class GaiaOpsBackendTests(unittest.TestCase):
         self.assertFalse(result["ok"])
         self.assertIn("quality checks", result["result"])
 
+    @patch("domains.gaia_ops.backend._fallback_external_solver_bundles", return_value=[])
+    @patch("domains.gaia_ops.backend._resolve_scholarly_documents")
+    @patch("domains.gaia_ops.backend._solve_scholarly_reference_ops")
+    def test_solve_question_uses_generalized_browse_bundles_when_primary_scholarly_solver_is_empty(
+        self,
+        mock_solver: Any,
+        mock_documents: Any,
+        _mock_fallback: Any,
+    ) -> None:
+        mock_solver.return_value = ("", ["scholarly source unresolved"], [])
+        mock_documents.return_value = [
+            {
+                "url": "https://example.com/chapter",
+                "title": "World Building chapter",
+                "text": (
+                    "Re discusses dream/reality metalepsis and states that A Nightmare on Elm Street popularized "
+                    "the device between a dream world and waking life."
+                ),
+                "html_text": "",
+                "pdf_text": "",
+                "combined_text": (
+                    "Re discusses dream/reality metalepsis and states that A Nightmare on Elm Street popularized "
+                    "the device between a dream world and waking life."
+                ),
+            }
+        ]
+        state = SimpleNamespace(
+            problem_text='In Valentina Re’s contribution to the 2017 book "World Building: Transmedia, Fans, Industries", what horror movie does the author cite as having popularized metalepsis between a dream world and waking life?',
+            metadata={
+                "workspace_dir": str(Path.cwd()),
+                "workspace_files": [],
+                "question_plan": {"research_mode": "scholarly_reference_ops", "solver_submode": "quoted_paper_lookup"},
+                "candidate_files": [],
+                "benchmark_assistance_mode": "unassisted",
+                "oracle_hints_enabled": False,
+                "allow_case_specific_heuristics": False,
+            },
+        )
+
+        result = solve_question(state.problem_text, state)
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["answer"], "A Nightmare on Elm Street")
+        self.assertEqual(
+            result["payload"]["state_metadata"]["reasoning_schema"].get("answer_contract"),
+            "title",
+        )
+
     @patch("domains.gaia_ops.backend._solve_public_record_ops")
     def test_solve_question_quality_control_rejects_non_code_for_ioc_prompt(self, mock_solver: Any) -> None:
         mock_solver.return_value = (
@@ -3728,8 +3964,9 @@ class GaiaOpsBackendTests(unittest.TestCase):
         self.assertFalse(result["ok"])
         self.assertIn("quality checks", result["result"])
 
+    @patch("domains.gaia_ops.backend._wikipedia_backlinks")
     @patch("domains.gaia_ops.backend._wikipedia_page_links")
-    def test_wikipedia_link_distance_solver_uses_graph_distance(self, mock_links: Any) -> None:
+    def test_wikipedia_link_distance_solver_uses_graph_distance(self, mock_links: Any, mock_backlinks: Any) -> None:
         graph = {
             "The Lord of the Rings": ["Fantasy", "Middle-earth", "J. R. R. Tolkien"],
             "Fantasy": ["A Song of Ice and Fire"],
@@ -3737,7 +3974,12 @@ class GaiaOpsBackendTests(unittest.TestCase):
             "J. R. R. Tolkien": [],
             "A Song of Ice and Fire": [],
         }
+        backlinks = {
+            "A Song of Ice and Fire": ["Fantasy"],
+            "Fantasy": ["The Lord of the Rings"],
+        }
         mock_links.side_effect = lambda title: graph.get(title, [])
+        mock_backlinks.side_effect = lambda title: backlinks.get(title, [])
 
         answer, evidence = _solve_wikipedia_link_distance(
             "What is the minimum number of page links a person must click on to go from the english Wikipedia page on "
@@ -3747,6 +3989,96 @@ class GaiaOpsBackendTests(unittest.TestCase):
 
         self.assertEqual(answer, "2")
         self.assertTrue(any("path depth=2" in item for item in evidence))
+
+    @patch("domains.gaia_ops.backend._wikipedia_backlinks_as_of")
+    @patch("domains.gaia_ops.backend._wikipedia_page_links_as_of")
+    def test_wikipedia_link_distance_solver_uses_historical_bidirectional_search(
+        self,
+        mock_links_as_of: Any,
+        mock_backlinks_as_of: Any,
+    ) -> None:
+        graph = {
+            "The Lord of the Rings": ("Fantasy", "Middle-earth"),
+            "Fantasy": ("A Song of Ice and Fire",),
+            "Middle-earth": tuple(),
+            "A Song of Ice and Fire": tuple(),
+        }
+        backlinks = {
+            "A Song of Ice and Fire": ("Fantasy",),
+            "Fantasy": ("The Lord of the Rings",),
+        }
+        mock_links_as_of.side_effect = lambda title, timestamp: graph.get(title, tuple())
+        mock_backlinks_as_of.side_effect = lambda title, timestamp: backlinks.get(title, tuple())
+
+        answer, evidence = _solve_wikipedia_link_distance(
+            "What is the minimum number of page links a person must click on to go from the english Wikipedia page on "
+            "The Lord of the Rings (the book) to the english Wikipedia page on A Song of Ice and Fire (the book series)? "
+            "In your count, include each link you would click on to get to the page. "
+            "Use the pages as they appeared at the end of the day on July 3, 2023."
+        )
+
+        self.assertEqual(answer, "2")
+        self.assertTrue(any("historical cutoff=20230703" in item for item in evidence))
+        mock_links_as_of.assert_any_call("The Lord of the Rings", "20230703")
+        mock_backlinks_as_of.assert_any_call("A Song of Ice and Fire", "20230703")
+
+    @patch("domains.gaia_ops.backend._wikipedia_query")
+    @patch("domains.gaia_ops.backend._wikipedia_revision_id_as_of")
+    def test_wikipedia_page_links_as_of_caches_and_prunes_titles(
+        self,
+        mock_revision_id: Any,
+        mock_query: Any,
+    ) -> None:
+        _wikipedia_page_links_as_of.cache_clear()
+        mock_revision_id.return_value = (12345, "2023-07-03T23:59:59Z")
+        mock_query.return_value = {
+            "parse": {
+                "links": [
+                    {"ns": 0, "*": "Fantasy"},
+                    {"ns": 4, "*": "Wikipedia:About"},
+                    {"ns": 0, "*": "A Song of Ice and Fire#Adaptations"},
+                ]
+            }
+        }
+
+        try:
+            first = _wikipedia_page_links_as_of("The Lord of the Rings", "20230703")
+            second = _wikipedia_page_links_as_of("The Lord of the Rings", "20230703")
+        finally:
+            _wikipedia_page_links_as_of.cache_clear()
+
+        self.assertEqual(first, ("Fantasy", "A Song of Ice and Fire"))
+        self.assertEqual(second, first)
+        mock_revision_id.assert_called_once_with("The Lord of the Rings", "20230703")
+        mock_query.assert_called_once()
+
+    @patch("domains.gaia_ops.backend._wikipedia_backlinks")
+    @patch("domains.gaia_ops.backend._wikipedia_page_links")
+    def test_wikipedia_bidirectional_link_distance_reports_budget_exhaustion(
+        self,
+        mock_links: Any,
+        mock_backlinks: Any,
+    ) -> None:
+        mock_links.side_effect = lambda title: {
+            "Alpha": ["Beta", "Gamma"],
+            "Beta": ["Delta"],
+            "Gamma": ["Epsilon"],
+        }.get(title, [])
+        mock_backlinks.side_effect = lambda title: {
+            "Omega": ["Psi", "Chi"],
+            "Psi": ["Upsilon"],
+            "Chi": ["Tau"],
+        }.get(title, [])
+
+        answer, evidence = _wikipedia_bidirectional_link_distance(
+            "Alpha",
+            "Omega",
+            expansion_budget=1,
+            time_budget_seconds=30.0,
+        )
+
+        self.assertEqual(answer, "")
+        self.assertTrue(any("search budget exhausted" in item for item in evidence))
 
     @patch("domains.gaia_ops.backend._wikipedia_revision_count_until")
     def test_wikipedia_revision_count_solver_uses_cutoff(self, mock_revision_count: Any) -> None:

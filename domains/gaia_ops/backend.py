@@ -14,6 +14,7 @@ import shutil
 import statistics
 import subprocess
 import tempfile
+import time
 import uuid
 import urllib.parse
 import urllib.error
@@ -59,6 +60,13 @@ from engine.task import ReasoningTask
 from engine.traces import render_human_trace
 from memory.retrieval import retrieve_context
 from proof.parser import parse_actions
+from domains.gaia_ops.query_runtime import (
+    GaiaCompactState,
+    GaiaOperator,
+    GaiaQueryEngine,
+    GaiaSolveContext,
+    get_active_gaia_context,
+)
 
 try:
     import pytesseract  # type: ignore
@@ -128,6 +136,44 @@ GENERIC_BLOCK_PAGE_MARKERS = READER_FALLBACK_WARNING_MARKERS + (
     "verify you are human",
     "enable javascript to continue",
 )
+WIKIPEDIA_GRAPH_NAMESPACE_BLOCKLIST = {
+    "wikipedia",
+    "category",
+    "file",
+    "help",
+    "portal",
+    "special",
+    "talk",
+    "template",
+    "user",
+    "book",
+    "module",
+    "draft",
+    "mediawiki",
+    "timedtext",
+}
+WIKIPEDIA_GRAPH_STOPWORDS = {
+    "a",
+    "an",
+    "and",
+    "book",
+    "books",
+    "english",
+    "for",
+    "in",
+    "of",
+    "on",
+    "page",
+    "series",
+    "the",
+    "to",
+    "wikipedia",
+}
+WIKIPEDIA_LINK_DISTANCE_MAX_DEPTH = 6
+WIKIPEDIA_LINK_DISTANCE_EXPANSION_BUDGET = 80
+WIKIPEDIA_LINK_DISTANCE_FRONTIER_LIMIT = 72
+WIKIPEDIA_LINK_DISTANCE_PER_PAGE_LIMIT = 96
+WIKIPEDIA_LINK_DISTANCE_TIME_BUDGET_SECONDS = 12.0
 GAIA_KNOWN_ERRATA: Dict[str, Dict[str, Any]] = {
     "bec74516-02fc-48dc-b202-55e78d0e17cf": {
         "answer": "26.4",
@@ -171,7 +217,17 @@ except Exception:
                 return {}
 
 
-def _solver_candidate_bundle(candidate, evidence, provenance, *, method: str = "", source_bias: float = 0.0, candidate_kind: str = "") -> Dict[str, Any]:
+def _solver_candidate_bundle(
+    candidate,
+    evidence,
+    provenance,
+    *,
+    method: str = "",
+    source_bias: float = 0.0,
+    candidate_kind: str = "",
+    answer_contract: str = "",
+    operator_chain: Sequence[str] = (),
+) -> Dict[str, Any]:
     return {
         "candidate": candidate,
         "evidence": evidence,
@@ -179,6 +235,8 @@ def _solver_candidate_bundle(candidate, evidence, provenance, *, method: str = "
         "method": method,
         "source_bias": source_bias,
         "candidate_kind": candidate_kind,
+        "answer_contract": str(answer_contract or "").strip(),
+        "operator_chain": [str(item).strip() for item in operator_chain if str(item).strip()],
     }
 
 
@@ -191,6 +249,172 @@ def _dedupe_text_items(items: Sequence[Any]) -> List[str]:
             seen.add(text)
             unique.append(text)
     return unique
+
+
+_GAIA_OPERATOR_NAMES = [
+    "plan_question",
+    "list_files",
+    "inspect_file",
+    "search_arxiv_primary",
+    "search_arxiv_secondary",
+    "solve_question",
+]
+_GAIA_QUERY_ENGINE_SINGLETON: GaiaQueryEngine | None = None
+
+
+def _gaia_text_preview(text: Any, limit: int = 180) -> str:
+    rendered = " ".join(str(text or "").split()).strip()
+    if len(rendered) <= limit:
+        return rendered
+    if limit <= 3:
+        return rendered[:limit]
+    return rendered[: limit - 3].rstrip() + "..."
+
+
+def _gaia_runtime_task_dir(task_id: str) -> Path:
+    cleaned = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(task_id or "manual_gaia")).strip("._") or "manual_gaia"
+    return ROOT / "logs" / "gaia_query_engine" / cleaned
+
+
+def _gaia_runtime_paths_for_state(state: Any) -> Dict[str, str]:
+    metadata = getattr(state, "metadata", {}) or {}
+    task_id = str(getattr(state, "task_id", "") or metadata.get("question_id", "") or metadata.get("task_id", "") or "manual_gaia")
+    task_dir = _gaia_runtime_task_dir(task_id)
+    progress_path = str(metadata.get("gaia_progress_log_path", "") or (task_dir / "progress.jsonl"))
+    resume_path = str(metadata.get("gaia_resume_snapshot_path", "") or (task_dir / "resume.json"))
+    return {
+        "task_dir": str(task_dir),
+        "progress_log_path": progress_path,
+        "resume_snapshot_path": resume_path,
+    }
+
+
+def _gaia_progress_event(event: str, **payload: Any) -> None:
+    context = get_active_gaia_context()
+    if context is None:
+        return
+    safe_payload: Dict[str, Any] = {}
+    for key, value in payload.items():
+        if isinstance(value, (str, int, float, bool)) or value is None:
+            safe_payload[str(key)] = value
+        elif isinstance(value, (list, tuple)):
+            safe_payload[str(key)] = [_gaia_text_preview(item, 120) for item in value[:4]]
+        else:
+            safe_payload[str(key)] = _gaia_text_preview(value, 120)
+    context.emit(event, **safe_payload)
+
+
+def _gaia_candidate_route_labels(plan: Mapping[str, Any]) -> List[str]:
+    labels: List[str] = []
+    route_candidates = plan.get("route_candidates", [])
+    if isinstance(route_candidates, list):
+        for item in route_candidates:
+            if not isinstance(item, dict):
+                continue
+            mode = str(item.get("research_mode", "")).strip()
+            submode = str(item.get("solver_submode", "")).strip()
+            label = mode + (f":{submode}" if submode else "")
+            if label and label not in labels:
+                labels.append(label)
+    return labels[:4]
+
+
+def _gaia_build_runtime_context(state: Any, prompt: str) -> GaiaSolveContext:
+    metadata = dict(getattr(state, "metadata", {}) or {})
+    paths = _gaia_runtime_paths_for_state(state)
+    question_plan = dict(metadata.get("question_plan", {}) or {})
+    progress_log_path = paths["progress_log_path"] if bool(metadata.get("gaia_progress_logging", True)) else ""
+    context = GaiaSolveContext(
+        task_id=str(getattr(state, "task_id", "") or metadata.get("question_id", "") or "manual_gaia"),
+        prompt=str(prompt or ""),
+        workspace_dir=str(metadata.get("workspace_dir", "")),
+        available_files=[str(item) for item in metadata.get("workspace_files", []) if str(item).strip()],
+        metadata=metadata,
+        question_plan=question_plan,
+        progress_log_path=progress_log_path,
+        resume_snapshot_path=paths["resume_snapshot_path"],
+        operator_names=list(_GAIA_OPERATOR_NAMES),
+        resume_enabled=bool(metadata.get("gaia_resume_enabled", False)),
+    )
+    if context.resume_enabled:
+        snapshot = context.load_resume_snapshot()
+        snapshot_plan = snapshot.get("question_plan", {})
+        if isinstance(snapshot_plan, dict) and snapshot_plan and not context.question_plan:
+            context.question_plan = dict(snapshot_plan)
+            context.emit("resume_snapshot_loaded", fields=list(snapshot_plan.keys())[:6])
+    return context
+
+
+def _gaia_compact_state_from_result(state: Any, context: GaiaSolveContext, result: Dict[str, Any]) -> Dict[str, Any]:
+    metadata = dict(getattr(state, "metadata", {}) or {})
+    payload = dict(result.get("payload", result.get("result_payload", {})) or {})
+    result_state_metadata = dict(payload.get("state_metadata", {}) or {})
+    merged_metadata = dict(metadata)
+    merged_metadata.update(result_state_metadata)
+    question_plan = dict(merged_metadata.get("question_plan", {}) or context.question_plan or {})
+    operator_graph = dict(result_state_metadata.get("operator_graph", {}) or question_plan.get("operator_graph", {}) or merged_metadata.get("operator_graph", {}) or {})
+    operator_chain = [
+        str(item).strip()
+        for item in (
+            list(question_plan.get("operator_chain", []))
+            if isinstance(question_plan.get("operator_chain", []), list)
+            else []
+        )
+        if str(item).strip()
+    ]
+    if not operator_chain and str(operator_graph.get("operator_chain", "")).strip():
+        operator_chain = [part.strip() for part in str(operator_graph.get("operator_chain", "")).split("->") if part.strip()]
+    route_candidates = _gaia_candidate_route_labels(question_plan)
+    evidence = _dedupe_text_items([*getattr(state, "evidence_refs", []), *payload.get("evidence", [])])[:6]
+    obligations = [str(item) for item in getattr(state, "obligations", []) if str(item).strip()]
+    for item in payload.get("obligations", []):
+        text = str(item).strip()
+        if text and text not in obligations:
+            obligations.append(text)
+    resolved = {str(item).strip() for item in payload.get("resolved_obligations", []) if str(item).strip()}
+    if resolved:
+        obligations = [item for item in obligations if item not in resolved]
+    rejected_candidates = [
+        _gaia_text_preview(item.get("candidate", ""), 80)
+        for item in context.recent_candidates
+        if isinstance(item, dict) and not bool(item.get("accepted", False)) and str(item.get("candidate", "")).strip()
+    ][:4]
+    compact = GaiaCompactState(
+        task_id=context.task_id,
+        question=_gaia_text_preview(prompt := str(context.prompt or ""), 260),
+        research_mode=str(question_plan.get("research_mode", "") or merged_metadata.get("research_mode", "") or ""),
+        solver_submode=str(question_plan.get("solver_submode", "") or ""),
+        answer_contract=str(
+            question_plan.get("answer_contract", "")
+            or operator_graph.get("answer_contract", "")
+            or result_state_metadata.get("answer_contract", "")
+            or ""
+        ),
+        operator_chain=operator_chain[:6],
+        route_candidates=route_candidates,
+        expected_evidence_kind=str(
+            question_plan.get("expected_evidence_kind", "")
+            or operator_graph.get("expected_evidence_kind", "")
+            or ""
+        ),
+        target_file=str(merged_metadata.get("target_file", "") or ""),
+        candidate_files=[str(item) for item in merged_metadata.get("candidate_files", []) if str(item).strip()][:5],
+        inspected_files=[str(item) for item in merged_metadata.get("inspected_files", []) if str(item).strip()][-5:],
+        evidence=evidence,
+        obligations=obligations[:5],
+        recent_browse_events=context.recent_progress(limit=6, text_item_chars=110),
+        rejected_candidates=rejected_candidates,
+        best_candidate=str(
+            payload.get("candidate_answer", "")
+            or payload.get("answer", "")
+            or result.get("answer", "")
+            or result.get("result", "")
+            or ""
+        ).strip(),
+        answer_confidence=float(merged_metadata.get("answer_confidence", 0.0) or 0.0),
+        provenance=[str(item) for item in merged_metadata.get("answer_provenance", []) if str(item).strip()][:4],
+    )
+    return compact.to_dict()
 
 
 def _known_gaia_erratum(state: Any) -> Dict[str, Any]:
@@ -625,6 +849,114 @@ def _prompt_answer_profile(prompt: str) -> Dict[str, bool]:
     }
 
 
+def _infer_answer_contract(prompt: str, *, research_mode: str = "", solver_submode: str = "") -> str:
+    lowered = str(prompt or "").lower()
+    profile = _prompt_answer_profile(prompt)
+    if "ioc country code" in lowered or "three letter" in lowered:
+        return "three_letter_code"
+    if research_mode == "public_record_ops" and "zip" in lowered:
+        return "zip_list"
+    if profile["expects_person"]:
+        return "person_name"
+    if profile["expects_identifier"]:
+        return "identifier"
+    if profile["expects_time"]:
+        return "clock_time"
+    if profile["expects_move"]:
+        return "move"
+    if profile["expects_ratio"]:
+        return "ratio_text"
+    if profile["expects_sentence"]:
+        return "sentence"
+    if profile["expects_list"]:
+        return "list_text"
+    if profile["expects_title"]:
+        return "title"
+    if profile["expects_short_text"]:
+        return "short_text"
+    if profile["expects_decimal"]:
+        return "decimal_numeric"
+    if profile["expects_numeric"]:
+        return "numeric"
+    if research_mode == "github_public_artifact_ops" and any(token in lowered for token in ("mm/dd/yy", "date", "earliest closed")):
+        return "date_text"
+    if research_mode == "text_reasoning_ops" and solver_submode == "unlambda_missing_token":
+        return "short_text"
+    return "text_or_scalar"
+
+
+def _operator_chain_for_route(prompt: str, research_mode: str, solver_submode: str = "") -> List[str]:
+    mode = str(research_mode or "").strip()
+    submode = str(solver_submode or "").strip()
+    lowered = str(prompt or "").lower()
+    temporal = _temporal_anchor(prompt)
+    chain: List[str]
+    if mode == "scholarly_reference_ops":
+        chain = ["discover_documents", "materialize_sources", "rank_evidence_windows"]
+        if submode == "paper_compare_ops":
+            chain.append("compare_document_measurements")
+        elif submode == "author_prior_publication_lookup":
+            chain.append("trace_author_chronology")
+        else:
+            chain.append("extract_document_answer")
+    elif mode == "public_record_ops":
+        chain = ["discover_records", "extract_structured_rows", "join_or_rank_records", "normalize_answer"]
+    elif mode == "generic_public_reference":
+        chain = ["discover_public_pages", "rank_page_evidence", "extract_page_answer", "normalize_answer"]
+    elif mode == "public_reference_history_ops":
+        chain = ["resolve_historical_page", "collect_revision_evidence", "compare_snapshots", "normalize_answer"]
+    elif mode == "historical_reference_navigation_ops":
+        chain = ["resolve_historical_page", "follow_reference_links", "extract_linked_fact", "normalize_answer"]
+    elif mode == "web_archive_ops":
+        chain = ["resolve_archived_snapshot", "diff_snapshot_content", "normalize_answer"]
+    elif mode == "github_public_artifact_ops":
+        chain = ["discover_repository_artifacts", "extract_timeline_events", "normalize_answer"]
+    elif mode == "cross_source_entity_ops":
+        chain = ["discover_candidate_sources", "resolve_entities", "cross_source_join", "normalize_answer"]
+    elif mode == "video_transcript_ops":
+        chain = ["discover_media_source", "align_transcript_or_metadata", "extract_temporal_answer", "normalize_answer"]
+    elif mode == "audio_transcription_ops":
+        chain = ["transcribe_audio", "align_requested_span", "normalize_answer"]
+    elif mode == "public_data_query_ops":
+        chain = ["discover_public_dataset", "extract_source_values", "transform_values", "normalize_answer"]
+        if submode in {"wikipedia_revision_count", "wikipedia_link_distance"}:
+            chain[0] = "resolve_wikipedia_graph"
+        elif submode == "usda_standards_supersession":
+            chain[0] = "resolve_regulatory_corpus"
+    elif mode == "spreadsheet_reasoning_ops":
+        chain = ["parse_workbook", "extract_table_state", "compute_grid_answer", "normalize_answer"]
+    elif mode in {"image_vision_ops", "office_document_ops"}:
+        chain = ["extract_visible_evidence", "derive_structured_state", "normalize_answer"]
+    elif mode == "text_reasoning_ops":
+        chain = ["reduce_prompt_constraints", "solve_symbolic_state", "normalize_answer"]
+    elif mode in {"pdb_first_atom_distance", "orcid_jsonld_average"}:
+        chain = ["parse_structured_file", "compute_answer", "normalize_answer"]
+    else:
+        chain = ["discover_evidence", "extract_candidate", "normalize_answer"]
+    if temporal.get("historical") and chain and chain[0] not in {"resolve_historical_page", "resolve_archived_snapshot"}:
+        chain.insert(0, "anchor_timeframe")
+    if "compare" in lowered and "compare_document_measurements" not in chain and "diff_snapshot_content" not in chain:
+        chain.insert(max(1, len(chain) - 1), "compare_candidates")
+    return chain
+
+
+def _structural_plan_fields(prompt: str, research_mode: str, solver_submode: str = "") -> Dict[str, Any]:
+    mode = str(research_mode or "").strip()
+    submode = str(solver_submode or "").strip()
+    if not mode:
+        return {}
+    answer_contract = _infer_answer_contract(prompt, research_mode=mode, solver_submode=submode)
+    operator_chain = _operator_chain_for_route(prompt, mode, submode)
+    expected_evidence_kind = _route_expected_evidence_kind(mode, submode)
+    payload: Dict[str, Any] = {
+        "answer_contract": answer_contract,
+        "operator_chain": operator_chain,
+    }
+    if expected_evidence_kind:
+        payload["expected_evidence_kind"] = expected_evidence_kind
+    return payload
+
+
 def _is_numeric_candidate(text: str) -> bool:
     return bool(re.fullmatch(r"[-+]?\d[\d,]*(?:\.\d+)?%?", str(text or "").strip()))
 
@@ -666,6 +998,9 @@ def _looks_like_header_blob(text: str) -> bool:
     if len(header_tokens & set(lowered.split())) >= 2 and not re.search(r"[.!?]", normalized):
         return True
     titlecase_ratio = sum(1 for word in words if word[:1].isupper()) / float(len(words))
+    connective_tokens = {"a", "an", "and", "at", "for", "from", "in", "of", "on", "the", "to", "with"}
+    if any(word.lower() in connective_tokens for word in words) and not (header_tokens & set(lowered.split())):
+        return False
     return titlecase_ratio >= 0.8 and len(words) >= 5 and not re.search(r"[.!?]", normalized)
 
 
@@ -813,10 +1148,13 @@ def _score_solver_candidate(
         research_mode=research_mode,
         evidence=evidence,
         method=method,
+        answer_contract=str(bundle.get("answer_contract", "") or ""),
     )
     normalized_candidate = normalized_candidate or raw_candidate
     profile = _prompt_answer_profile(prompt)
+    answer_contract = str(bundle.get("answer_contract", "") or "")
     candidate_kind = str(bundle.get("candidate_kind", "") or _infer_candidate_kind(prompt, normalized_candidate))
+    operator_chain = [str(item).strip() for item in list(bundle.get("operator_chain", [])) if str(item).strip()]
     evidence_blob = " ".join(evidence).lower()
     score = float(bundle.get("source_bias", 0.0) or 0.0)
     score += min(0.24, 0.07 * len(evidence))
@@ -824,6 +1162,9 @@ def _score_solver_candidate(
     notes: List[str] = []
     if evidence:
         notes.append(f"supporting evidence={len(evidence)}")
+    if operator_chain:
+        score += min(0.10, 0.02 * len(operator_chain))
+        notes.append(f"operator chain={operator_chain[0]}->{operator_chain[-1]}")
     provenance_families = {
         urllib.parse.urlparse(item).netloc or item.split(":", 1)[0]
         for item in provenance
@@ -837,6 +1178,23 @@ def _score_solver_candidate(
     else:
         score -= 0.40
         notes.extend(str(item) for item in quality_report.get("notes", [])[:2])
+    if answer_contract:
+        contract_bonus = {
+            "person_name": "person_name",
+            "identifier": "identifier",
+            "clock_time": "clock_time",
+            "move": "move",
+            "three_letter_code": "code",
+            "numeric": "numeric",
+            "decimal_numeric": "numeric",
+            "short_text": "short_text",
+            "title": "short_text",
+            "sentence": "sentence",
+            "list_text": "list_text",
+        }.get(answer_contract, "")
+        if contract_bonus and candidate_kind == contract_bonus:
+            score += 0.12
+            notes.append(f"contract fit={answer_contract}")
     normalized_lower = normalized_candidate.lower()
     if normalized_lower and normalized_lower in evidence_blob:
         score += 0.08
@@ -898,6 +1256,7 @@ def _select_best_solver_candidate(prompt: str, candidates: List[Dict[str, Any]],
                 "provenance": _dedupe_text_items(bundle.get("provenance", [])),
                 "notes": list(notes),
                 "candidate_kind": candidate_kind,
+                "answer_contracts": _dedupe_text_items([bundle.get("answer_contract", "")]),
             }
             continue
         if str(bundle.get("method", "") or "solver") not in entry["methods"]:
@@ -908,10 +1267,62 @@ def _select_best_solver_candidate(prompt: str, candidates: List[Dict[str, Any]],
         entry["evidence"] = _dedupe_text_items([*entry["evidence"], *bundle.get("evidence", [])])
         entry["provenance"] = _dedupe_text_items([*entry["provenance"], *bundle.get("provenance", [])])
         entry["notes"] = _dedupe_text_items([*entry["notes"], *notes])
+        entry["answer_contracts"] = _dedupe_text_items([*entry.get("answer_contracts", []), bundle.get("answer_contract", "")])
     if not aggregated:
         return ("", fallback_evidence or [], [])
-    chosen = max(aggregated.values(), key=lambda item: float(item.get("score", float("-inf"))))
-    if float(chosen.get("score", float("-inf"))) < _candidate_selection_threshold(research_mode):
+    threshold = _candidate_selection_threshold(research_mode)
+    ranked = sorted(aggregated.values(), key=lambda item: float(item.get("score", float("-inf"))), reverse=True)
+    context = get_active_gaia_context()
+    if context is not None:
+        context.emit(
+            "candidate_pool_scored",
+            count=len(ranked),
+            threshold=threshold,
+            research_mode=str(research_mode or ""),
+        )
+    chosen: Dict[str, Any] | None = None
+    for rank, entry in enumerate(ranked[:8], start=1):
+        answer_contract = next((item for item in entry.get("answer_contracts", []) if str(item).strip()), "")
+        quality_ok, normalized_candidate, quality_report = _validate_candidate_answer(
+            prompt,
+            str(entry.get("candidate", "")),
+            research_mode=str(research_mode or ""),
+            evidence=entry.get("evidence", []),
+            method=str((entry.get("methods", []) or ["solver"])[0]),
+            answer_contract=answer_contract,
+        )
+        if normalized_candidate:
+            entry["candidate"] = normalized_candidate
+        accepted = quality_ok and float(entry.get("score", float("-inf"))) >= threshold
+        if context is not None:
+            candidate_preview = _gaia_text_preview(entry.get("candidate", ""), 96)
+            note_blob = _dedupe_text_items([*entry.get("notes", []), *quality_report.get("notes", [])])[:3]
+            context.remember_candidate(
+                candidate_preview,
+                accepted=accepted,
+                score=float(entry.get("score", 0.0) or 0.0),
+                notes=note_blob,
+                method=str((entry.get("methods", []) or ["solver"])[0]),
+            )
+            context.emit(
+                "contract_retry_candidate",
+                rank=rank,
+                candidate=candidate_preview,
+                score=round(float(entry.get("score", 0.0) or 0.0), 3),
+                accepted=accepted,
+                reason="; ".join(note_blob) if note_blob else ("threshold miss" if quality_ok else "shape rejected"),
+            )
+        if accepted:
+            chosen = entry
+            break
+    if chosen is None:
+        if context is not None and ranked:
+            context.emit(
+                "contract_retry_exhausted",
+                best_candidate=_gaia_text_preview(ranked[0].get("candidate", ""), 96),
+                best_score=round(float(ranked[0].get("score", 0.0) or 0.0), 3),
+                threshold=threshold,
+            )
         return ("", fallback_evidence or [], [])
     evidence = _dedupe_text_items(
         [
@@ -2391,7 +2802,18 @@ def _temporal_anchor(prompt: str) -> Dict[str, Any]:
         }
 
     mentions = _extract_date_mentions(text)
-    if mentions and any(marker in lowered for marker in ("as of", "latest", "historical", "archive", "archived")):
+    if mentions and any(
+        marker in lowered
+        for marker in (
+            "as of",
+            "latest",
+            "historical",
+            "archive",
+            "archived",
+            "end of the day on",
+            "appeared at the end of the day on",
+        )
+    ):
         mention = mentions[-1]
         year = int(mention.get("year", 0) or 0)
         month = int(mention.get("month", 1) or 1)
@@ -4536,9 +4958,12 @@ def _reader_fallback_text(url: str) -> str:
         with urllib.request.urlopen(reader_req, timeout=30) as response:
             text = _decode_http_text(response, response.read())
     except Exception:
+        _gaia_progress_event("browse_reader_fetch", url=url, mode="reader", status="error")
         return ""
     if not text.strip() or _looks_like_reader_block_page(text):
+        _gaia_progress_event("browse_reader_fetch", url=url, mode="reader", status="blocked")
         return ""
+    _gaia_progress_event("browse_reader_fetch", url=url, mode="reader", status="ok")
     return text
 
 
@@ -4583,7 +5008,10 @@ def _playwright_browser_fetch_dom(url: str) -> str:
                     page.wait_for_load_state("networkidle", timeout=5_000)
                 except Exception:
                     pass
-                return str(page.content() or "")
+                html_text = str(page.content() or "")
+                if html_text:
+                    _gaia_progress_event("browse_dom_fetch", url=cleaned_url, mode="playwright", status="ok")
+                return html_text
             finally:
                 if browser is not None:
                     try:
@@ -4591,6 +5019,7 @@ def _playwright_browser_fetch_dom(url: str) -> str:
                     except Exception:
                         pass
     except Exception:
+        _gaia_progress_event("browse_dom_fetch", url=cleaned_url, mode="playwright", status="error")
         return ""
 
 
@@ -4604,6 +5033,7 @@ def _browser_fetch_dom(url: str) -> str:
         return playwright_dom
     executable = _browser_executable()
     if not executable:
+        _gaia_progress_event("browse_dom_fetch", url=cleaned_url, mode="browser_binary", status="unavailable")
         return ""
     try:
         with tempfile.TemporaryDirectory(prefix="gaia-browser-") as profile_dir:
@@ -4628,10 +5058,13 @@ def _browser_fetch_dom(url: str) -> str:
                 timeout=45,
             )
     except Exception:
+        _gaia_progress_event("browse_dom_fetch", url=cleaned_url, mode="browser_binary", status="error")
         return ""
     stdout = str(completed.stdout or "").strip()
     if not stdout:
+        _gaia_progress_event("browse_dom_fetch", url=cleaned_url, mode="browser_binary", status="empty")
         return ""
+    _gaia_progress_event("browse_dom_fetch", url=cleaned_url, mode="browser_binary", status="ok")
     return stdout
 
 
@@ -4670,23 +5103,33 @@ def _http_get_text_cached(url: str, header_items: tuple[tuple[str, str], ...]) -
         with urllib.request.urlopen(req, timeout=30) as response:
             text = _decode_http_text(response, response.read())
     except urllib.error.HTTPError as exc:
+        _gaia_progress_event("browse_http_fetch", url=url, mode="http", status=f"http_{int(exc.code)}")
         if exc.code not in READER_FALLBACK_ERROR_CODES or str(url).startswith("https://r.jina.ai/"):
             raise
         browser_html = _browser_fetch_dom(url)
         if browser_html and not _looks_like_unusable_web_response(browser_html):
+            _gaia_progress_event("browse_http_fallback", url=url, mode="browser", status="ok")
             return browser_html
         reader_text = _reader_fallback_text(url)
         if reader_text:
+            _gaia_progress_event("browse_http_fallback", url=url, mode="reader", status="ok")
             return reader_text
         raise exc
+    except Exception:
+        _gaia_progress_event("browse_http_fetch", url=url, mode="http", status="error")
+        raise
     if not _looks_like_unusable_web_response(text):
+        _gaia_progress_event("browse_http_fetch", url=url, mode="http", status="ok")
         return text
     browser_html = _browser_fetch_dom(url)
     if browser_html and not _looks_like_unusable_web_response(browser_html):
+        _gaia_progress_event("browse_http_fallback", url=url, mode="browser", status="ok")
         return browser_html
     reader_text = _reader_fallback_text(url)
     if reader_text:
+        _gaia_progress_event("browse_http_fallback", url=url, mode="reader", status="ok")
         return reader_text
+    _gaia_progress_event("browse_http_fetch", url=url, mode="http", status="unusable")
     return text
 
 
@@ -4746,6 +5189,7 @@ def _extract_prompt_urls(prompt: str) -> List[str]:
 def _fetch_search_documents(query: str, *, max_results: int = 4, allow_domains: Sequence[str] = ()) -> List[Dict[str, str]]:
     documents: List[Dict[str, str]] = []
     normalized_allow = [domain.lower() for domain in allow_domains if str(domain).strip()]
+    _gaia_progress_event("browse_search", query=query, mode="duckduckgo", status="start")
     for result in _duckduckgo_search(query, max_results=max_results):
         url = str(result.get("url", "")).strip()
         if not url:
@@ -4775,6 +5219,7 @@ def _fetch_search_documents(query: str, *, max_results: int = 4, allow_domains: 
                 "fetch_mode": str(fetched.get("fetch_mode", "") or ""),
             }
         )
+    _gaia_progress_event("browse_search", query=query, mode="duckduckgo", status="ok", count=len(documents))
     return documents
 
 
@@ -5237,17 +5682,29 @@ def _solve_thinking_machine_prediction(prompt: str) -> tuple[str, List[str]]:
 
 def _wikipedia_query(params: Dict[str, Any]) -> Dict[str, Any]:
     url = WIKIPEDIA_API_URL + "?" + urllib.parse.urlencode({str(key): value for key, value in params.items()})
+    _gaia_progress_event(
+        "browse_wikipedia_query",
+        query=params.get("action", ""),
+        mode=params.get("prop", "") or params.get("list", "") or params.get("titles", "") or params.get("page", ""),
+        status="start",
+    )
     text = _http_get_text(url, headers={"Accept": "application/json", **DEFAULT_HEADERS})
     try:
-        return json.loads(text)
+        payload = json.loads(text)
+        _gaia_progress_event("browse_wikipedia_query", query=params.get("action", ""), status="ok")
+        return payload
     except json.JSONDecodeError:
         start = text.find("{")
         end = text.rfind("}")
         if 0 <= start < end:
             try:
-                return json.loads(text[start : end + 1])
+                payload = json.loads(text[start : end + 1])
+                _gaia_progress_event("browse_wikipedia_query", query=params.get("action", ""), status="recovered")
+                return payload
             except json.JSONDecodeError:
+                _gaia_progress_event("browse_wikipedia_query", query=params.get("action", ""), status="decode_error")
                 return {}
+    _gaia_progress_event("browse_wikipedia_query", query=params.get("action", ""), status="decode_error")
     return {}
 
 
@@ -8448,9 +8905,116 @@ def _normalize_wikipedia_prompt_title(title: str) -> str:
     return re.sub(r"\s*\((?:the|an?) [^)]+\)\s*$", "", cleaned, flags=re.IGNORECASE)
 
 
-def _wikipedia_page_links(title: str) -> List[str]:
-    links: List[str] = []
+def _normalize_wikipedia_graph_title(title: str) -> str:
+    cleaned = html.unescape(str(title or "").replace("_", " "))
+    cleaned = cleaned.lstrip(":")
+    cleaned = cleaned.split("#", 1)[0]
+    cleaned = " ".join(cleaned.split()).strip(" .")
+    return cleaned
+
+
+def _is_allowed_wikipedia_graph_title(title: str) -> bool:
+    normalized = _normalize_wikipedia_graph_title(title)
+    if not normalized:
+        return False
+    namespace, _, _rest = normalized.partition(":")
+    if _ and namespace.strip().lower() in WIKIPEDIA_GRAPH_NAMESPACE_BLOCKLIST:
+        return False
+    return True
+
+
+def _wikipedia_graph_tokens(title: str) -> List[str]:
+    normalized = _normalize_wikipedia_graph_title(title).lower()
+    return [
+        token
+        for token in re.findall(r"[a-z0-9]+", normalized)
+        if token and token not in WIKIPEDIA_GRAPH_STOPWORDS
+    ]
+
+
+def _wikipedia_graph_priority(title: str, goal_title: str) -> tuple[int, int, int, str]:
+    candidate_tokens = set(_wikipedia_graph_tokens(title))
+    goal_tokens = set(_wikipedia_graph_tokens(goal_title))
+    overlap = len(candidate_tokens & goal_tokens)
+    lowered = _normalize_wikipedia_graph_title(title).lower()
+    penalty = 0
+    if lowered.startswith(("list of ", "index of ", "outline of ")):
+        penalty += 2
+    if re.fullmatch(r"(?:1[0-9]{3}|20[0-9]{2})", lowered):
+        penalty += 2
+    if "(disambiguation)" in lowered:
+        penalty += 4
+    return (-overlap, penalty, len(candidate_tokens), lowered)
+
+
+def _rank_wikipedia_graph_titles(titles: Iterable[str], goal_title: str, *, limit: int = 0) -> List[str]:
+    ranked: List[str] = []
     seen: set[str] = set()
+    for raw in titles:
+        normalized = _normalize_wikipedia_graph_title(raw)
+        if not normalized or normalized in seen or not _is_allowed_wikipedia_graph_title(normalized):
+            continue
+        seen.add(normalized)
+        ranked.append(normalized)
+    ranked.sort(key=lambda item: _wikipedia_graph_priority(item, goal_title))
+    if limit > 0:
+        return ranked[:limit]
+    return ranked
+
+
+def _extract_wikitext_page_links(wikitext: str) -> List[str]:
+    titles: List[str] = []
+    for raw in re.findall(r"\[\[([^\[\]]+?)\]\]", str(wikitext or "")):
+        candidate = raw.split("|", 1)[0].strip()
+        normalized = _normalize_wikipedia_graph_title(candidate)
+        if normalized and _is_allowed_wikipedia_graph_title(normalized) and normalized not in titles:
+            titles.append(normalized)
+    return titles
+
+
+@functools.lru_cache(maxsize=256)
+def _wikipedia_revision_id_as_of(title: str, timestamp: str) -> tuple[int, str]:
+    normalized_timestamp = str(timestamp or "").strip()
+    if re.fullmatch(r"\d{8}", normalized_timestamp):
+        normalized_timestamp = f"{normalized_timestamp[:4]}-{normalized_timestamp[4:6]}-{normalized_timestamp[6:8]}T23:59:59Z"
+    elif re.fullmatch(r"\d{14}", normalized_timestamp):
+        normalized_timestamp = (
+            f"{normalized_timestamp[:4]}-{normalized_timestamp[4:6]}-{normalized_timestamp[6:8]}"
+            f"T{normalized_timestamp[8:10]}:{normalized_timestamp[10:12]}:{normalized_timestamp[12:14]}Z"
+        )
+    if not normalized_timestamp:
+        return (0, "")
+    try:
+        payload = _wikipedia_query(
+            {
+                "action": "query",
+                "prop": "revisions",
+                "titles": title,
+                "rvprop": "ids|timestamp",
+                "rvlimit": 1,
+                "rvstart": normalized_timestamp,
+                "rvdir": "older",
+                "format": "json",
+                "formatversion": 2,
+            }
+        )
+    except Exception:
+        return (0, "")
+    pages = payload.get("query", {}).get("pages", []) or []
+    revisions = pages[0].get("revisions", []) if pages else []
+    if not revisions:
+        return (0, "")
+    revision = revisions[0]
+    try:
+        return (int(revision.get("revid", 0) or 0), str(revision.get("timestamp", "") or ""))
+    except Exception:
+        return (0, str(revision.get("timestamp", "") or ""))
+
+
+@functools.lru_cache(maxsize=512)
+def _wikipedia_page_links_cached(title: str) -> tuple[str, ...]:
+    links: List[str] = []
+    raw_limit = max(192, WIKIPEDIA_LINK_DISTANCE_PER_PAGE_LIMIT * 2)
     continue_token = ""
     while True:
         params: Dict[str, Any] = {
@@ -8458,23 +9022,246 @@ def _wikipedia_page_links(title: str) -> List[str]:
             "prop": "links",
             "titles": title,
             "pllimit": "max",
+            "plnamespace": "0",
             "format": "json",
             "formatversion": 2,
         }
         if continue_token:
             params["plcontinue"] = continue_token
-        payload = _wikipedia_query(params)
+        try:
+            payload = _wikipedia_query(params)
+        except Exception:
+            break
         pages = payload.get("query", {}).get("pages", []) or []
         page_links = pages[0].get("links", []) if pages else []
         for item in page_links:
-            link_title = " ".join(str(item.get("title", "") or "").split()).strip()
-            if link_title and link_title not in seen:
-                seen.add(link_title)
-                links.append(link_title)
+            normalized = _normalize_wikipedia_graph_title(str(item.get("title", "") or ""))
+            if normalized and _is_allowed_wikipedia_graph_title(normalized) and normalized not in links:
+                links.append(normalized)
+            if len(links) >= raw_limit:
+                break
+        if len(links) >= raw_limit:
+            break
         continue_token = str((payload.get("continue", {}) or {}).get("plcontinue", "") or "").strip()
         if not continue_token:
             break
-    return links
+    return tuple(links)
+
+
+def _wikipedia_page_links(title: str) -> List[str]:
+    return list(_wikipedia_page_links_cached(title))
+
+
+@functools.lru_cache(maxsize=512)
+def _wikipedia_page_links_as_of(title: str, timestamp: str) -> tuple[str, ...]:
+    revision_id, _revision_timestamp = _wikipedia_revision_id_as_of(title, timestamp)
+    links: List[str] = []
+    raw_limit = max(192, WIKIPEDIA_LINK_DISTANCE_PER_PAGE_LIMIT * 2)
+    if revision_id > 0:
+        try:
+            payload = _wikipedia_query(
+                {
+                    "action": "parse",
+                    "oldid": revision_id,
+                    "prop": "links",
+                    "format": "json",
+                }
+            )
+        except Exception:
+            payload = {}
+        parse_links = (payload.get("parse", {}) or {}).get("links", []) or []
+        for item in parse_links:
+            if int(item.get("ns", 0) or 0) != 0:
+                continue
+            normalized = _normalize_wikipedia_graph_title(str(item.get("*", "") or ""))
+            if normalized and _is_allowed_wikipedia_graph_title(normalized) and normalized not in links:
+                links.append(normalized)
+            if len(links) >= raw_limit:
+                break
+    if not links:
+        try:
+            fallback = _extract_wikitext_page_links(_wikipedia_wikitext_as_of(title, timestamp))
+        except Exception:
+            fallback = []
+        for item in fallback:
+            if item not in links:
+                links.append(item)
+            if len(links) >= raw_limit:
+                break
+    return tuple(links)
+
+
+@functools.lru_cache(maxsize=512)
+def _wikipedia_backlinks_cached(title: str) -> tuple[str, ...]:
+    backlinks: List[str] = []
+    raw_limit = max(192, WIKIPEDIA_LINK_DISTANCE_FRONTIER_LIMIT * 3)
+    continue_token = ""
+    while True:
+        params: Dict[str, Any] = {
+            "action": "query",
+            "list": "backlinks",
+            "bltitle": title,
+            "bllimit": "max",
+            "blnamespace": "0",
+            "blfilterredir": "nonredirects",
+            "format": "json",
+        }
+        if continue_token:
+            params["blcontinue"] = continue_token
+        try:
+            payload = _wikipedia_query(params)
+        except Exception:
+            break
+        items = payload.get("query", {}).get("backlinks", []) or []
+        for item in items:
+            normalized = _normalize_wikipedia_graph_title(str(item.get("title", "") or ""))
+            if normalized and _is_allowed_wikipedia_graph_title(normalized) and normalized not in backlinks:
+                backlinks.append(normalized)
+            if len(backlinks) >= raw_limit:
+                break
+        if len(backlinks) >= raw_limit:
+            break
+        continue_token = str((payload.get("continue", {}) or {}).get("blcontinue", "") or "").strip()
+        if not continue_token:
+            break
+    return tuple(backlinks)
+
+
+def _wikipedia_backlinks(title: str) -> List[str]:
+    return list(_wikipedia_backlinks_cached(title))
+
+
+@functools.lru_cache(maxsize=256)
+def _wikipedia_backlinks_as_of(title: str, timestamp: str) -> tuple[str, ...]:
+    validated: List[str] = []
+    for candidate in _wikipedia_backlinks_cached(title)[: max(24, WIKIPEDIA_LINK_DISTANCE_FRONTIER_LIMIT * 2)]:
+        try:
+            outgoing = _wikipedia_page_links_as_of(candidate, timestamp)
+        except Exception:
+            continue
+        if title in outgoing and candidate not in validated:
+            validated.append(candidate)
+        if len(validated) >= WIKIPEDIA_LINK_DISTANCE_PER_PAGE_LIMIT:
+            break
+    return tuple(validated)
+
+
+def _wikipedia_graph_neighbors(
+    title: str,
+    *,
+    timestamp: str = "",
+    reverse: bool = False,
+    goal_title: str = "",
+    limit: int = WIKIPEDIA_LINK_DISTANCE_PER_PAGE_LIMIT,
+) -> List[str]:
+    raw_titles: Sequence[str]
+    try:
+        if reverse:
+            raw_titles = _wikipedia_backlinks_as_of(title, timestamp) if timestamp else _wikipedia_backlinks(title)
+        else:
+            raw_titles = _wikipedia_page_links_as_of(title, timestamp) if timestamp else _wikipedia_page_links(title)
+    except Exception:
+        raw_titles = ()
+    return _rank_wikipedia_graph_titles(raw_titles, goal_title or title, limit=limit)
+
+
+def _wikipedia_reconstruct_path(
+    meeting: str,
+    forward_parent: Dict[str, Optional[str]],
+    backward_parent: Dict[str, Optional[str]],
+) -> List[str]:
+    left: List[str] = []
+    cursor: Optional[str] = meeting
+    while cursor is not None:
+        left.append(cursor)
+        cursor = forward_parent.get(cursor)
+    left.reverse()
+    right: List[str] = []
+    cursor = backward_parent.get(meeting)
+    while cursor is not None:
+        right.append(cursor)
+        cursor = backward_parent.get(cursor)
+    return left + right
+
+
+def _wikipedia_bidirectional_link_distance(
+    source: str,
+    target: str,
+    *,
+    timestamp: str = "",
+    max_depth: int = WIKIPEDIA_LINK_DISTANCE_MAX_DEPTH,
+    expansion_budget: int = WIKIPEDIA_LINK_DISTANCE_EXPANSION_BUDGET,
+    frontier_limit: int = WIKIPEDIA_LINK_DISTANCE_FRONTIER_LIMIT,
+    per_page_limit: int = WIKIPEDIA_LINK_DISTANCE_PER_PAGE_LIMIT,
+    time_budget_seconds: float = WIKIPEDIA_LINK_DISTANCE_TIME_BUDGET_SECONDS,
+) -> tuple[str, List[str]]:
+    normalized_source = _normalize_wikipedia_graph_title(source)
+    normalized_target = _normalize_wikipedia_graph_title(target)
+    if not normalized_source or not normalized_target:
+        return ("", [])
+    if normalized_source == normalized_target:
+        return ("0", [f"path depth=0", f"path={normalized_source}"])
+
+    forward_depth: Dict[str, int] = {normalized_source: 0}
+    backward_depth: Dict[str, int] = {normalized_target: 0}
+    forward_parent: Dict[str, Optional[str]] = {normalized_source: None}
+    backward_parent: Dict[str, Optional[str]] = {normalized_target: None}
+    forward_frontier: List[str] = [normalized_source]
+    backward_frontier: List[str] = [normalized_target]
+    expansions = 0
+    deadline = time.monotonic() + max(0.5, float(time_budget_seconds))
+    evidence: List[str] = []
+    if timestamp:
+        evidence.append(f"historical cutoff={timestamp}")
+
+    while forward_frontier and backward_frontier:
+        if time.monotonic() >= deadline:
+            return ("", evidence + [f"search budget exhausted time={time_budget_seconds:.1f}s expansions={expansions}"])
+        expand_forward = len(forward_frontier) <= len(backward_frontier)
+        current_frontier = forward_frontier if expand_forward else backward_frontier
+        next_frontier: List[str] = []
+        current_depth_map = forward_depth if expand_forward else backward_depth
+        current_parent_map = forward_parent if expand_forward else backward_parent
+        opposite_depth_map = backward_depth if expand_forward else forward_depth
+        goal_title = normalized_target if expand_forward else normalized_source
+        for title in current_frontier:
+            if expansions >= expansion_budget:
+                return ("", evidence + [f"search budget exhausted expansions={expansions}"])
+            depth = current_depth_map.get(title, 0)
+            if depth >= max_depth:
+                continue
+            expansions += 1
+            neighbors = _wikipedia_graph_neighbors(
+                title,
+                timestamp=timestamp,
+                reverse=not expand_forward,
+                goal_title=goal_title,
+                limit=per_page_limit,
+            )
+            next_depth = depth + 1
+            for neighbor in neighbors:
+                if neighbor in current_depth_map or next_depth > max_depth:
+                    continue
+                current_depth_map[neighbor] = next_depth
+                current_parent_map[neighbor] = title
+                if neighbor in opposite_depth_map and next_depth + opposite_depth_map[neighbor] <= max_depth:
+                    path = _wikipedia_reconstruct_path(neighbor, forward_parent, backward_parent)
+                    return (
+                        str(len(path) - 1),
+                        evidence
+                        + [
+                            f"path depth={len(path) - 1}",
+                            f"path={' -> '.join(path[:6])}",
+                            f"expansions={expansions}",
+                        ],
+                    )
+                next_frontier.append(neighbor)
+        ranked_frontier = _rank_wikipedia_graph_titles(next_frontier, goal_title, limit=frontier_limit)
+        if expand_forward:
+            forward_frontier = ranked_frontier
+        else:
+            backward_frontier = ranked_frontier
+    return ("", evidence + [f"no path found from {normalized_source} to {normalized_target}", f"expansions={expansions}"])
 
 
 def _country_capital_from_wikitext(country: str) -> str:
@@ -8551,25 +9338,9 @@ def _solve_wikipedia_link_distance(prompt: str) -> tuple[str, List[str]]:
     target = _normalize_wikipedia_prompt_title(match.group(2))
     if not source or not target:
         return ("", [])
-    queue: deque[tuple[str, int, List[str]]] = deque([(source, 0, [source])])
-    seen = {source}
-    while queue:
-        title, depth, path = queue.popleft()
-        if title == target:
-            return (str(depth), [f"path depth={depth}", f"path={' -> '.join(path[:4])}"])
-        if depth >= 6:
-            continue
-        try:
-            outgoing = _wikipedia_page_links(title)
-        except Exception:
-            outgoing = []
-        for linked_title in outgoing:
-            normalized = _normalize_wikipedia_prompt_title(linked_title)
-            if normalized in seen:
-                continue
-            seen.add(normalized)
-            queue.append((normalized, depth + 1, [*path, normalized]))
-    return ("", [f"no path found from {source} to {target}"])
+    anchor = _temporal_anchor(prompt)
+    timestamp = _temporal_anchor_timestamp(anchor)
+    return _wikipedia_bidirectional_link_distance(source, target, timestamp=timestamp)
 
 
 def _wikipedia_revision_count_until(title: str, timestamp: str) -> int:
@@ -9396,7 +10167,7 @@ def _solve_paper_compare_ops(prompt: str) -> tuple[str, List[str], List[str]]:
     return ("", evidence, provenance)
 
 
-def _build_plan_metadata(prompt: str, research_mode: str) -> Dict[str, Dict[str, str]]:
+def _build_plan_metadata(prompt: str, research_mode: str, solver_submode: str = "") -> Dict[str, Dict[str, str]]:
     time_mentions = _extract_date_mentions(prompt)
     if not time_mentions:
         year_matches = re.findall(r"\b(?:19|20)\d{2}\b", str(prompt or ""))
@@ -9414,6 +10185,12 @@ def _build_plan_metadata(prompt: str, research_mode: str) -> Dict[str, Dict[str,
     task_algebra: Dict[str, str] = {}
     role_machine: Dict[str, str] = {}
     augmentation_layer: Dict[str, str] = {}
+    structural_fields = _structural_plan_fields(prompt, research_mode, solver_submode)
+    if structural_fields.get("answer_contract"):
+        reasoning_schema["answer_contract"] = str(structural_fields.get("answer_contract", ""))
+    if structural_fields.get("expected_evidence_kind"):
+        reasoning_schema["expected_evidence_kind"] = str(structural_fields.get("expected_evidence_kind", ""))
+    operator_chain = [str(item).strip() for item in list(structural_fields.get("operator_chain", [])) if str(item).strip()]
     if research_mode == "public_record_ops":
         reasoning_schema.update({"source_family": "public_record", "operator": "rank_or_join", "output_contract": "three_letter_code" if "ioc" in prompt.lower() else "clock_or_scalar"})
         task_algebra.update({"equation": "time x source x operator x contract x rival", "source_axis": "public_record"})
@@ -9455,12 +10232,470 @@ def _build_plan_metadata(prompt: str, research_mode: str) -> Dict[str, Dict[str,
     elif research_mode in {"image_vision_ops", "office_document_ops"}:
         reasoning_schema.update({"source_family": "multimodal", "operator": "ocr_extraction", "output_contract": "text_or_scalar"})
         augmentation_layer.update({"mode": "ocr_public_reference", "mindset": "structural grounding"})
+    if operator_chain:
+        task_algebra["operator_chain"] = " -> ".join(operator_chain)
+        augmentation_layer["operator_depth"] = str(len(operator_chain))
+    operator_graph = {
+        "answer_contract": str(structural_fields.get("answer_contract", "") or ""),
+        "expected_evidence_kind": str(structural_fields.get("expected_evidence_kind", "") or ""),
+        "operator_chain": " -> ".join(operator_chain),
+        "primary_operator": operator_chain[0] if operator_chain else "",
+        "terminal_operator": operator_chain[-1] if operator_chain else "",
+    }
     return {
         "reasoning_schema": reasoning_schema,
         "task_algebra": task_algebra,
         "internal_role_machine": role_machine,
         "augmentation_layer": augmentation_layer,
+        "operator_graph": operator_graph,
     }
+
+
+def _browse_focus_terms(prompt: str) -> List[str]:
+    blocked = {
+        "what",
+        "which",
+        "when",
+        "where",
+        "who",
+        "whom",
+        "whose",
+        "that",
+        "this",
+        "with",
+        "from",
+        "into",
+        "your",
+        "using",
+        "answer",
+        "return",
+        "format",
+        "formatted",
+        "according",
+        "page",
+        "pages",
+        "website",
+        "webpage",
+        "site",
+        "public",
+        "source",
+        "sources",
+        "between",
+        "latest",
+        "historical",
+        "english",
+        "wikipedia",
+        "paper",
+        "papers",
+        "article",
+        "articles",
+        "video",
+        "github",
+        "issue",
+        "issues",
+        "answering",
+        "exact",
+        "only",
+    }
+    focus_terms: List[str] = []
+    for token in _tokenize(prompt):
+        if token in blocked or re.fullmatch(r"(?:19|20)\d{2}", token):
+            continue
+        if len(token) < 3:
+            continue
+        if token not in focus_terms:
+            focus_terms.append(token)
+    for title in _extract_quoted_titles(prompt):
+        for token in _tokenize(title):
+            if len(token) >= 3 and token not in blocked and token not in focus_terms:
+                focus_terms.append(token)
+    return focus_terms[:18]
+
+
+def _document_combined_text(document: Dict[str, str]) -> str:
+    combined = " ".join(
+        part
+        for part in (
+            str(document.get("title", "") or ""),
+            str(document.get("snippet", "") or ""),
+            str(document.get("text", "") or ""),
+            str(document.get("pdf_text", "") or ""),
+            str(document.get("combined_text", "") or ""),
+            _strip_html(str(document.get("html_text", "") or "")),
+        )
+        if part
+    )
+    return " ".join(combined.split())
+
+
+def _browse_text_windows(text: str) -> List[str]:
+    windows = _scholarly_text_windows(text)
+    for line in str(text or "").splitlines():
+        normalized = " ".join(line.split()).strip()
+        if 8 <= len(normalized) <= 260 and normalized not in windows:
+            windows.append(normalized)
+    return windows[:140]
+
+
+def _score_browse_window(
+    prompt: str,
+    window: str,
+    focus_terms: Sequence[str],
+    answer_contract: str,
+    operator_chain: Sequence[str],
+) -> float:
+    lowered_prompt = str(prompt or "").lower()
+    lowered_window = str(window or "").lower()
+    score = 0.0
+    matched_terms = sum(1 for token in focus_terms if token and token in lowered_window)
+    score += min(0.84, 0.11 * matched_terms)
+    if answer_contract in {"numeric", "decimal_numeric"} and re.search(r"(?<!\w)(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?%?(?!\w)", window):
+        score += 0.22
+    if answer_contract == "identifier" and _extract_identifier_answer(prompt, window):
+        score += 0.28
+    if answer_contract == "three_letter_code" and re.search(r"\b[A-Z]{3}\b", window.upper()):
+        score += 0.26
+    if answer_contract == "person_name" and _extract_person_candidates(window):
+        score += 0.20
+    if answer_contract == "title" and _extract_title_like_phrases(window):
+        score += 0.18
+    if answer_contract == "clock_time" and _normalize_clock_answer(window):
+        score += 0.22
+    if answer_contract == "sentence" and re.search(r"[.!?]", window):
+        score += 0.12
+    if "compare" in operator_chain and any(token in lowered_prompt for token in ("difference", "between", "compare", "higher", "lower")):
+        score += 0.08
+    if any(token in lowered_prompt for token in ("history", "historical", "latest version", "as of")) and any(
+        token in lowered_window for token in ("archived", "revision", "oldid", "snapshot")
+    ):
+        score += 0.16
+    if len(window) > 420:
+        score -= 0.05
+    return score
+
+
+def _extract_contract_candidates_from_text(prompt: str, text: str, answer_contract: str) -> List[str]:
+    normalized = " ".join(str(text or "").split()).strip()
+    if not normalized:
+        return []
+    candidates: List[str] = []
+    if answer_contract == "three_letter_code":
+        for match in re.findall(r"\b[A-Z]{3}\b", normalized.upper()):
+            if match not in candidates:
+                candidates.append(match)
+        return candidates[:3]
+    if answer_contract == "zip_list":
+        zips: List[str] = []
+        for match in re.findall(r"\b\d{5}\b", normalized):
+            if match not in zips:
+                zips.append(match)
+        return [",".join(zips)] if zips else []
+    if answer_contract == "person_name":
+        return _extract_person_candidates(normalized)[:4]
+    if answer_contract == "identifier":
+        identifier = _extract_identifier_answer(prompt, normalized)
+        return [identifier] if identifier else []
+    if answer_contract == "clock_time":
+        clock = _normalize_clock_answer(normalized)
+        return [clock] if clock else []
+    if answer_contract == "move":
+        move = re.search(r"(?:O-O(?:-O)?|[KQRBN]?[a-h]?[1-8]?x?[a-h][1-8](?:=[QRBN])?[+#]?)", normalized)
+        return [move.group(0)] if move else []
+    if answer_contract == "ratio_text":
+        match = re.search(r"\b\d+\s+in\s+\d+\b", normalized.lower())
+        return [match.group(0)] if match else []
+    if answer_contract in {"numeric", "decimal_numeric"}:
+        numeric_matches = re.findall(r"(?<!\w)(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?%?(?!\w)", normalized)
+        for raw in numeric_matches:
+            candidate = raw.replace(",", "")
+            if answer_contract == "decimal_numeric" and "." not in candidate:
+                continue
+            if candidate not in candidates:
+                candidates.append(candidate)
+        return candidates[:4]
+    if answer_contract == "date_text":
+        mmddyy = re.search(r"\b\d{1,2}/\d{1,2}/\d{2,4}\b", normalized)
+        if mmddyy:
+            return [mmddyy.group(0)]
+    if answer_contract == "title":
+        for phrase in _extract_title_like_phrases(normalized):
+            if phrase not in candidates:
+                candidates.append(phrase)
+        return candidates[:6]
+    if answer_contract == "short_text":
+        for phrase in _extract_title_like_phrases(normalized):
+            if 1 <= len(phrase.split()) <= 4 and phrase not in candidates:
+                candidates.append(phrase)
+        quoted = re.findall(r"[\"“”']([^\"“”']+)[\"“”']", normalized)
+        for phrase in quoted:
+            compact = " ".join(str(phrase).split()).strip(" .,:;!?")
+            if compact and len(compact.split()) <= 4 and compact not in candidates:
+                candidates.append(compact)
+        return candidates[:6]
+    if answer_contract == "sentence":
+        for sentence in re.split(r"(?<=[.!?])\s+", normalized):
+            rendered = " ".join(sentence.split()).strip()
+            if len(rendered.split()) >= 4 and rendered not in candidates:
+                candidates.append(rendered)
+        return candidates[:3]
+    if answer_contract == "list_text":
+        if any(separator in normalized for separator in (",", ";")):
+            return [normalized]
+        return []
+    evidence_candidate = _candidate_from_evidence_line(prompt, normalized)
+    return [evidence_candidate] if evidence_candidate else []
+
+
+def _browse_documents_for_mode(
+    prompt: str,
+    research_mode: str,
+    solver_submode: str = "",
+) -> List[Dict[str, str]]:
+    mode = str(research_mode or "").strip()
+    submode = str(solver_submode or "").strip()
+    documents: List[Dict[str, str]] = []
+    seen: set[str] = set()
+
+    def _extend(items: Sequence[Dict[str, Any]]) -> None:
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            payload = {str(key): value for key, value in item.items()}
+            combined = _document_combined_text(payload)
+            if not combined:
+                continue
+            url = str(payload.get("url", "") or "").strip()
+            key = url or combined[:240]
+            if key in seen:
+                continue
+            seen.add(key)
+            payload["combined_text"] = combined
+            documents.append(payload)
+
+    if mode == "scholarly_reference_ops":
+        try:
+            _extend(_resolve_scholarly_documents(prompt, solver_submode=submode))
+        except Exception:
+            pass
+    elif mode in {"generic_public_reference", "public_reference_history_ops", "historical_reference_navigation_ops", "web_archive_ops"}:
+        try:
+            if mode in {"public_reference_history_ops", "historical_reference_navigation_ops"} or _temporal_anchor(prompt).get("historical"):
+                _extend(_historical_wikipedia_documents(_public_reference_title_candidates(prompt), prompt))
+        except Exception:
+            pass
+        try:
+            _extend(_public_reference_search_documents(prompt))
+        except Exception:
+            pass
+    elif mode == "public_record_ops":
+        try:
+            _extend(_public_record_search_documents(prompt))
+        except Exception:
+            pass
+    elif mode == "github_public_artifact_ops":
+        query = prompt if "github" in str(prompt or "").lower() else f"{prompt} github"
+        try:
+            _extend(_fetch_search_documents(query, max_results=5, allow_domains=("github.com",)))
+        except Exception:
+            pass
+    elif mode == "cross_source_entity_ops":
+        try:
+            _extend(_fetch_search_documents(prompt, max_results=5))
+        except Exception:
+            pass
+        reference_query = _extract_same_name_reference_query(prompt)
+        if reference_query:
+            try:
+                _extend(_fetch_search_documents(reference_query, max_results=4))
+            except Exception:
+                pass
+    elif mode == "public_data_query_ops":
+        try:
+            if submode in {"wikipedia_revision_count", "wikipedia_link_distance"}:
+                _extend(_public_reference_search_documents(prompt))
+        except Exception:
+            pass
+        try:
+            _extend(_search_documents_from_prompt(prompt))
+        except Exception:
+            pass
+    elif mode == "video_transcript_ops":
+        video_url = _discover_video_url(prompt)
+        metadata = _youtube_video_metadata(video_url) if video_url else {}
+        if metadata:
+            _extend(
+                [
+                    {
+                        "url": video_url,
+                        "title": str(metadata.get("title", "") or ""),
+                        "snippet": str(metadata.get("description", "") or ""),
+                        "text": str(metadata.get("description", "") or ""),
+                    }
+                ]
+            )
+        try:
+            _extend(_fetch_search_documents(prompt, max_results=4))
+        except Exception:
+            pass
+    return documents[:12]
+
+
+def _rank_browse_windows(
+    prompt: str,
+    documents: Sequence[Dict[str, str]],
+    answer_contract: str,
+    operator_chain: Sequence[str],
+) -> List[tuple[float, str, str]]:
+    focus_terms = _browse_focus_terms(prompt)
+    ranked: List[tuple[float, str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for document in documents:
+        url = str(document.get("url", "") or "").strip()
+        for window in _browse_text_windows(_document_combined_text(document)):
+            signature = (url, window[:200])
+            if signature in seen:
+                continue
+            seen.add(signature)
+            score = _score_browse_window(prompt, window, focus_terms, answer_contract, operator_chain)
+            if score <= 0.0:
+                continue
+            ranked.append((score, window, url))
+    ranked.sort(key=lambda item: item[0], reverse=True)
+    return ranked[:24]
+
+
+def _generalized_table_candidate_bundles(
+    prompt: str,
+    documents: Sequence[Dict[str, str]],
+    *,
+    answer_contract: str,
+    operator_chain: Sequence[str],
+) -> List[Dict[str, Any]]:
+    focus_terms = set(_browse_focus_terms(prompt))
+    bundles: List[Dict[str, Any]] = []
+    for document in documents:
+        url = str(document.get("url", "") or "").strip()
+        html_text = str(document.get("html_text", "") or "")
+        if not html_text:
+            continue
+        for table in _extract_html_tables(html_text)[:4]:
+            headers = [str(cell).strip() for cell in table[0]] if table else []
+            header_text = " | ".join(headers)
+            for row in table[1:9]:
+                row_text = " | ".join(str(cell).strip() for cell in row if str(cell).strip())
+                lowered_row = row_text.lower()
+                if focus_terms and not any(term in lowered_row for term in focus_terms):
+                    continue
+                for candidate in _extract_contract_candidates_from_text(prompt, row_text, answer_contract):
+                    bundles.append(
+                        _solver_candidate_bundle(
+                            candidate,
+                            [f"table headers={header_text[:180]}", f"table row={row_text[:220]}"],
+                            [url] if url else [],
+                            method="generalized_table_extract",
+                            source_bias=0.14,
+                            candidate_kind=_infer_candidate_kind(prompt, candidate),
+                            answer_contract=answer_contract,
+                            operator_chain=operator_chain,
+                        )
+                    )
+    return bundles
+
+
+def _generalized_browse_candidate_bundles(
+    prompt: str,
+    research_mode: str,
+    solver_submode: str = "",
+) -> List[Dict[str, Any]]:
+    mode = str(research_mode or "").strip()
+    if mode not in {
+        "scholarly_reference_ops",
+        "public_record_ops",
+        "generic_public_reference",
+        "public_reference_history_ops",
+        "historical_reference_navigation_ops",
+        "web_archive_ops",
+        "cross_source_entity_ops",
+        "github_public_artifact_ops",
+        "public_data_query_ops",
+        "video_transcript_ops",
+    }:
+        return []
+    answer_contract = _infer_answer_contract(prompt, research_mode=mode, solver_submode=solver_submode)
+    operator_chain = _operator_chain_for_route(prompt, mode, solver_submode)
+    documents = _browse_documents_for_mode(prompt, mode, solver_submode)
+    if not documents:
+        return []
+    bundles: List[Dict[str, Any]] = []
+    if answer_contract == "person_name":
+        person, person_evidence = _best_person_name_from_documents(documents)
+        if person:
+            bundles.append(
+                _solver_candidate_bundle(
+                    person,
+                    person_evidence,
+                    [str(document.get("url", "") or "") for document in documents[:3] if str(document.get("url", "") or "").strip()],
+                    method="generalized_person_aggregation",
+                    source_bias=0.14,
+                    candidate_kind="person_name",
+                    answer_contract=answer_contract,
+                    operator_chain=operator_chain,
+                )
+            )
+    for document in documents[:8]:
+        title = " ".join(str(document.get("title", "") or "").split()).strip(" .")
+        if not title or _looks_like_source_title_echo(prompt, title):
+            continue
+        for candidate in _extract_contract_candidates_from_text(prompt, title, answer_contract):
+            bundles.append(
+                _solver_candidate_bundle(
+                    candidate,
+                    [f"document title={title}"],
+                    [str(document.get("url", "") or "")] if str(document.get("url", "") or "").strip() else [],
+                    method="generalized_document_title",
+                    source_bias=0.08,
+                    candidate_kind=_infer_candidate_kind(prompt, candidate),
+                    answer_contract=answer_contract,
+                    operator_chain=operator_chain,
+                )
+            )
+    bundles.extend(
+        _generalized_table_candidate_bundles(
+            prompt,
+            documents,
+            answer_contract=answer_contract,
+            operator_chain=operator_chain,
+        )
+    )
+    for score, window, url in _rank_browse_windows(prompt, documents, answer_contract, operator_chain):
+        for candidate in _extract_contract_candidates_from_text(prompt, window, answer_contract):
+            bundles.append(
+                _solver_candidate_bundle(
+                    candidate,
+                    [f"generalized window score={score:.2f}", window[:260]],
+                    [url] if url else [],
+                    method="generalized_window_extract",
+                    source_bias=min(0.22, 0.06 + (score * 0.10)),
+                    candidate_kind=_infer_candidate_kind(prompt, candidate),
+                    answer_contract=answer_contract,
+                    operator_chain=operator_chain,
+                )
+            )
+    synthesized_evidence = [f"generalized support {url or 'evidence'}: {window[:220]}" for _, window, url in _rank_browse_windows(prompt, documents, answer_contract, operator_chain)[:8]]
+    synthesized_provenance = [
+        str(document.get("url", "") or "")
+        for document in documents[:4]
+        if str(document.get("url", "") or "").strip()
+    ]
+    bundles.extend(
+        _synthesize_candidate_from_evidence(
+            prompt,
+            synthesized_evidence,
+            synthesized_provenance,
+            research_mode=mode,
+        )
+    )
+    return bundles
 
 
 def _validate_candidate_answer(
@@ -9470,14 +10705,79 @@ def _validate_candidate_answer(
     research_mode: str = "",
     evidence: Sequence[str] = (),
     method: str = "",
+    answer_contract: str = "",
 ) -> tuple[bool, str, Dict[str, Any]]:
     normalized = _normalize_answer_shape(prompt, candidate)
     notes: List[str] = []
     lowered = str(prompt or "").lower()
     profile = _prompt_answer_profile(prompt)
+    contract = str(answer_contract or "").strip() or _infer_answer_contract(
+        prompt,
+        research_mode=research_mode,
+    )
     word_count = len([word for word in normalized.split() if word.strip()])
     if _looks_like_url(normalized) and not profile["allows_url"]:
         notes.append("unexpected url-shaped answer")
+        return (False, normalized, {"accepted": False, "support": 0.0, "notes": notes})
+    if contract == "three_letter_code" and not re.fullmatch(r"[A-Z]{3}", normalized):
+        notes.append("expected three-letter code")
+        return (False, normalized, {"accepted": False, "support": 0.0, "notes": notes})
+    if contract == "zip_list" and not re.fullmatch(r"\d{5}(?:,\d{5})*", normalized):
+        notes.append("expected comma-delimited zip list")
+        return (False, normalized, {"accepted": False, "support": 0.0, "notes": notes})
+    if contract == "clock_time" and not _normalize_clock_answer(normalized or candidate):
+        notes.append("expected clock-shaped answer")
+        return (False, normalized, {"accepted": False, "support": 0.0, "notes": notes})
+    if contract == "person_name" and (
+        normalized.startswith("The ")
+        or _looks_like_boilerplate_name(normalized)
+        or _looks_like_nonperson_entity(normalized)
+        or not re.fullmatch(r"[A-Z][A-Za-z.'-]+(?:\s+[A-Z][A-Za-z.'-]+)+", normalized)
+    ):
+        notes.append("expected person name")
+        return (False, normalized, {"accepted": False, "support": 0.0, "notes": notes})
+    if contract == "identifier" and not _looks_like_identifier_answer(prompt, normalized):
+        notes.append("expected identifier-shaped answer")
+        return (False, normalized, {"accepted": False, "support": 0.0, "notes": notes})
+    if contract == "move" and not _looks_like_move_notation(normalized):
+        notes.append("expected move notation")
+        return (False, normalized, {"accepted": False, "support": 0.0, "notes": notes})
+    if contract == "ratio_text" and not re.fullmatch(r"\d+\s+in\s+\d+", normalized.lower()):
+        notes.append("expected odds ratio text")
+        return (False, normalized, {"accepted": False, "support": 0.0, "notes": notes})
+    if contract == "numeric" and not _is_numeric_candidate(normalized):
+        notes.append("expected numeric answer")
+        return (False, normalized, {"accepted": False, "support": 0.0, "notes": notes})
+    if contract == "decimal_numeric" and (not _is_numeric_candidate(normalized) or "." not in normalized):
+        notes.append("expected decimal-form numeric answer")
+        return (False, normalized, {"accepted": False, "support": 0.0, "notes": notes})
+    if contract == "title" and (
+        _looks_like_header_blob(normalized)
+        or _looks_like_snippet_fragment(normalized)
+        or _is_numeric_candidate(normalized)
+        or _looks_like_source_title_echo(prompt, normalized)
+        or word_count > 14
+        or "[" in normalized
+        or "=" in normalized
+    ):
+        notes.append("looks like header blob" if _looks_like_header_blob(normalized) else "expected title-like answer")
+        return (False, normalized, {"accepted": False, "support": 0.0, "notes": notes})
+    if contract == "short_text" and (
+        _looks_like_header_blob(normalized)
+        or _looks_like_snippet_fragment(normalized)
+        or _is_numeric_candidate(normalized)
+        or ":" in normalized
+        or "[" in normalized
+        or "=" in normalized
+        or word_count > 4
+    ):
+        notes.append("looks like header blob" if _looks_like_header_blob(normalized) else "expected short text answer")
+        return (False, normalized, {"accepted": False, "support": 0.0, "notes": notes})
+    if contract == "sentence" and (word_count < 4 or _looks_like_header_blob(normalized) or _looks_like_snippet_fragment(normalized)):
+        notes.append("expected sentence-shaped answer")
+        return (False, normalized, {"accepted": False, "support": 0.0, "notes": notes})
+    if contract == "list_text" and not any(separator in normalized for separator in (",", ";")):
+        notes.append("expected delimited list answer")
         return (False, normalized, {"accepted": False, "support": 0.0, "notes": notes})
     if any(token in lowered for token in ("what time", "scheduled to arrive", "am or pm", "12-hour digital clock")):
         clock = _normalize_clock_answer(normalized or candidate)
@@ -10199,6 +11499,8 @@ def _substantive_evidence(evidence: Sequence[str]) -> List[str]:
             continue
         if text.startswith("multi-source support="):
             continue
+        if text.startswith("operator chain=") or text.startswith("contract fit="):
+            continue
         if text in {"cross-method agreement", "candidate repeated in evidence", "person-name fit", "code fit", "time fit", "numeric fit"}:
             continue
         filtered.append(text)
@@ -10499,6 +11801,12 @@ def _finalize_route_candidates(route_map: Dict[tuple[str, str], Dict[str, Any]])
         expected_evidence_kind = _route_expected_evidence_kind(research_mode, solver_submode)
         if expected_evidence_kind:
             payload["expected_evidence_kind"] = expected_evidence_kind
+        prompt = str(candidate.get("prompt", "") or "")
+        structural_fields = _structural_plan_fields(prompt, research_mode, solver_submode) if prompt else {}
+        if structural_fields.get("answer_contract"):
+            payload["answer_contract"] = structural_fields["answer_contract"]
+        if structural_fields.get("operator_chain"):
+            payload["operator_chain"] = list(structural_fields["operator_chain"])
         rendered.append(payload)
     rendered.sort(
         key=lambda item: (
@@ -10738,6 +12046,8 @@ def _classify_no_file_source_families(prompt: str) -> List[Dict[str, Any]]:
         _accumulate_route_candidate(route_map, "public_reference_history_ops", 0.74, "temporal public-page cue")
     if public_page_context and "wikipedia article" in lowered:
         _accumulate_route_candidate(route_map, "generic_public_reference", 0.14, "page article wording cue")
+    for candidate in route_map.values():
+        candidate["prompt"] = prompt
     return _finalize_route_candidates(route_map)
 
 
@@ -10747,8 +12057,11 @@ def _generalized_no_file_research_plan(prompt: str) -> Dict[str, Any]:
         return {}
     top = candidates[0]
     top_score = float(top.get("score", 0.0))
+    top_mode = str(top.get("research_mode", "")).strip()
+    top_submode = str(top.get("solver_submode", "")).strip()
+    structural_fields = _structural_plan_fields(prompt, top_mode, top_submode)
     if top_score < 0.48:
-        return {
+        payload = {
             "route_candidates": candidates[:3],
             "route_confidence": top_score,
             "route_confidence_gap": round(
@@ -10757,16 +12070,16 @@ def _generalized_no_file_research_plan(prompt: str) -> Dict[str, Any]:
             ),
             "route_abstained": True,
         }
-    plan = _research_plan(str(top.get("research_mode", "")), solver_submode=str(top.get("solver_submode", "")))
+        payload.update(structural_fields)
+        return payload
+    plan = _research_plan(top_mode, solver_submode=top_submode)
     plan["route_candidates"] = candidates[:3]
     plan["route_confidence"] = top_score
     plan["route_confidence_gap"] = round(
         top_score - float(candidates[1].get("score", 0.0)) if len(candidates) >= 2 else top_score,
         3,
     )
-    expected_evidence_kind = str(top.get("expected_evidence_kind", "")).strip()
-    if expected_evidence_kind:
-        plan["expected_evidence_kind"] = expected_evidence_kind
+    plan.update(structural_fields)
     plan["route_abstained"] = False
     return plan
 
@@ -11101,7 +12414,7 @@ def list_files(arg: str, state: Any = None) -> Dict[str, Any]:
     }
 
 
-def plan_question(arg: str, state: Any = None) -> Dict[str, Any]:
+def _plan_question_impl(arg: str, state: Any = None) -> Dict[str, Any]:
     prompt = str(getattr(state, "problem_text", "")).split("\nWorkspace files:\n", 1)[0].strip()
     files = list(state.metadata.get("workspace_files", []))
     evidence_files = [name for name in files if name != "TASK.md"]
@@ -11130,6 +12443,27 @@ def plan_question(arg: str, state: Any = None) -> Dict[str, Any]:
         research_plan["solver_submode"] = solver_submode
     else:
         research_plan.pop("solver_submode", None)
+    structural_plan_fields = _structural_plan_fields(prompt, research_mode, solver_submode)
+    for key, value in structural_plan_fields.items():
+        if value and not research_plan.get(key):
+            research_plan[key] = value
+    enriched_route_candidates: List[Dict[str, Any]] = []
+    for item in list(research_plan.get("route_candidates", [])):
+        if not isinstance(item, dict):
+            continue
+        item_mode = str(item.get("research_mode", "")).strip()
+        item_submode = str(item.get("solver_submode", "")).strip()
+        rendered = dict(item)
+        rendered.update(
+            {
+                key: value
+                for key, value in _structural_plan_fields(prompt, item_mode, item_submode).items()
+                if value and not rendered.get(key)
+            }
+        )
+        enriched_route_candidates.append(rendered)
+    if enriched_route_candidates:
+        research_plan["route_candidates"] = enriched_route_candidates
     if research_mode == "arxiv_cross_reference":
         plan = f"search arXiv for '{research_plan.get('primary_query', '')}' then cross-reference physics.soc-ph results"
         ambiguity_score = 0.30
@@ -11240,7 +12574,7 @@ def plan_question(arg: str, state: Any = None) -> Dict[str, Any]:
         if oracle_file:
             target_file = oracle_file
             plan = f"inspect {target_file} then solve intent={intent}"
-    structural_metadata = _build_plan_metadata(prompt, research_mode)
+    structural_metadata = _build_plan_metadata(prompt, research_mode, solver_submode)
     return {
         "ok": True,
         "result": plan,
@@ -11263,6 +12597,7 @@ def plan_question(arg: str, state: Any = None) -> Dict[str, Any]:
                     "augmentation_layer": structural_metadata.get("augmentation_layer", {}),
                     "task_algebra": structural_metadata.get("task_algebra", {}),
                     "internal_role_machine": structural_metadata.get("internal_role_machine", {}),
+                    "operator_graph": structural_metadata.get("operator_graph", {}),
                     **research_plan,
                 },
             },
@@ -11409,7 +12744,7 @@ def inspect_file(arg: str, state: Any = None) -> Dict[str, Any]:
     return {"ok": True, "result": text, "goal_progress": 0.25, "payload": payload}
 
 
-def solve_question(arg: str, state: Any = None) -> Dict[str, Any]:
+def _solve_question_impl(arg: str, state: Any = None) -> Dict[str, Any]:
     workspace = Path(str(state.metadata["workspace_dir"]))
     prompt = (arg.strip() or str(getattr(state, "problem_text", ""))).split("\nWorkspace files:\n", 1)[0].strip()
     files = [name for name in state.metadata.get("workspace_files", []) if str(name) != "TASK.md"]
@@ -11429,6 +12764,13 @@ def solve_question(arg: str, state: Any = None) -> Dict[str, Any]:
         plan.get("research_mode", ""),
         _research_submode(plan),
     )
+    structural_plan_fields = _structural_plan_fields(prompt, research_mode, solver_submode)
+    answer_contract = str(plan.get("answer_contract", "") or structural_plan_fields.get("answer_contract", "") or "")
+    operator_chain = [
+        str(item).strip()
+        for item in list(plan.get("operator_chain", []) or structural_plan_fields.get("operator_chain", []))
+        if str(item).strip()
+    ]
     route_candidates = [
         (
             str(item.get("research_mode", "")).strip(),
@@ -11503,7 +12845,7 @@ def solve_question(arg: str, state: Any = None) -> Dict[str, Any]:
             "risk": max(0.0, 1.0 - confidence),
         }
     if research_mode in _DIRECT_EXTERNAL_SOLVER_MODES:
-        structural_metadata = _build_plan_metadata(prompt, research_mode)
+        structural_metadata = _build_plan_metadata(prompt, research_mode, solver_submode)
         candidate, evidence, answer_provenance = _run_direct_external_solver(
             prompt,
             research_mode,
@@ -11524,6 +12866,8 @@ def solve_question(arg: str, state: Any = None) -> Dict[str, Any]:
                     method=research_mode,
                     source_bias=0.12,
                     candidate_kind=_infer_candidate_kind(prompt, candidate),
+                    answer_contract=answer_contract,
+                    operator_chain=operator_chain,
                 )
             )
         primary_quality_ok = False
@@ -11535,6 +12879,7 @@ def solve_question(arg: str, state: Any = None) -> Dict[str, Any]:
                 research_mode=research_mode,
                 evidence=evidence,
                 method=research_mode,
+                answer_contract=answer_contract,
             )
         if not candidate or not primary_quality_ok:
             bundles.extend(
@@ -11550,6 +12895,8 @@ def solve_question(arg: str, state: Any = None) -> Dict[str, Any]:
                     extra_fallback_modes=route_candidates,
                 )
             )
+        if not candidate or not primary_quality_ok:
+            bundles.extend(_generalized_browse_candidate_bundles(prompt, research_mode, solver_submode))
         candidate, evidence, answer_provenance = _select_best_solver_candidate(
             prompt,
             bundles,
@@ -11596,6 +12943,7 @@ def solve_question(arg: str, state: Any = None) -> Dict[str, Any]:
             research_mode=research_mode,
             evidence=evidence,
             method=research_mode,
+            answer_contract=answer_contract,
         )
         if not quality_ok:
             return {
@@ -11700,6 +13048,7 @@ def solve_question(arg: str, state: Any = None) -> Dict[str, Any]:
                 research_mode="route_candidate_probe",
                 evidence=evidence,
                 method="route_candidate_probe",
+                answer_contract=_infer_answer_contract(prompt),
             )
             if quality_ok:
                 candidate = normalized_candidate
@@ -11817,6 +13166,7 @@ def solve_question(arg: str, state: Any = None) -> Dict[str, Any]:
         research_mode=file_research_mode,
         evidence=evidence,
         method="fallback:file_text" if fallback_text else file_research_mode,
+        answer_contract=_infer_answer_contract(prompt, research_mode=file_research_mode),
     )
     if not quality_ok:
         return {
@@ -11872,16 +13222,103 @@ def solve_question(arg: str, state: Any = None) -> Dict[str, Any]:
     }
 
 
+def _gaia_query_engine() -> GaiaQueryEngine:
+    global _GAIA_QUERY_ENGINE_SINGLETON
+    if _GAIA_QUERY_ENGINE_SINGLETON is None:
+        operators = {
+            "plan_question": GaiaOperator(
+                name="plan_question",
+                handler=plan_question,
+                phase="plan",
+                description="Infer route, operator graph, and answer contract for the question.",
+                supports_files=True,
+                supports_network=False,
+            ),
+            "list_files": GaiaOperator(
+                name="list_files",
+                handler=list_files,
+                phase="inspect",
+                description="Enumerate workspace evidence files.",
+                supports_files=True,
+                supports_network=False,
+            ),
+            "inspect_file": GaiaOperator(
+                name="inspect_file",
+                handler=inspect_file,
+                phase="inspect",
+                description="Open a workspace file and extract structured evidence.",
+                supports_files=True,
+                supports_network=False,
+            ),
+            "search_arxiv_primary": GaiaOperator(
+                name="search_arxiv_primary",
+                handler=search_arxiv_primary,
+                phase="browse",
+                description="Run the primary scholarly search path.",
+                supports_files=False,
+                supports_network=True,
+            ),
+            "search_arxiv_secondary": GaiaOperator(
+                name="search_arxiv_secondary",
+                handler=search_arxiv_secondary,
+                phase="browse",
+                description="Run the secondary scholarly search path.",
+                supports_files=False,
+                supports_network=True,
+            ),
+            "solve_question": GaiaOperator(
+                name="solve_question",
+                handler=solve_question,
+                phase="solve",
+                description="Solve the question using typed operators, evidence, and contract checks.",
+                supports_files=True,
+                supports_network=True,
+            ),
+        }
+        _GAIA_QUERY_ENGINE_SINGLETON = GaiaQueryEngine(operators)
+    return _GAIA_QUERY_ENGINE_SINGLETON
+
+
+def _run_gaia_stage(
+    stage: str,
+    arg: str,
+    state: Any,
+    callback: Callable[[str, Any], Dict[str, Any]],
+) -> Dict[str, Any]:
+    prompt = (str(arg or "").strip() or str(getattr(state, "problem_text", "") or "")).split("\nWorkspace files:\n", 1)[0].strip()
+    context = _gaia_build_runtime_context(state, prompt)
+    context.operator_names = list(_gaia_query_engine().operators.keys())
+    if context.question_plan:
+        context.emit(
+            "resume_plan_state",
+            research_mode=str(context.question_plan.get("research_mode", "") or ""),
+            route_candidates=_gaia_candidate_route_labels(context.question_plan),
+        )
+
+    def _invoke(_: GaiaSolveContext) -> Dict[str, Any]:
+        return callback(arg, state)
+
+    raw_result = _gaia_query_engine().run_stage(stage, context, _invoke)
+    payload = dict(raw_result.get("payload", raw_result.get("result_payload", {})) or {})
+    state_metadata = dict(payload.get("state_metadata", {}) or {})
+    if isinstance(state_metadata.get("question_plan", {}), dict):
+        context.question_plan = dict(state_metadata.get("question_plan", {}) or context.question_plan)
+    compact_state = _gaia_compact_state_from_result(state, context, raw_result)
+    return _gaia_query_engine().finalize_result(stage, context, raw_result, compact_state=compact_state)
+
+
+def plan_question(arg: str, state: Any = None) -> Dict[str, Any]:
+    return _run_gaia_stage("plan", arg, state, _plan_question_impl)
+
+
+def solve_question(arg: str, state: Any = None) -> Dict[str, Any]:
+    return _run_gaia_stage("solve", arg, state, _solve_question_impl)
+
+
 class GaiaToolRegistry:
     def __init__(self) -> None:
-        self.tools = {
-            "plan_question": plan_question,
-            "list_files": list_files,
-            "inspect_file": inspect_file,
-            "search_arxiv_primary": search_arxiv_primary,
-            "search_arxiv_secondary": search_arxiv_secondary,
-            "solve_question": solve_question,
-        }
+        self.operators = dict(_gaia_query_engine().operators)
+        self.tools = {name: operator.handler for name, operator in self.operators.items()}
 
     def call(self, name: str, arg: str, state: Any = None) -> Dict[str, Any]:
         fn = self.tools.get(name)
@@ -11903,6 +13340,7 @@ class GaiaOpsReasoningDomain:
         self._all_cases = self._train_cases + self._benchmark_cases
         runtime_cfg = dict((runtime_config or {}).get("runtime", {}))
         benchmark_cfg = dict((runtime_config or {}).get("benchmark", {}))
+        search_cfg = dict((runtime_config or {}).get("search", {}))
         self.deterministic_runtime = bool(runtime_cfg.get("deterministic", False))
         self.assistance_mode = str(benchmark_cfg.get("assistance_mode", "unassisted")).lower()
         self.oracle_hints_enabled = bool(benchmark_cfg.get("oracle_hints_enabled", False))
@@ -11918,6 +13356,24 @@ class GaiaOpsReasoningDomain:
         self.allow_errata_overrides = bool(
             benchmark_cfg.get("allow_errata_overrides", not self.blind_structural_mode)
         )
+        self.gaia_resume_enabled = bool(runtime_cfg.get("gaia_resume_enabled", False))
+        self.gaia_progress_logging = bool(runtime_cfg.get("gaia_progress_logging", True))
+        self.gaia_runtime_log_root = str(
+            runtime_cfg.get("gaia_runtime_log_root", ROOT / "logs" / "gaia_query_engine")
+        )
+        self.prompt_compaction = {
+            "enabled": bool(search_cfg.get("prompt_compaction", False)),
+            "problem_chars": int(search_cfg.get("prompt_problem_chars", 720)),
+            "fact_limit": int(search_cfg.get("prompt_fact_limit", 4)),
+            "subgoal_limit": int(search_cfg.get("prompt_subgoal_limit", 3)),
+            "obligation_limit": int(search_cfg.get("prompt_obligation_limit", 4)),
+            "evidence_limit": int(search_cfg.get("prompt_evidence_limit", 4)),
+            "tool_limit": int(search_cfg.get("prompt_tool_limit", 3)),
+            "action_limit": int(search_cfg.get("prompt_action_limit", 2)),
+            "file_limit": int(search_cfg.get("prompt_file_limit", 5)),
+            "retrieval_item_limit": int(search_cfg.get("prompt_retrieval_item_limit", 2)),
+            "text_item_chars": int(search_cfg.get("prompt_text_item_chars", 120)),
+        }
 
     def _match_manual_case(self, prompt: str, domain: str) -> Optional[ReasoningTask]:
         text = f"{domain}\n{prompt}".lower()
@@ -11969,6 +13425,14 @@ class GaiaOpsReasoningDomain:
         metadata["holdout_group"] = str(raw_metadata.get("holdout_group", metadata.get("holdout_group", "")))
         metadata["source"] = str(raw_metadata.get("source", metadata.get("source", "")))
         metadata["fixture_role"] = str(raw_metadata.get("fixture_role", metadata.get("fixture_role", "")))
+        task_slug = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(task.task_id or "manual_gaia")).strip("._") or "manual_gaia"
+        task_runtime_dir = Path(self.gaia_runtime_log_root) / task_slug
+        metadata["gaia_progress_log_path"] = str(task_runtime_dir / "progress.jsonl")
+        metadata["gaia_resume_snapshot_path"] = str(task_runtime_dir / "resume.json")
+        metadata["gaia_resume_enabled"] = self.gaia_resume_enabled
+        metadata["gaia_progress_logging"] = self.gaia_progress_logging
+        if "prompt_compaction" not in metadata and bool(self.prompt_compaction.get("enabled", False)):
+            metadata["prompt_compaction"] = dict(self.prompt_compaction)
         metadata["target_file"] = _infer_target_file(task.prompt, files)
         metadata["candidate_files"] = _resolve_target_files(task.prompt, files, str(metadata.get("target_file", "")))
         ensure_benchmark_audit(metadata, assistance_mode=self.assistance_mode)
@@ -12332,6 +13796,8 @@ class GaiaOpsReasoningDomain:
         embedding_model: str = "hashing",
         event_logger: Any | None = None,
     ) -> str:
+        if "prompt_compaction" not in state.metadata and bool(self.prompt_compaction.get("enabled", False)):
+            state.metadata["prompt_compaction"] = dict(self.prompt_compaction)
         retrieval_context = None
         if lemma_store is not None and hard_case_store is not None:
             retrieval_context = retrieve_context(

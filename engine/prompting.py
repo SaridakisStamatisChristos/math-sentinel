@@ -236,6 +236,80 @@ def _self_check_text(check: Any, text_item_chars: int) -> str:
     return " | ".join(parts)
 
 
+def _gaia_compact_state_text(compact_state: Any, text_item_chars: int) -> str:
+    if not isinstance(compact_state, dict):
+        return ""
+    parts: List[str] = []
+    for key in ("research_mode", "solver_submode", "answer_contract", "expected_evidence_kind", "target_file", "best_candidate"):
+        value = _truncate(compact_state.get(key, ""), text_item_chars)
+        if value:
+            parts.append(f"{key}={value}")
+    route_candidates = compact_state.get("route_candidates", [])
+    if isinstance(route_candidates, list) and route_candidates:
+        parts.append(
+            "route_candidates=" + ", ".join(_truncate(item, max(16, text_item_chars // 2)) for item in route_candidates[:3])
+        )
+    operator_chain = compact_state.get("operator_chain", [])
+    if isinstance(operator_chain, list) and operator_chain:
+        parts.append(
+            "operator_chain="
+            + " -> ".join(_truncate(item, max(18, text_item_chars // 2)) for item in operator_chain[:4])
+        )
+    evidence = compact_state.get("evidence", [])
+    if isinstance(evidence, list) and evidence:
+        parts.append(
+            "evidence="
+            + " | ".join(_truncate(item, max(24, text_item_chars // 2)) for item in evidence[:3])
+        )
+    recent_browse = compact_state.get("recent_browse_events", [])
+    if isinstance(recent_browse, list) and recent_browse:
+        parts.append(
+            "browse="
+            + " | ".join(_truncate(item, max(24, text_item_chars // 2)) for item in recent_browse[:3])
+        )
+    rejected = compact_state.get("rejected_candidates", [])
+    if isinstance(rejected, list) and rejected:
+        parts.append(
+            "rejected="
+            + ", ".join(_truncate(item, max(18, text_item_chars // 2)) for item in rejected[:3])
+        )
+    obligations = compact_state.get("obligations", [])
+    if isinstance(obligations, list) and obligations:
+        parts.append(
+            "obligations="
+            + " | ".join(_truncate(item, max(18, text_item_chars // 2)) for item in obligations[:3])
+        )
+    return " | ".join(parts)
+
+
+def _gaia_runtime_text(metadata: Any, text_item_chars: int) -> str:
+    if not isinstance(metadata, dict):
+        return ""
+    parts: List[str] = []
+    stage = _truncate(metadata.get("gaia_runtime_stage", ""), text_item_chars)
+    if stage:
+        parts.append(f"stage={stage}")
+    recent_progress = metadata.get("gaia_recent_progress", [])
+    if isinstance(recent_progress, list) and recent_progress:
+        parts.append(
+            "recent_progress="
+            + " | ".join(_truncate(item, max(24, text_item_chars // 2)) for item in recent_progress[:3])
+        )
+    recent_candidates = metadata.get("gaia_recent_candidates", [])
+    if isinstance(recent_candidates, list) and recent_candidates:
+        rendered_candidates = []
+        for item in recent_candidates[:3]:
+            if not isinstance(item, dict):
+                continue
+            candidate = _truncate(item.get("candidate", ""), max(18, text_item_chars // 2))
+            if not candidate:
+                continue
+            rendered_candidates.append(candidate + (":ok" if bool(item.get("accepted", False)) else ":reject"))
+        if rendered_candidates:
+            parts.append("candidate_log=" + ", ".join(rendered_candidates))
+    return " | ".join(parts)
+
+
 def _augmentation_text(layer: Any, text_item_chars: int) -> str:
     if not isinstance(layer, dict):
         return ""
@@ -327,6 +401,12 @@ def _render_search_state(state: ReasoningState) -> str:
     self_check_text = _self_check_text((getattr(state, "metadata", {}) or {}).get("answer_self_check", {}), text_item_chars)
     if self_check_text:
         lines.append(f"[SELF_CHECK] {self_check_text}")
+    gaia_compact_text = _gaia_compact_state_text((getattr(state, "metadata", {}) or {}).get("gaia_compact_state", {}), text_item_chars)
+    if gaia_compact_text:
+        lines.append(f"[GAIA_COMPACT_STATE] {gaia_compact_text}")
+    gaia_runtime_text = _gaia_runtime_text(getattr(state, "metadata", {}) or {}, text_item_chars)
+    if gaia_runtime_text:
+        lines.append(f"[GAIA_RUNTIME] {gaia_runtime_text}")
 
     assumptions = _string_items(state.assumptions, int(options.get("subgoal_limit", 3)), text_item_chars)
     if assumptions:

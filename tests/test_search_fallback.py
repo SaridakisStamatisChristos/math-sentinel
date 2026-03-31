@@ -13,11 +13,17 @@ from tools.registry import ToolRegistry
 
 
 class DummyTokenizer:
+    def __init__(self) -> None:
+        self.seq_lens: list[int] = []
+
     def encode(self, text: str, seq_len: int) -> list[int]:
+        self.seq_lens.append(seq_len)
         return [0] * seq_len
 
 
 class DummyVerifier:
+    max_seq_len = 64
+
     def predict_scores(self, x: torch.Tensor) -> dict[str, torch.Tensor]:
         batch = x.shape[0]
         return {
@@ -200,6 +206,34 @@ class BeamFallbackTests(unittest.TestCase):
         self.assertEqual(kwargs["completion_bonus"], 0.3)
         self.assertEqual(kwargs["incomplete_penalty"], 0.9)
         self.assertEqual(kwargs["tactic_bonus"], 0.25)
+
+    def test_beam_search_scores_states_with_verifier_sequence_budget(self) -> None:
+        initial_state = ProofState(
+            task_id="arith_verifier_budget",
+            domain="arithmetic",
+            problem_text="Compute: 2 + 3",
+            goal="Compute the integer result",
+            expected_answer="5",
+            metadata={"family": "arithmetic"},
+        )
+        tokenizer = DummyTokenizer()
+        verifier = DummyVerifier()
+        verifier.max_seq_len = 77
+
+        with patch("search.beam.propose_actions", return_value=['ACTION {"type":"ANSWER","content":"5"}']):
+            beam_search(
+                prover=object(),
+                verifier=verifier,
+                tokenizer=tokenizer,
+                executor=ProofExecutor(ToolRegistry()),
+                initial_state=initial_state,
+                device="cpu",
+                beam_width=1,
+                max_depth=1,
+                proposal_count=1,
+            )
+
+        self.assertIn(77, tokenizer.seq_lens)
 
 
 if __name__ == "__main__":

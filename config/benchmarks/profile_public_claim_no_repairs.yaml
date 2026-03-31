@@ -11,6 +11,10 @@ model:
   dtype: float16
   device_map: single
   local_files_only: true
+  seq_len: 640
+
+verifier:
+  max_seq_len: 640
 
 training:
   batch_size: 2
@@ -25,4 +29,3 @@ search:
   mcts_branching: 6
   guided_rollout_depth: 6
   transposition_capacity: 4096
-

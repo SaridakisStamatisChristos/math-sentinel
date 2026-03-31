@@ -111,6 +111,8 @@ class BenchmarkProfileTests(unittest.TestCase):
         self.assertEqual(claim_cfg["model"]["backbone"], "models/Qwen2.5-1.5B-Instruct")
         self.assertTrue(claim_cfg["model"]["local_files_only"])
         self.assertEqual(claim_cfg["model"]["dtype"], "float16")
+        self.assertEqual(claim_cfg["model"]["seq_len"], 640)
+        self.assertEqual(claim_cfg["verifier"]["max_seq_len"], 640)
         self.assertEqual(claim_cfg["benchmark"]["report_lane"], "claim_no_repairs")
         self.assertFalse(claim_cfg["search"]["enable_fallback_repairs"])
         self.assertFalse(claim_cfg["search"]["guided_fallback_rollout"])
