@@ -84,6 +84,7 @@ from domains.gaia_ops.backend import (
     _solve_wikipedia_revision_count,
     _solve_youtube_bird_species_count,
     _page_image_urls,
+    _playwright_browser_fetch_dom,
     _search_documents_for_title,
     _extract_historical_navigation_title,
     _search_documents_from_prompt,
@@ -229,6 +230,23 @@ class GaiaOpsBackendTests(unittest.TestCase):
 
         self.assertIn("playwright dom", html)
         mock_playwright_fetch.assert_called_once_with("https://example.com/")
+
+    @patch("domains.gaia_ops.backend.sync_playwright")
+    @patch("domains.gaia_ops.backend._playwright_subprocess_available")
+    def test_playwright_browser_fetch_dom_skips_launch_when_async_subprocess_is_unavailable(
+        self,
+        mock_subprocess_available: Any,
+        mock_sync_playwright: Any,
+    ) -> None:
+        mock_subprocess_available.return_value = False
+        _playwright_browser_fetch_dom.cache_clear()
+        try:
+            html = _playwright_browser_fetch_dom("https://example.com/")
+        finally:
+            _playwright_browser_fetch_dom.cache_clear()
+
+        self.assertEqual(html, "")
+        mock_sync_playwright.assert_not_called()
 
     def test_evidence_driven_fallback_loop_solves_csv_case_without_oracle_tool_hints(self) -> None:
         backend = GaiaOpsReasoningDomain()

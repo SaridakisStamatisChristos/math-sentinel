@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import asyncio
 import csv
 import functools
 import html
@@ -4885,6 +4886,37 @@ def _browser_executable() -> str:
     return ""
 
 
+@functools.lru_cache(maxsize=1)
+def _playwright_subprocess_available() -> bool:
+    if sync_playwright is None:
+        return False
+
+    async def _probe() -> bool:
+        process = await asyncio.create_subprocess_exec(
+            "cmd.exe",
+            "/c",
+            "exit",
+            "0",
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        await process.communicate()
+        return process.returncode == 0
+
+    loop = asyncio.new_event_loop()
+    try:
+        return bool(loop.run_until_complete(_probe()))
+    except Exception:
+        return False
+    finally:
+        try:
+            loop.run_until_complete(loop.shutdown_asyncgens())
+        except Exception:
+            pass
+        loop.close()
+
+
 def _browser_request_headers(url: str, headers: Optional[Dict[str, str]] = None, *, text_mode: bool = True) -> Dict[str, str]:
     header_map = dict(HTML_BROWSER_HEADERS if text_mode else DEFAULT_HEADERS)
     if headers:
@@ -4972,9 +5004,14 @@ def _playwright_browser_fetch_dom(url: str) -> str:
     cleaned_url = str(url or "").strip()
     if not cleaned_url or sync_playwright is None:
         return ""
+    if not _playwright_subprocess_available():
+        _gaia_progress_event("browse_dom_fetch", url=cleaned_url, mode="playwright", status="unavailable")
+        return ""
     try:
         with sync_playwright() as playwright:
             browser = None
+            context = None
+            page = None
             try:
                 try:
                     browser = playwright.chromium.launch(channel="chromium", headless=True)
@@ -5013,6 +5050,16 @@ def _playwright_browser_fetch_dom(url: str) -> str:
                     _gaia_progress_event("browse_dom_fetch", url=cleaned_url, mode="playwright", status="ok")
                 return html_text
             finally:
+                if page is not None:
+                    try:
+                        page.close()
+                    except Exception:
+                        pass
+                if context is not None:
+                    try:
+                        context.close()
+                    except Exception:
+                        pass
                 if browser is not None:
                     try:
                         browser.close()
