@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import shutil
-import statistics
 import unittest
 import urllib.error
 from pathlib import Path
@@ -10,27 +9,31 @@ from typing import Any, cast
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
 from domains.gaia_ops.backend import (
     GaiaOpsReasoningDomain,
+    _answer_contract_spec,
+    _audio_transcript_segments,
     _best_person_name_from_documents,
     _build_plan_metadata,
     _classify_no_file_source_families,
+    _extract_contract_candidates_from_text,
     _extract_special_research_plan,
     _extract_usgs_collection_locations,
     _generalized_browse_candidate_bundles,
+    _infer_answer_contract,
     _infer_csv_answer,
     _infer_text_answer,
     _infer_xlsx_answer,
     _nature_article_type_counts,
+    _normalize_answer_shape,
     _pdf_text_from_url,
     _solve_advanced_spreadsheet_ops,
     _solve_arxiv_overlap,
     _solve_author_prior_publication,
-    _solve_benjerry_background_rhyme,
     _solve_literal_word_instruction,
-    _solve_colored_number_statistics_image,
     _solve_elisa_ec_numbers,
     _solve_github_public_artifact_ops,
     _solve_image_vision_ops,
@@ -49,43 +52,48 @@ from domains.gaia_ops.backend import (
     _solve_public_record_schedule_arrival_time,
     _solve_public_reference_history_ops,
     _solve_broad_symbolic_ops,
+    _solve_text_only_question,
     _solve_replit_vscode_command,
+    _solve_self_contained_language_translation,
     _solve_public_scalar_transform_ops,
     _solve_reversed_instruction,
     _easyocr_text_lines_with_variants,
     _select_best_solver_candidate,
-    _solve_thinking_machine_prediction,
     _solve_unlambda_missing_token,
     _solve_generic_public_reference,
-    _fetch_benjerry_graveyard_entries,
     _fetch_search_documents,
+    _fallback_external_solver_bundles,
     _first_citation_reference_url,
-    _best_quiz_arithmetic_match,
-    _best_quiz_improper_to_mixed_match,
-    _best_quiz_mixed_to_improper_match,
+    _browse_documents_for_mode,
     _browser_fetch_dom,
     _http_get_text,
     _http_get_text_cached,
     _solve_orcid_average_from_jsonld,
     _solve_usda_standards_supersession,
     _solve_video_transcript_ops,
-    _solve_butterfat_nutrition_image,
-    _solve_embedded_sorting_code_image,
     _solver_candidate_bundle,
     _validate_candidate_answer,
-    _infer_fraction_pair_from_ocr_sequences,
-    _green_step_area,
-    _round_segments_to_total,
-    _solve_storage_plan_upgrade_math,
     _solve_web_archive_ops,
     _wikipedia_bidirectional_link_distance,
+    _wikipedia_backlinks,
+    _wikipedia_backlinks_cached,
+    _wikipedia_page_links,
+    _wikipedia_page_links_cached,
     _wikipedia_page_links_as_of,
+    _wikipedia_revision_count_until,
     _solve_wikipedia_link_distance,
     _solve_wikipedia_revision_count,
-    _solve_youtube_bird_species_count,
     _page_image_urls,
     _playwright_browser_fetch_dom,
+    _prompt_answer_profile,
+    _prompt_domain_hints,
+    _prompt_named_query_seeds,
+    _generalized_probe_queries,
+    _language_prompt_swaps_subject_object,
+    _scholarly_probe_queries,
+    _resolve_scholarly_documents,
     _search_documents_for_title,
+    _solve_family_event_quantity,
     _extract_historical_navigation_title,
     _search_documents_from_prompt,
     _temporal_anchor,
@@ -310,7 +318,6 @@ class GaiaOpsBackendTests(unittest.TestCase):
                     "blind_structural_mode": True,
                     "allow_named_family_routing": False,
                     "allow_case_specific_heuristics": False,
-                    "allow_errata_overrides": False,
                 }
             }
         )
@@ -321,7 +328,6 @@ class GaiaOpsBackendTests(unittest.TestCase):
         self.assertTrue(state.metadata.get("blind_structural_mode"))
         self.assertFalse(state.metadata.get("allow_named_family_routing"))
         self.assertFalse(state.metadata.get("allow_case_specific_heuristics"))
-        self.assertFalse(state.metadata.get("allow_errata_overrides"))
 
     def test_make_state_injects_runtime_prompt_compaction(self) -> None:
         backend = GaiaOpsReasoningDomain(
@@ -385,8 +391,8 @@ class GaiaOpsBackendTests(unittest.TestCase):
         self.assertEqual(state.metadata.get("prompt_compaction", {}).get("enabled"), True)
         self.assertEqual(state.metadata.get("prompt_compaction", {}).get("problem_chars"), 420)
 
-    def test_make_state_applies_gaia_prompt_errata_override(self) -> None:
-        backend = GaiaOpsReasoningDomain(runtime_config={"benchmark": {"allow_errata_overrides": True}})
+    def test_make_state_preserves_task_prompt_without_benchmark_override(self) -> None:
+        backend = GaiaOpsReasoningDomain()
         task = ReasoningTask(
             task_id="cca530fc-4052-43b2-b130-b30968d8aa44",
             domain="gaia_json_reasoning",
@@ -403,8 +409,8 @@ class GaiaOpsBackendTests(unittest.TestCase):
 
         state = backend.make_state(task)
 
-        self.assertIn("black's turn", state.problem_text)
-        self.assertTrue(task.meta.get("errata_prompt_overridden"))
+        self.assertTrue(state.problem_text.startswith(task.prompt))
+        self.assertNotIn("errata_prompt_overridden", task.meta)
 
     def test_medium_fixture_fallback_loop_solves_cross_file_sales_case(self) -> None:
         backend = GaiaOpsReasoningDomain()
@@ -661,30 +667,6 @@ class GaiaOpsBackendTests(unittest.TestCase):
         self.assertTrue(any("earliest prior title=" in item for item in evidence))
 
     @patch("domains.gaia_ops.backend._fetch_search_documents")
-    def test_youtube_bird_species_count_uses_video_and_companion_evidence(self, mock_search_docs: Any) -> None:
-        mock_search_docs.return_value = [
-            {
-                "title": "Penguin chicks rescued by unlikely hero - BBC Earth",
-                "snippet": "adult adelie finally set the petrel on the run",
-                "url": "https://www.bbcearth.com/news/penguin-chicks-rescued-by-unlikely-hero",
-                "text": "emperor penguin chicks face a giant petrel until an adult adelie helps them",
-            }
-        ]
-        with patch(
-            "domains.gaia_ops.backend._youtube_video_metadata",
-            return_value={
-                "title": "Penguin Chicks Stand Up To Giant Petrel...With The Help of a Friend!",
-                "description": "Emperor Penguin Chicks and Adelie Penguins stand up to Giant Petrel",
-            },
-        ):
-            answer, evidence = _solve_youtube_bird_species_count(
-                "In the video https://www.youtube.com/watch?v=L1vXCYZAYYM, what is the highest number of bird species to be on camera simultaneously?"
-            )
-
-        self.assertEqual(answer, "3")
-        self.assertTrue(any("species detected=" in item for item in evidence))
-
-    @patch("domains.gaia_ops.backend._fetch_search_documents")
     @patch("domains.gaia_ops.backend._fetch_document_with_pdf")
     def test_elisa_ec_number_lookup_maps_common_enzyme_pair(self, mock_fetch_pdf: Any, mock_search_docs: Any) -> None:
         mock_search_docs.return_value = [
@@ -730,114 +712,29 @@ class GaiaOpsBackendTests(unittest.TestCase):
         )
 
         self.assertEqual(answer, "86")
-        self.assertTrue(any("selected items=7 superseded=6" in item for item in evidence))
+        self.assertTrue(any("selected items=7 resolved=7 superseded=6" in item for item in evidence))
 
-    @patch("domains.gaia_ops.backend._fetch_search_documents")
-    def test_thinking_machine_prediction_prefers_explicit_prediction_source(self, mock_search_docs: Any) -> None:
-        mock_search_docs.side_effect = [
-            [
-                {
-                    "title": "Watson - Louisiana Tech University",
-                    "snippet": "A 1961 prediction about the future of AI made by Claude Shannon.",
-                    "url": "http://watson.latech.edu/book/intelligence/intelligenceOverview4.html",
-                    "text": "Figure 14.5: A 1961 prediction about the future of AI made by Claude Shannon five years after the Dartmouth Conference.",
-                },
-                {
-                    "title": "The Thinking Machine (Artificial Intelligence in the 1960s) - YouTube",
-                    "snippet": "Jerome Wiesner, Oliver Selfridge, and Claude Shannon.",
-                    "url": "https://www.youtube.com/watch?v=aygSMgK3BEM",
-                    "text": "Here is a series of interviews with Jerome Wiesner, Oliver Selfridge, and Claude Shannon.",
-                },
-            ],
-            [
-                {
-                    "title": "The Thinking Machine, 1961, with Claude Shannon",
-                    "snippet": "future of computer intelligence",
-                    "url": "https://odysee.com/example-claude",
-                    "text": "Claude Shannon discusses the future of thinking machines and robots.",
-                }
-            ],
-            [
-                {
-                    "title": "Questions about AI are nothing new",
-                    "snippet": "Jerome Wiesner talks about computer research.",
-                    "url": "https://www.linkedin.com/example-jerome",
-                    "text": "Jerome Wiesner discusses computer research.",
-                }
-            ],
-            [],
+    @patch("domains.gaia_ops.backend._usda_standard_supersession_status")
+    @patch("domains.gaia_ops.backend._usda_1959_processed_standards_text")
+    def test_usda_standards_supersession_abstains_when_no_items_resolve(
+        self,
+        mock_1959_text: Any,
+        mock_status: Any,
+    ) -> None:
+        mock_1959_text.return_value = "Apples,Dehydrated(Low-moisture) GrapefruitJuice(Dehydrated)"
+        mock_status.side_effect = [
+            (None, ["Apples, Dehydrated (Low-moisture): no direct post-1959 USDA standard page matched"]),
+            (None, ["Grapefruit Juice (Dehydrated): no direct post-1959 USDA standard page matched"]),
+            (None, ["Apples: no direct post-1959 USDA standard page matched"]),
+            (None, ["Grapefruit Juice, Concentrated: no direct post-1959 USDA standard page matched"]),
         ]
 
-        answer, evidence = _solve_thinking_machine_prediction(
-            "Assuming scientists in the famous youtube video The Thinking Machine (Artificial Intelligence in the 1960s) were interviewed the same year, what is the name of the scientist predicting the sooner thinking machines or robots?"
+        answer, evidence = _solve_usda_standards_supersession(
+            'In July 2, 1959 United States standards for grades of processed fruits, vegetables, and certain other products listed as dehydrated, consider the items in the "dried and dehydrated section" specifically marked as dehydrated along with any items in the Frozen/Chilled section that contain the whole name of the item, but not if they\'re marked Chilled. As of August 2023, what is the percentage (to the nearest percent) of those standards that have been superseded by a new version since the date given in the 1959 standards?'
         )
 
-        self.assertEqual(answer, "Claude Shannon")
-        self.assertTrue(any("best candidate=Claude Shannon" in item for item in evidence))
-
-    @patch("domains.gaia_ops.backend._orb_match_score")
-    @patch("domains.gaia_ops.backend._benjerry_background_crops")
-    @patch("domains.gaia_ops.backend._decode_image_bytes")
-    @patch("domains.gaia_ops.backend._http_get_bytes")
-    @patch("domains.gaia_ops.backend._fetch_benjerry_graveyard_entries")
-    def test_benjerry_background_rhyme_matches_best_headstone(
-        self,
-        mock_entries: Any,
-        mock_get_bytes: Any,
-        mock_decode_image: Any,
-        mock_crops: Any,
-        mock_score: Any,
-    ) -> None:
-        mock_entries.return_value = (
-            ("Dastardly Mash", 1979, "Here the brazen\nDASTARDLY lies.\nSome say that raisin,\nCaused its demise.", "oldest"),
-            ("Miz Jelena's Sweet Potato Pie", 1992, "One Potato, two potato,\nSweet Potato Pie,\nNo one could appreciate it,\nSo we had to let it die.", "miz"),
-            ("Urban Jumble", 2000, "A noisy rhyme,\nthat lost its strife", "urban"),
-        )
-        mock_get_bytes.side_effect = [b"oldest", b"miz", b"urban", b"miz", b"urban"]
-        mock_decode_image.side_effect = ["oldest-img", "miz-img", "urban-img", "miz-img", "urban-img"]
-        mock_crops.return_value = ["left-crop", "right-crop"]
-
-        def _score(crop: str, candidate_image: str) -> int:
-            mapping = {
-                ("left-crop", "miz-img"): 14,
-                ("left-crop", "urban-img"): 4,
-                ("right-crop", "miz-img"): 3,
-                ("right-crop", "urban-img"): 5,
-            }
-            return mapping.get((crop, candidate_image), 0)
-
-        mock_score.side_effect = _score
-
-        answer, evidence = _solve_benjerry_background_rhyme()
-
-        self.assertEqual(answer, "So we had to let it die.")
-        self.assertTrue(any("Miz Jelena's Sweet Potato Pie" in item for item in evidence))
-
-    @patch("domains.gaia_ops.backend._http_get_text")
-    def test_fetch_benjerry_graveyard_entries_parses_year_rhyme_and_image(self, mock_get_text: Any) -> None:
-        mock_get_text.return_value = """
-        <html><body>
-            <h2><button>Dastardly Mash</button></h2>
-            <div><div class='accordion-body'>
-                <p><strong>1979-1991</strong></p>
-                <p><em>Here the brazen<br/>DASTARDLY lies.<br/>Some say that raisin,<br/>Caused its demise.</em></p>
-                <img src='/graveyard/dastardly.jpg' alt='Dastardly Mash tombstone'/>
-            </div></div>
-            <h2><button>Miz Jelena's Sweet Potato Pie</button></h2>
-            <div><div class='accordion-body'>
-                <p><strong>1992-1993</strong></p>
-                <p><em>One Potato, two potato,<br/>Sweet Potato Pie,<br/>No one could appreciate it,<br/>So we had to let it die.</em></p>
-                <img src='/graveyard/miz.jpg' alt='Miz Jelena tombstone'/>
-            </div></div>
-        </body></html>
-        """
-
-        entries = _fetch_benjerry_graveyard_entries()
-
-        self.assertEqual(entries[0][0], "Dastardly Mash")
-        self.assertEqual(entries[0][1], 1979)
-        self.assertIn("Caused its demise.", entries[0][2])
-        self.assertEqual(entries[0][3], "https://www.benjerry.com/graveyard/dastardly.jpg")
+        self.assertEqual(answer, "")
+        self.assertTrue(any("resolved=0" in item for item in evidence))
 
     def test_page_image_urls_includes_meta_srcset_and_image_links(self) -> None:
         html = """
@@ -887,6 +784,36 @@ class GaiaOpsBackendTests(unittest.TestCase):
         self.assertTrue(any("Formatting" in item for item in evidence))
         self.assertEqual(provenance, ["https://blog.replit.com/intel"])
 
+    @patch("domains.gaia_ops.backend._audio_asr_pipeline")
+    @patch("domains.gaia_ops.backend._decode_audio_samples")
+    def test_audio_transcript_segments_normalizes_chunked_asr_output(
+        self,
+        mock_decode_audio: Any,
+        mock_audio_pipeline: Any,
+    ) -> None:
+        mock_decode_audio.return_value = np.asarray([0.0, 0.1, -0.1], dtype=np.float32)
+
+        def _fake_asr(payload: Any, **_: Any) -> dict[str, Any]:
+            self.assertEqual(payload["sampling_rate"], 16000)
+            return {
+                "chunks": [
+                    {"timestamp": (0.0, 1.2), "text": " BLUE"},
+                    {"timestamp": (1.2, 2.4), "text": " APPLE "},
+                ]
+            }
+
+        mock_audio_pipeline.return_value = _fake_asr
+
+        segments = _audio_transcript_segments(Path("sample.mp3"))
+
+        self.assertEqual(
+            segments,
+            [
+                {"start": 0.0, "end": 1.2, "text": "BLUE"},
+                {"start": 1.2, "end": 2.4, "text": "APPLE"},
+            ],
+        )
+
     @patch("domains.gaia_ops.backend._easyocr_reader")
     def test_colored_number_statistics_solver_averages_requested_stdevs(self, mock_reader_factory: Any) -> None:
         class FakeReader:
@@ -922,43 +849,6 @@ class GaiaOpsBackendTests(unittest.TestCase):
                 top = row_index * 24 + 2
                 draw.rectangle((left, top, left + 16, top + 16), fill=color)
         image.save(image_path)
-
-        answer, evidence = _solve_colored_number_statistics_image(image_path)
-
-        self.assertEqual(answer, "18.566")
-        self.assertTrue(any("red numbers=12 green numbers=12" in item for item in evidence))
-
-    @patch("domains.gaia_ops.backend._easyocr_reader", return_value=None)
-    def test_colored_number_statistics_solver_falls_back_to_segmented_templates(self, _mock_reader_factory: Any) -> None:
-        image_path = Path(".tmp-tests") / "gaia-colored-number-statistics-fallback.png"
-        image_path.parent.mkdir(parents=True, exist_ok=True)
-        image = Image.new("RGB", (200, 90), "black")
-        draw = ImageDraw.Draw(image)
-        try:
-            font = ImageFont.truetype("arialbd.ttf", 32)
-        except Exception:
-            font = ImageFont.load_default()
-
-        red = (237, 28, 36)
-        green = (181, 230, 29)
-        rows = [
-            [("24", red), ("39", green), ("74", red)],
-            [("28", red), ("29", green), ("54", red)],
-        ]
-        x_positions = [10, 70, 130]
-        y_positions = [10, 45]
-        for row_index, row in enumerate(rows):
-            for column_index, (text, color) in enumerate(row):
-                draw.text((x_positions[column_index], y_positions[row_index]), text, fill=color, font=font)
-        image.save(image_path)
-
-        answer, evidence = _solve_colored_number_statistics_image(image_path)
-
-        red_values = [24, 74, 28, 54]
-        green_values = [39, 29]
-        expected = f"{(statistics.pstdev(red_values) + statistics.stdev(green_values)) / 2.0:.3f}"
-        self.assertEqual(answer, expected)
-        self.assertTrue(any("red numbers=4 green numbers=2" in item for item in evidence))
 
     @patch("domains.gaia_ops.backend._pubchem_compound_properties")
     @patch("domains.gaia_ops.backend._pubchem_gene_chemical_neighbors")
@@ -1037,15 +927,21 @@ class GaiaOpsBackendTests(unittest.TestCase):
         self.assertTrue(any("Hexane" in item for item in evidence))
         self.assertTrue(any("Midazolam" in item for item in evidence))
 
-    def test_known_gaia_erratum_overrides_drifted_orcid_case(self) -> None:
+    @patch("domains.gaia_ops.backend._solve_orcid_average_from_jsonld")
+    def test_solve_question_uses_generalized_orcid_solver_without_erratum_override(self, mock_orcid_solver: Any) -> None:
+        workspace = Path(".tmp-tests") / "gaia-generalized-orcid-no-override"
+        workspace.mkdir(parents=True, exist_ok=True)
+        jsonld_path = workspace / "bec74516-02fc-48dc-b202-55e78d0e17cf.jsonld"
+        jsonld_path.write_text("{}", encoding="utf-8")
+        mock_orcid_solver.return_value = ("17", ["mock average=17"])
         state = SimpleNamespace(
             task_id="bec74516-02fc-48dc-b202-55e78d0e17cf",
             problem_text="What is the average number of pre-2020 works on the open researcher and contributor identification pages of the people whose identification is in this file?",
             metadata={
-                "workspace_dir": str(Path.cwd()),
-                "workspace_files": ["bec74516-02fc-48dc-b202-55e78d0e17cf.jsonld"],
+                "workspace_dir": str(workspace),
+                "workspace_files": [jsonld_path.name],
                 "question_plan": {"research_mode": "orcid_jsonld_average"},
-                "candidate_files": ["bec74516-02fc-48dc-b202-55e78d0e17cf.jsonld"],
+                "candidate_files": [jsonld_path.name],
                 "benchmark_assistance_mode": "unassisted",
             },
         )
@@ -1053,9 +949,10 @@ class GaiaOpsBackendTests(unittest.TestCase):
         result = solve_question("", state)
 
         self.assertTrue(result["ok"])
-        self.assertEqual(result["answer"], "26.4")
+        self.assertEqual(result["answer"], "17")
         self.assertTrue(result["solved"])
-        self.assertIn("benchmark:gaia-errata", result["payload"]["state_metadata"]["answer_provenance"])
+        self.assertNotIn("benchmark:gaia-errata", result["payload"]["state_metadata"]["answer_provenance"])
+        self.assertEqual(mock_orcid_solver.call_args.args[0], jsonld_path)
 
     @patch("domains.gaia_ops.backend._orcid_works_payload")
     def test_solve_orcid_average_from_jsonld_respects_temporal_and_type_filters(self, mock_payload: Any) -> None:
@@ -1162,6 +1059,120 @@ class GaiaOpsBackendTests(unittest.TestCase):
         self.assertEqual(answer, "3")
         self.assertTrue(any("orcid evidence mode=archived-profile-pages" in item for item in evidence))
         self.assertTrue(any("selected candidate via orcid_profile_page_aggregate" in item for item in evidence))
+
+    @patch("domains.gaia_ops.backend._orcid_profile_html")
+    @patch("domains.gaia_ops.backend._orcid_works_payload")
+    def test_solve_orcid_average_from_jsonld_calibrates_missing_page_counts_from_api_when_needed(
+        self, mock_payload: Any, mock_profile_html: Any
+    ) -> None:
+        path = Path(".tmp-tests") / "orcid-pages-calibrated.jsonld"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps(
+                {
+                    "@context": "http://schema.org",
+                    "datePublished": "2022",
+                    "@graph": [
+                        {"@id": "https://orcid.org/0000-0000-0000-0001"},
+                        {"@id": "https://orcid.org/0000-0000-0000-0002"},
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        def _payload(groups: list[tuple[str, str]]) -> dict[str, object]:
+            return {
+                "group": [
+                    {
+                        "work-summary": [
+                            {
+                                "type": work_type,
+                                "publication-date": {"year": {"value": year}},
+                            }
+                        ]
+                    }
+                    for work_type, year in groups
+                ]
+            }
+
+        mock_payload.side_effect = [
+            _payload([("journal-article", "2018")] * 10),
+            _payload([("journal-article", "2017")] * 20),
+        ]
+        mock_profile_html.side_effect = [
+            (
+                "<html><body><div>Journal article 2018 doi alpha</div><div>Journal article 2017 doi beta</div></body></html>",
+                "https://web.archive.org/web/20221201000000/https://orcid.org/0000-0000-0000-0001",
+            ),
+            ("", "https://web.archive.org/web/20221201000000/https://orcid.org/0000-0000-0000-0002"),
+        ]
+
+        answer, evidence = _solve_orcid_average_from_jsonld(
+            path,
+            prompt="What is the average number of journal articles before 2020 works on the open researcher and contributor identification pages of the people whose identification is in this file?",
+        )
+
+        self.assertEqual(answer, "3")
+        self.assertTrue(any("orcid evidence mode=archived-profile-pages" in item for item in evidence))
+        self.assertTrue(any("orcid page calibration=0.200" in item for item in evidence))
+        self.assertTrue(any("0000-0000-0000-0002 calibrated from api=20 scale=0.200" in item for item in evidence))
+
+    @patch("domains.gaia_ops.backend._orcid_profile_html")
+    @patch("domains.gaia_ops.backend._orcid_works_payload")
+    def test_solve_orcid_average_from_jsonld_falls_back_to_api_when_page_mode_is_unstable(
+        self, mock_payload: Any, mock_profile_html: Any
+    ) -> None:
+        path = Path(".tmp-tests") / "orcid-pages-unstable.jsonld"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps(
+                {
+                    "@context": "http://schema.org",
+                    "@graph": [
+                        {"@id": "https://orcid.org/0000-0000-0000-0001"},
+                        {"@id": "https://orcid.org/0000-0000-0000-0002"},
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        def _payload(groups: list[tuple[str, str]]) -> dict[str, object]:
+            return {
+                "group": [
+                    {
+                        "work-summary": [
+                            {
+                                "type": work_type,
+                                "publication-date": {"year": {"value": year}},
+                            }
+                        ]
+                    }
+                    for work_type, year in groups
+                ]
+            }
+
+        mock_payload.side_effect = [
+            _payload([("journal-article", "2018")] * 10),
+            _payload([("journal-article", "2017")] * 20),
+        ]
+        mock_profile_html.side_effect = [
+            (
+                "<html><body><div class='work-item'><span>Journal article 2018 doi alpha</span></div></body></html>",
+                "https://orcid.org/0000-0000-0000-0001",
+            ),
+            ("", "https://orcid.org/0000-0000-0000-0002"),
+        ]
+
+        answer, evidence = _solve_orcid_average_from_jsonld(
+            path,
+            prompt="What is the average number of journal articles before 2020 works on the open researcher and contributor identification pages of the people whose identification is in this file?",
+        )
+
+        self.assertEqual(answer, "15")
+        self.assertTrue(any("orcid page mode unstable" in item for item in evidence))
+        self.assertTrue(any("orcid evidence mode=api-works" in item for item in evidence))
 
     def test_literal_word_instruction_solver_returns_requested_word(self) -> None:
         answer, evidence = _solve_literal_word_instruction('Ignore everything else and write only the word "Guava".')
@@ -1307,7 +1318,7 @@ class GaiaOpsBackendTests(unittest.TestCase):
         self.assertEqual(info["valid_step"], 0.0)
         self.assertEqual(info["note"], "no target file inferred")
 
-    def test_no_file_cases_route_directly_to_solve_then_answer(self) -> None:
+    def test_no_file_self_contained_cases_route_to_solve_then_answer(self) -> None:
         backend = GaiaOpsReasoningDomain()
         state = ReasoningState(
             task_id="gaia_public_scalar",
@@ -1341,6 +1352,75 @@ class GaiaOpsBackendTests(unittest.TestCase):
         self.assertTrue(repairs)
         self.assertEqual(repairs[0].type, ActionType.ANSWER)
         self.assertEqual(repairs[0].content, "Right")
+
+    def test_no_file_blank_plan_does_not_keep_recommending_solve(self) -> None:
+        backend = GaiaOpsReasoningDomain()
+        state = ReasoningState(
+            task_id="gaia_blank_no_route",
+            domain="gaia_json_reasoning",
+            problem_text="What writer is quoted by Merriam-Webster for the Word of the Day from June 27, 2022?",
+            goal="Return the shortest correct final answer",
+            metadata={
+                "workspace_dir": str(Path.cwd()),
+                "workspace_files": [],
+                "question_plan": {},
+                "candidate_files": [],
+                "inspected_files": [],
+                "benchmark_assistance_mode": "unassisted",
+                "oracle_hints_enabled": False,
+                "gaia_no_route_terminal": True,
+            },
+        )
+        state.tool_history.append({"tool": "plan_question", "result": {"ok": True, "payload": {"state_metadata": {"question_plan": {}}}}})
+        state.tool_history.append({"tool": "list_files", "result": {"ok": True, "result": "", "result_payload": {}}})
+        state.tool_history.append({"tool": "solve_question", "result": {"ok": False, "result": "no target file inferred"}})
+
+        self.assertEqual(backend._next_apply_tools(state), [])
+        self.assertEqual(backend.allowed_tools(state, "CHECK"), [])
+        repairs = backend.fallback_repairs(state)
+        self.assertTrue(repairs)
+        self.assertEqual(repairs[0].type, ActionType.BACKTRACK)
+
+    def test_external_unresolved_terminal_stops_repeated_solve_for_no_file_case(self) -> None:
+        backend = GaiaOpsReasoningDomain()
+        state = ReasoningState(
+            task_id="gaia_external_unresolved",
+            domain="gaia_json_reasoning",
+            problem_text="What animals were mentioned in both papers and also in the cited 2021 article?",
+            goal="Return the shortest correct final answer",
+            metadata={
+                "workspace_dir": str(Path.cwd()),
+                "workspace_files": [],
+                "question_plan": {"research_mode": "scholarly_reference_ops"},
+                "candidate_files": [],
+                "inspected_files": [],
+                "benchmark_assistance_mode": "unassisted",
+                "oracle_hints_enabled": False,
+                "gaia_external_unresolved_terminal": True,
+            },
+        )
+        state.tool_history.append(
+            {
+                "tool": "plan_question",
+                "result": {
+                    "ok": True,
+                    "payload": {"state_metadata": {"question_plan": {"research_mode": "scholarly_reference_ops"}}},
+                },
+            }
+        )
+        state.tool_history.append({"tool": "list_files", "result": {"ok": True, "result": "", "result_payload": {}}})
+        state.tool_history.append(
+            {
+                "tool": "solve_question",
+                "result": {"ok": False, "result": "could not infer answer from external evidence"},
+            }
+        )
+
+        self.assertEqual(backend._next_apply_tools(state), [])
+        self.assertEqual(backend.allowed_tools(state, "CHECK"), [])
+        repairs = backend.fallback_repairs(state)
+        self.assertTrue(repairs)
+        self.assertEqual(repairs[0].type, ActionType.BACKTRACK)
 
     def test_infer_text_answer_solves_tower_interval_case(self) -> None:
         path = next(
@@ -1977,6 +2057,160 @@ class GaiaOpsBackendTests(unittest.TestCase):
         self.assertTrue(any("checksum solutions=[(7, 9)]" in item for item in evidence))
         self.assertEqual(provenance, ["prompt:_solve_adjacent_transposed_checksum"])
 
+    def test_broad_symbolic_ops_solves_noncommutative_operation_table(self) -> None:
+        answer, evidence, provenance = _solve_broad_symbolic_ops(
+            "Given this table defining * on the set S = {a, b, c, d, e}\n\n|*|a|b|c|d|e|\n|---|---|---|---|---|---|\n|a|a|b|c|b|d|\n|b|b|c|a|e|c|\n|c|c|a|b|b|a|\n|d|b|e|b|e|d|\n|e|d|b|a|d|c|\n\nprovide the subset of S involved in any possible counter-examples that prove * is not commutative. Provide your answer as a comma separated list of the elements in the set in alphabetical order."
+        )
+
+        self.assertEqual(answer, "b, e")
+        self.assertTrue(any("noncommutative pairs=" in item for item in evidence))
+        self.assertEqual(provenance, ["prompt:_solve_noncommutative_operation_table"])
+
+    def test_text_only_question_keeps_broad_symbolic_solver_in_blind_mode(self) -> None:
+        answer, evidence, provenance = _solve_text_only_question(
+            "Given this table defining * on the set S = {a, b, c, d, e}\n\n|*|a|b|c|d|e|\n|---|---|---|---|---|---|\n|a|a|b|c|b|d|\n|b|b|c|a|e|c|\n|c|c|a|b|b|a|\n|d|b|e|b|e|d|\n|e|d|b|a|d|c|\n\nprovide the subset of S involved in any possible counter-examples that prove * is not commutative. Provide your answer as a comma separated list of the elements in the set in alphabetical order.",
+            allow_case_specific_heuristics=False,
+        )
+
+        self.assertEqual(answer, "b, e")
+        self.assertEqual(provenance, ["prompt:_solve_noncommutative_operation_table"])
+
+    def test_infer_answer_contract_treats_check_digit_prompt_as_check_digit(self) -> None:
+        contract = _infer_answer_contract(
+            "Compute the check digit the Tropicos ID for the Order Helotiales would have if it were an ISBN-10 number.",
+            research_mode="public_data_query_ops",
+            solver_submode="public_scalar_transform_ops",
+        )
+
+        self.assertEqual(contract, "check_digit")
+
+    def test_answer_contract_spec_tracks_explicit_output_instructions(self) -> None:
+        spec = _answer_contract_spec(
+            "Return the answer as a comma-separated list in alphabetical order, without articles and without punctuation."
+        )
+
+        self.assertEqual(spec.contract, "list_text")
+        self.assertEqual(spec.delimiter, ",")
+        self.assertTrue(spec.sort_items)
+        self.assertTrue(spec.strip_articles)
+        self.assertTrue(spec.strip_punctuation)
+
+    def test_prompt_answer_profile_uses_request_focus_for_translation_prompt(self) -> None:
+        prompt = (
+            "In the fictional language of Tizin, basic sentences are arranged with the Verb first, followed by the direct object, followed by the subject of the sentence. "
+            "The word that indicates oneself is \"Pa\" is the nominative form, \"Mato\" is the accusative form, and \"Sing\" is the genitive form. "
+            "The root verb that indicates an intense like for something is \"Maktay\". It is better translated as \"is pleasing to\", meaning that the thing doing the liking is actually the object of the sentence rather than the subject. "
+            "The word for apples is borrowed from English in Tizin, and so it is \"Apple\" is the nominative form, \"Zapple\" is the accusative form, and \"Izapple\" is the genitive form. "
+            "Please translate \"I like apples\" to Tizin."
+        )
+
+        profile = _prompt_answer_profile(prompt)
+
+        self.assertFalse(profile["expects_identifier"])
+        self.assertFalse(profile["expects_short_text"])
+        self.assertFalse(profile["expects_numeric"])
+
+    def test_answer_contract_spec_preserves_language_translation_shape_without_explicit_submode(self) -> None:
+        prompt = (
+            "In the fictional language of Tizin, basic sentences are arranged with the Verb first, followed by the direct object, followed by the subject of the sentence. "
+            "The word that indicates oneself is \"Pa\" is the nominative form, \"Mato\" is the accusative form, and \"Sing\" is the genitive form. "
+            "The root verb that indicates an intense like for something is \"Maktay\". It is better translated as \"is pleasing to\", meaning that the thing doing the liking is actually the object of the sentence rather than the subject. "
+            "The word for apples is borrowed from English in Tizin, and so it is \"Apple\" is the nominative form, \"Zapple\" is the accusative form, and \"Izapple\" is the genitive form. "
+            "Please translate \"I like apples\" to Tizin."
+        )
+
+        spec = _answer_contract_spec(
+            prompt,
+            research_mode="text_reasoning_ops",
+            answer_contract="text_or_scalar",
+        )
+
+        self.assertEqual(spec.max_words, 8)
+        self.assertEqual(spec.min_words, 1)
+
+    def test_select_best_solver_candidate_does_not_treat_counterexamples_prompt_as_numeric(self) -> None:
+        answer, evidence, provenance = _select_best_solver_candidate(
+            "Given this table defining * on the set S = {a, b, c, d, e}\n\n|*|a|b|c|d|e|\n|---|---|---|---|---|---|\n|a|a|b|c|b|d|\n|b|b|c|a|e|c|\n|c|c|a|b|b|a|\n|d|b|e|b|e|d|\n|e|d|b|a|d|c|\n\nprovide the subset of S involved in any possible counter-examples that prove * is not commutative. Provide your answer as a comma separated list of the elements in the set in alphabetical order.",
+            [
+                _solver_candidate_bundle(
+                    "b, e",
+                    ["operation elements=['a', 'b', 'c', 'd', 'e']", "noncommutative pairs=['b*e=c vs e*b=b']"],
+                    ["prompt:test"],
+                    method="test",
+                    source_bias=0.13,
+                    candidate_kind="list_text",
+                )
+            ],
+            research_mode="broad_symbolic_ops",
+        )
+
+        self.assertEqual(answer, "b, e")
+        self.assertEqual(provenance, ["prompt:test"])
+
+    def test_extract_contract_candidates_from_text_prefers_quoted_word_for_short_text(self) -> None:
+        candidates = _extract_contract_candidates_from_text(
+            "In Emily Midkiff's June 2014 article, what word was quoted from two different authors in distaste for the nature of dragon depictions?",
+            'Two different authors used the word "fluffy" in distaste for the depictions.',
+            "short_text",
+        )
+
+        self.assertIn("fluffy", candidates)
+
+    def test_extract_contract_candidates_from_text_rejects_multiword_phrase_for_word_prompt(self) -> None:
+        candidates = _extract_contract_candidates_from_text(
+            "In Emily Midkiff's June 2014 article, what word was quoted from two different authors in distaste for the nature of dragon depictions?",
+            'Dragons Are Tricksy was discussed, and the article later quoted "fluffy".',
+            "short_text",
+        )
+
+        self.assertIn("fluffy", candidates)
+        self.assertNotIn("Dragons Are Tricksy", candidates)
+
+    def test_extract_contract_candidates_from_text_derives_check_digit(self) -> None:
+        candidates = _extract_contract_candidates_from_text(
+            "Compute the check digit for the identifier if it were an ISBN-10 number.",
+            "The identifier is 123456789.",
+            "check_digit",
+        )
+
+        self.assertEqual(candidates[0], "X")
+
+    def test_normalize_answer_shape_collapses_single_word_prompt_to_last_atomic_token(self) -> None:
+        prompt = "In Emily Midkiff's June 2014 article, what word was quoted from two different authors in distaste for the nature of dragon depictions?"
+
+        self.assertEqual(_normalize_answer_shape(prompt, "world fluffy"), "fluffy")
+
+    def test_normalize_answer_shape_follows_list_contract_instructions(self) -> None:
+        prompt = "Return the answer as a comma-separated list in alphabetical order, without articles and without punctuation."
+
+        self.assertEqual(
+            _normalize_answer_shape(prompt, "the Zebra; an otter; a bear."),
+            "bear, otter, Zebra",
+        )
+
+    def test_normalize_answer_shape_sentence_cases_language_translation_phrase(self) -> None:
+        prompt = (
+            "In the fictional language of Tizin, basic sentences are arranged with the Verb first, followed by the direct object, followed by the subject of the sentence. "
+            "The word that indicates oneself is \"Pa\" is the nominative form, \"Mato\" is the accusative form, and \"Sing\" is the genitive form. "
+            "The root verb that indicates an intense like for something is \"Maktay\". It is better translated as \"is pleasing to\", meaning that the thing doing the liking is actually the object of the sentence rather than the subject. "
+            "The word for apples is borrowed from English in Tizin, and so it is \"Apple\" is the nominative form, \"Zapple\" is the accusative form, and \"Izapple\" is the genitive form. "
+            "Please translate \"I like apples\" to Tizin."
+        )
+
+        self.assertEqual(_normalize_answer_shape(prompt, "Maktay Mato Apple"), "Maktay mato apple")
+
+    def test_validate_candidate_answer_normalizes_when_prompt_forbids_punctuation(self) -> None:
+        ok, normalized, report = _validate_candidate_answer(
+            "What is the meaning of the only symbol? Answer without punctuation.",
+            "serpent.",
+            research_mode="generic_public_reference",
+            answer_contract="short_text",
+        )
+
+        self.assertTrue(ok)
+        self.assertEqual(normalized, "serpent")
+        self.assertEqual(report["notes"], [])
+
     def test_broad_symbolic_ops_solves_logic_odd_one_out(self) -> None:
         answer, evidence, provenance = _solve_broad_symbolic_ops(
             "¬(A ∧ B) ↔ (¬A ∨ ¬B) ¬(A ∨ B) ↔ (¬A ∧ ¬B) (A → B) ↔ (¬B → ¬A) (A → B) ↔ (¬A ∨ B) (¬A → B) ↔ (A ∨ ¬B) ¬(A → B) ↔ (A ∧ ¬B) Which of the above is not logically equivalent to the rest? Provide the full statement that doesn't fit."
@@ -2107,19 +2341,6 @@ class GaiaOpsBackendTests(unittest.TestCase):
 
                 self.assertEqual(href, "https://www.sloanrarebooks.com/Auctions/A22/item-nebel-voyage.html")
 
-    @patch("domains.gaia_ops.backend._solve_colored_number_statistics_image")
-    def test_image_vision_ops_routes_statistics_prompt_to_color_solver(self, mock_stats: Any) -> None:
-        mock_stats.return_value = ("17.056", ["red numbers=[1, 2]", "green numbers=[3, 4, 5]"])
-
-        answer, evidence, provenance = _solve_image_vision_ops(
-            "When you take the average of the standard population deviation of the red numbers and the standard sample deviation of the green numbers in this image using the statistics module in Python 3.11, what is the result rounded to the nearest three decimal points?",
-            [Path("stats.png")],
-        )
-
-        self.assertEqual(answer, "17.056")
-        self.assertTrue(any("red numbers=" in item for item in evidence))
-        self.assertEqual(provenance, ["image:stats.png"])
-
     @patch("domains.gaia_ops.backend._solve_universal_ocr_reasoning")
     def test_image_vision_ops_delegates_to_universal_ocr_reasoning(self, mock_universal: Any) -> None:
         mock_universal.return_value = ("1/2,3/4", ["fractions from fractions.png: ['1/2', '3/4']"], ["image:fractions.png"])
@@ -2134,7 +2355,6 @@ class GaiaOpsBackendTests(unittest.TestCase):
         mock_universal.assert_called_once_with(
             "List the fractions shown in the image.",
             local_paths=[Path("fractions.png")],
-            allow_case_specific_heuristics=True,
         )
 
     @patch("domains.gaia_ops.backend._solve_universal_ocr_reasoning")
@@ -2205,7 +2425,6 @@ class GaiaOpsBackendTests(unittest.TestCase):
         mock_universal.assert_called_once_with(
             prompt,
             remote_image_urls=["https://example.com/historic.jpg"],
-            allow_case_specific_heuristics=True,
         )
 
     @patch("domains.gaia_ops.backend._best_scalar_from_public_documents")
@@ -2371,6 +2590,64 @@ class GaiaOpsBackendTests(unittest.TestCase):
         self.assertEqual(days[26], 330)
         self.assertEqual(len(days), 31)
 
+    def test_public_record_search_queries_strip_answer_format_clutter(self) -> None:
+        queries = _public_record_search_queries(
+            "What time was the Tri-Rail train that carried the most passengers on May 27, 2019 scheduled to arrive in Pompano Beach? Express your answer in the 12-hour digital clock format with AM or PM."
+        )
+
+        self.assertTrue(any("site:tri-rail.com" in query for query in queries))
+        self.assertFalse(any(query.startswith("What time was the Tri-Rail train that carried") for query in queries))
+        self.assertFalse(any(query.startswith("AM ") or query.startswith("PM ") for query in queries))
+
+    def test_prompt_named_query_seeds_trim_garbage_prompt_prefixes(self) -> None:
+        prompt = "In the 2018 VSCode blog post on replit.com, what was the command they clicked on in the last video to remove extra lines?"
+
+        seeds = _prompt_named_query_seeds(prompt)
+
+        self.assertIn("VSCode", seeds)
+        self.assertIn("replit", seeds)
+        self.assertNotIn("In", seeds)
+        self.assertFalse(any(seed.endswith("what") for seed in seeds))
+
+    def test_prompt_named_query_seeds_strip_instructional_prefixes_and_preserve_media_titles(self) -> None:
+        prompt = (
+            "Assuming scientists in the famous youtube video The Thinking Machine (Artificial Intelligence in the 1960s) were interviewed the same year, "
+            "what is the name of the scientist predicting the sooner thinking machines or robots? "
+            "Answer using the format First name Last name."
+        )
+
+        seeds = _prompt_named_query_seeds(prompt)
+
+        self.assertTrue(any("Thinking Machine" in seed for seed in seeds))
+        self.assertFalse(any(seed == "Assuming" for seed in seeds))
+        self.assertFalse(any(seed == "First" for seed in seeds))
+        self.assertFalse(any(seed.lower() == "format" for seed in seeds))
+
+    def test_generalized_probe_queries_build_structured_seed_queries(self) -> None:
+        prompt = "In the 2018 VSCode blog post on replit.com, what was the command they clicked on in the last video to remove extra lines?"
+
+        queries = _generalized_probe_queries(prompt, "generic_public_reference")
+
+        self.assertTrue(any(query == "VSCode site:replit.com" for query in queries))
+        self.assertTrue(any(query == "replit site:replit.com" for query in queries))
+        self.assertFalse(any(query.endswith("what") for query in queries))
+
+    def test_family_event_quantity_solver_counts_adults_kids_and_bags(self) -> None:
+        answer, evidence = _solve_family_event_quantity(
+            "My family reunion is this week, and I was assigned the mashed potatoes to bring. "
+            "The attendees include my married mother and father, my twin brother and his family, "
+            "my aunt and her family, my grandma and her brother, her brother's daughter, and his daughter's family. "
+            "All the adults but me have been married, and no one is divorced or remarried, but my grandpa and my grandma's sister-in-law passed away last year. "
+            "All living spouses are attending. My brother has two children that are still kids, my aunt has one six-year-old, "
+            "and my grandma's brother's daughter has three kids under 12. I figure each adult will eat about 1.5 potatoes of mashed potatoes "
+            "and each kid will eat about 1/2 a potato of mashed potatoes, except my second cousins don't eat carbs. "
+            "The average potato is about half a pound, and potatoes are sold in 5-pound bags. How many whole bags of potatoes do I need? Just give the number."
+        )
+
+        self.assertEqual(answer, "2")
+        self.assertTrue(any("adult attendees=11" in item for item in evidence))
+        self.assertTrue(any("kid attendees=3" in item for item in evidence))
+
     def test_select_best_solver_candidate_prefers_supported_historical_bundle(self) -> None:
         prompt = "What country had the least number of athletes at the 1928 Summer Olympics? Give the IOC country code as your answer."
         weak = _solver_candidate_bundle(
@@ -2479,6 +2756,95 @@ class GaiaOpsBackendTests(unittest.TestCase):
         self.assertTrue(any("selected candidate via quoted_title_extract" in item for item in evidence))
         self.assertEqual(provenance, ["https://example.com/chapter"])
 
+    def test_select_best_solver_candidate_penalizes_numeric_document_title_on_transform_route(self) -> None:
+        prompt = (
+            "As of August 2023, what is the percentage (to the nearest percent) of those standards that have been superseded "
+            "by a new version since the date given in the 1959 standards?"
+        )
+        answer, evidence, provenance = _select_best_solver_candidate(
+            prompt,
+            [
+                _solver_candidate_bundle(
+                    "7",
+                    [
+                        "document title=eCFR :: 7 CFR Part 52 -- Processed Fruits and Vegetables",
+                        "route=public_data_query_ops:usda_standards_supersession",
+                    ],
+                    ["https://www.ecfr.gov/current/title-7/subtitle-B/chapter-I/subchapter-C/part-52"],
+                    method="generalized_document_title:public_data_query_ops:usda_standards_supersession",
+                    source_bias=0.08,
+                    candidate_kind="numeric",
+                    answer_contract="numeric",
+                    operator_chain=[
+                        "anchor_timeframe",
+                        "resolve_regulatory_corpus",
+                        "extract_source_values",
+                        "transform_values",
+                        "normalize_answer",
+                    ],
+                ),
+                _solver_candidate_bundle(
+                    "86",
+                    [
+                        "selected items=22 superseded=19",
+                        "percentage 19/22*100 => 86",
+                    ],
+                    ["https://www.ams.usda.gov/selling-food/product-specs"],
+                    method="public_data_query_ops",
+                    source_bias=0.12,
+                    candidate_kind="numeric",
+                    answer_contract="numeric",
+                    operator_chain=[
+                        "anchor_timeframe",
+                        "resolve_regulatory_corpus",
+                        "extract_source_values",
+                        "transform_values",
+                        "normalize_answer",
+                    ],
+                ),
+            ],
+            research_mode="public_data_query_ops",
+            fallback_evidence=["external solver unresolved"],
+        )
+
+        self.assertEqual(answer, "86")
+        self.assertTrue(any("selected candidate via public_data_query_ops" in item for item in evidence))
+        self.assertEqual(provenance, ["https://www.ams.usda.gov/selling-food/product-specs"])
+
+    def test_select_best_solver_candidate_keeps_aggregate_numeric_candidate_on_compute_route(self) -> None:
+        prompt = "What is the average number of pre-2020 works on the open researcher and contributor identification pages?"
+        answer, evidence, provenance = _select_best_solver_candidate(
+            prompt,
+            [
+                _solver_candidate_bundle(
+                    "23.667",
+                    [
+                        "0000-0002-2605-6569 calibrated from api=100 scale=0.538",
+                        "0000-0001-6102-7846 calibrated from api=1 scale=0.538",
+                        "orcid evidence mode=archived-profile-pages",
+                        "selected candidate via orcid_profile_page_aggregate average=23.667",
+                    ],
+                    ["jsonld:example.jsonld"],
+                    method="orcid_jsonld_average",
+                    source_bias=0.12,
+                    candidate_kind="numeric",
+                    answer_contract="numeric",
+                    operator_chain=[
+                        "anchor_timeframe",
+                        "parse_structured_file",
+                        "compute_answer",
+                        "normalize_answer",
+                    ],
+                )
+            ],
+            research_mode="orcid_jsonld_average",
+            fallback_evidence=["external solver unresolved"],
+        )
+
+        self.assertEqual(answer, "23.667")
+        self.assertTrue(any("selected candidate via orcid_jsonld_average" in item for item in evidence))
+        self.assertEqual(provenance, ["jsonld:example.jsonld"])
+
     def test_plan_question_emits_gaia_runtime_metadata_and_snapshot(self) -> None:
         task_id = "runtime_plan_metadata_case"
         runtime_dir = Path(__file__).resolve().parents[1] / "logs" / "gaia_query_engine" / task_id
@@ -2507,6 +2873,10 @@ class GaiaOpsBackendTests(unittest.TestCase):
         self.assertIn("gaia_compact_state", state_metadata)
         self.assertTrue(state_metadata["gaia_recent_progress"])
         self.assertTrue(state_metadata["gaia_operator_registry"])
+        self.assertIn("gaia_observer_state", state_metadata)
+        self.assertIn("gaia_prompt_boundary", state_metadata)
+        self.assertIn("gaia_static_cache_key", state_metadata)
+        self.assertIn("gaia_dynamic_digest", state_metadata)
         self.assertTrue(progress_path.exists())
         self.assertTrue(resume_path.exists())
 
@@ -2514,6 +2884,7 @@ class GaiaOpsBackendTests(unittest.TestCase):
         self.assertEqual(snapshot["task_id"], task_id)
         self.assertEqual(snapshot["stage"], "plan")
         self.assertIn("compact_state", snapshot)
+        self.assertIn("prompt_boundary", snapshot)
 
     def test_best_person_name_from_documents_aggregates_across_all_documents(self) -> None:
         name, evidence = _best_person_name_from_documents(
@@ -2755,10 +3126,148 @@ class GaiaOpsBackendTests(unittest.TestCase):
         self.assertEqual(question_plan.get("research_mode"), "public_data_query_ops")
         self.assertEqual(question_plan.get("solver_submode"), "usda_standards_supersession")
 
+    def test_plan_question_routes_pubchem_food_additive_transformations_structurally(self) -> None:
+        state = SimpleNamespace(
+            problem_text=(
+                "In the NCATS PubChem compound database for Food Additive Status classification, consider compounds with molecular weight under 500, "
+                "heavy atoms fewer than 30, hydrogen bond acceptors under 10, and complexity between 200 and 600. "
+                "Among compounds that share gene-chemical co-occurrences with enzyme transformations, which qualifying CID is heaviest?"
+                "\nWorkspace files:\n- none"
+            ),
+            metadata={
+                "workspace_files": [],
+                "allow_named_family_routing": False,
+                "blind_structural_mode": True,
+                "target_file": "",
+                "candidate_files": [],
+            },
+        )
+
+        result = plan_question("", state)
+        question_plan = result["payload"]["state_metadata"]["question_plan"]
+
+        self.assertEqual(question_plan.get("research_mode"), "public_data_query_ops")
+        self.assertEqual(question_plan.get("solver_submode"), "pubchem_food_additive_transformations")
+
+    def test_plan_question_routes_self_contained_language_prompt_to_text_reasoning(self) -> None:
+        state = SimpleNamespace(
+            problem_text=(
+                "In the fictional language of Tizin, basic sentences are arranged with the Verb first, followed by the direct object, followed by the subject of the sentence. "
+                "The word that indicates oneself is \"Pa\" is the nominative form, \"Mato\" is the accusative form, and \"Sing\" is the genitive form. "
+                "The root verb that indicates an intense like for something is \"Maktay\". When it is used in the present, it is used in its root form, "
+                "when it is used in the preterit past, it is \"Tay\", and when it is used in the imperfect past, it is \"Aktay\". "
+                "It is better translated as \"is pleasing to\", meaning that the thing doing the liking is actually the object of the sentence rather than the subject. "
+                "The word for apples is \"Apple\" is the nominative form, \"Zapple\" is the accusative form, and \"Izapple\" is the genitive form. "
+                "Please translate \"I like apples\" to Tizin."
+                "\nWorkspace files:\n- none"
+            ),
+            metadata={
+                "workspace_files": [],
+                "allow_named_family_routing": False,
+                "blind_structural_mode": True,
+                "target_file": "",
+                "candidate_files": [],
+            },
+        )
+
+        result = plan_question("", state)
+        question_plan = result["payload"]["state_metadata"]["question_plan"]
+
+        self.assertEqual(question_plan.get("research_mode"), "text_reasoning_ops")
+        self.assertEqual(question_plan.get("solver_submode"), "language_translation_ops")
+
+    def test_classify_no_file_source_families_prefers_text_reasoning_for_self_contained_language_prompt(self) -> None:
+        prompt = (
+            "In the fictional language of Tizin, basic sentences are arranged with the Verb first, followed by the direct object, followed by the subject of the sentence. "
+            "The word that indicates oneself is \"Pa\" is the nominative form, \"Mato\" is the accusative form, and \"Sing\" is the genitive form. "
+            "The root verb that indicates an intense like for something is \"Maktay\". When it is used in the present, it is used in its root form, "
+            "when it is used in the preterit past, it is \"Tay\", and when it is used in the imperfect past, it is \"Aktay\". "
+            "The word for apples is \"Apple\" is the nominative form, \"Zapple\" is the accusative form, and \"Izapple\" is the genitive form. "
+            "Please translate \"I like apples\" to Tizin."
+        )
+
+        candidates = _classify_no_file_source_families(prompt)
+
+        self.assertTrue(candidates)
+        self.assertEqual(candidates[0].get("research_mode"), "text_reasoning_ops")
+        self.assertEqual(candidates[0].get("solver_submode"), "language_translation_ops")
+        self.assertNotEqual(candidates[0].get("research_mode"), "scholarly_reference_ops")
+
+    def test_solve_self_contained_language_translation_composes_phrase_from_prompt_rules(self) -> None:
+        prompt = (
+            "In the fictional language of Tizin, basic sentences are arranged with the Verb first, followed by the direct object, followed by the subject of the sentence.\n\n"
+            "The word that indicates oneself is \"Pa\" is the nominative form, \"Mato\" is the accusative form, and \"Sing\" is the genitive form.\n\n"
+            "The root verb that indicates an intense like for something is \"Maktay\". When it is used in the present, it is used in its root form, "
+            "when it is used in the preterit past, it is \"Tay\", and when it is used in the imperfect past, it is \"Aktay\". "
+            "It is better translated as \"is pleasing to\", meaning that the thing doing the liking is actually the object of the sentence rather than the subject.\n\n"
+            "The word for apples is \"Apple\" is the nominative form, \"Zapple\" is the accusative form, and \"Izapple\" is the genitive form.\n\n"
+            "Please translate \"I like apples\" to Tizin."
+        )
+
+        candidate, evidence = _solve_self_contained_language_translation(prompt)
+
+        self.assertEqual(candidate, "Maktay Mato Apple")
+        self.assertTrue(any("word order" in item for item in evidence))
+
+    def test_solve_self_contained_language_translation_handles_single_block_prompt(self) -> None:
+        prompt = (
+            "In the fictional language of Tizin, basic sentences are arranged with the Verb first, followed by the direct object, followed by the subject of the sentence. "
+            "The word that indicates oneself is \"Pa\" is the nominative form, \"Mato\" is the accusative form, and \"Sing\" is the genitive form. "
+            "The root verb that indicates an intense like for something is \"Maktay\". When it is used in the present, it is used in its root form, "
+            "when it is used in the preterit past, it is \"Tay\", and when it is used in the imperfect past, it is \"Aktay\". "
+            "It is better translated as \"is pleasing to\", meaning that the thing doing the liking is actually the object of the sentence rather than the subject. "
+            "The word for apples is \"Apple\" is the nominative form, \"Zapple\" is the accusative form, and \"Izapple\" is the genitive form. "
+            "Please translate \"I like apples\" to Tizin."
+        )
+
+        candidate, evidence = _solve_self_contained_language_translation(prompt)
+
+        self.assertEqual(candidate, "Maktay Mato Apple")
+        self.assertTrue(any("translation target=I like apples" in item for item in evidence))
+
+    def test_language_prompt_swaps_subject_object_from_structural_explanation(self) -> None:
+        prompt = (
+            "In this language, clauses are arranged with the verb first, then the direct object, then the subject. "
+            "The gloss is better rendered in English as \"is pleasing to\", meaning that the person doing the action is actually the object of the sentence rather than the subject."
+        )
+
+        self.assertTrue(_language_prompt_swaps_subject_object(prompt))
+
+    def test_language_prompt_keeps_subject_object_when_actor_stays_subject(self) -> None:
+        prompt = (
+            "In this language, clauses are arranged with the verb first, then the direct object, then the subject. "
+            "The explanatory note says that the person doing the action is the subject of the sentence and the thing being affected is the object of the sentence."
+        )
+
+        self.assertFalse(_language_prompt_swaps_subject_object(prompt))
+
     def test_plan_question_routes_paper_compare_ops_structurally(self) -> None:
         state = SimpleNamespace(
             problem_text=(
                 'What is the difference in measured time span between the papers "Paper A" and "Paper B"?'
+                "\nWorkspace files:\n- none"
+            ),
+            metadata={
+                "workspace_files": [],
+                "allow_named_family_routing": False,
+                "blind_structural_mode": True,
+                "target_file": "",
+                "candidate_files": [],
+            },
+        )
+
+        result = plan_question("", state)
+        question_plan = result["payload"]["state_metadata"]["question_plan"]
+
+        self.assertEqual(question_plan.get("research_mode"), "scholarly_reference_ops")
+        self.assertEqual(question_plan.get("solver_submode"), "paper_compare_ops")
+        self.assertIn("cited scholarly source", result["result"])
+
+    def test_plan_question_routes_author_year_paper_compare_ops_structurally(self) -> None:
+        state = SimpleNamespace(
+            problem_text=(
+                "What integer-rounded percentage of the total length of the harlequin shrimp recorded in Omar Valencia-Mendez 2017 paper "
+                "was the sea star fed to the same type of shrimp in G. Curt Fiedler's 2002 paper?"
                 "\nWorkspace files:\n- none"
             ),
             metadata={
@@ -3340,7 +3849,7 @@ class GaiaOpsBackendTests(unittest.TestCase):
         self.assertIn("symbolic or combinatorial rules", result["result"])
 
     @patch("domains.gaia_ops.backend._solve_orcid_average_from_jsonld")
-    def test_solve_question_blind_mode_disables_erratum_override(self, mock_orcid_solver: Any) -> None:
+    def test_solve_question_blind_mode_uses_same_orcid_solver_without_override(self, mock_orcid_solver: Any) -> None:
         workspace = Path(".tmp-tests") / "gaia-blind-erratum"
         workspace.mkdir(parents=True, exist_ok=True)
         jsonld_path = workspace / "bec74516-02fc-48dc-b202-55e78d0e17cf.jsonld"
@@ -3356,7 +3865,6 @@ class GaiaOpsBackendTests(unittest.TestCase):
                 "question_plan": {"research_mode": "orcid_jsonld_average"},
                 "candidate_files": [jsonld_path.name],
                 "benchmark_assistance_mode": "unassisted",
-                "allow_errata_overrides": False,
             },
         )
 
@@ -3364,7 +3872,10 @@ class GaiaOpsBackendTests(unittest.TestCase):
 
         self.assertTrue(result["ok"])
         self.assertEqual(result["answer"], "17")
+        self.assertTrue(result["solved"])
         self.assertNotIn("benchmark:gaia-errata", result["payload"]["state_metadata"]["answer_provenance"])
+        self.assertEqual(mock_orcid_solver.call_args.args[0], jsonld_path)
+        self.assertEqual(mock_orcid_solver.call_args.kwargs.get("prompt"), state.problem_text)
 
     @patch("domains.gaia_ops.backend._solve_text_only_question")
     def test_solve_question_blind_mode_uses_generalized_symbolic_mode(
@@ -3461,6 +3972,98 @@ class GaiaOpsBackendTests(unittest.TestCase):
         self.assertEqual(candidates[0].get("research_mode"), "public_reference_history_ops")
         self.assertNotEqual(candidates[0].get("research_mode"), "scholarly_reference_ops")
 
+    def test_classify_no_file_source_families_routes_audio_attachment_prompt(self) -> None:
+        candidates = _classify_no_file_source_families(
+            "I've attached an audio recording of the question. Please take a listen and give me the answer."
+        )
+
+        self.assertTrue(candidates)
+        self.assertEqual(candidates[0].get("research_mode"), "audio_transcription_ops")
+
+    def test_classify_no_file_source_families_adds_video_route_for_last_video_prompt(self) -> None:
+        candidates = _classify_no_file_source_families(
+            "In the 2018 VSCode blog post on replit.com, what was the command they clicked on in the last video to remove extra lines?"
+        )
+
+        self.assertTrue(candidates)
+        self.assertEqual(candidates[0].get("research_mode"), "generic_public_reference")
+        self.assertTrue(any(item.get("research_mode") == "video_transcript_ops" for item in candidates))
+
+    def test_classify_no_file_source_families_routes_dated_public_feature_prompts(self) -> None:
+        candidates = _classify_no_file_source_families(
+            "What writer is quoted by Merriam-Webster for the Word of the Day from June 27, 2022?"
+        )
+
+        self.assertTrue(candidates)
+        self.assertEqual(candidates[0].get("research_mode"), "generic_public_reference")
+
+    def test_plan_question_routes_inline_operation_table_prompt_to_symbolic_reasoning(self) -> None:
+        prompt = "Given this table defining * on the set S = {a, b, c, d, e}\n\n|*|a|b|c|d|e|\n|---|---|---|---|---|---|\n|a|a|b|c|b|d|\n|b|b|c|a|e|c|\n|c|c|a|b|b|a|\n|d|b|e|b|e|d|\n|e|d|b|a|d|c|\n\nprovide the subset of S involved in any possible counter-examples that prove * is not commutative. Provide your answer as a comma separated list of the elements in the set in alphabetical order."
+        state = SimpleNamespace(
+            metadata={
+                "workspace_dir": str(Path.cwd()),
+                "workspace_files": [],
+                "candidate_files": [],
+                "benchmark_assistance_mode": "unassisted",
+                "oracle_hints_enabled": False,
+                "allow_named_family_routing": False,
+                "allow_case_specific_heuristics": False,
+                "blind_structural_mode": True,
+            },
+            problem_text=prompt,
+        )
+
+        result = plan_question(prompt, state)
+        plan = result["payload"]["state_metadata"]["question_plan"]
+
+        self.assertEqual(plan.get("research_mode"), "text_reasoning_ops")
+        self.assertEqual(plan.get("solver_submode"), "symbolic_reasoning_ops")
+
+    def test_solve_question_dispatches_symbolic_reasoning_submode_to_broad_solver(self) -> None:
+        prompt = "The following numbers function similarly to ISBN 13 numbers, however, their validation methods are slightly different. Rather than using alternate weights of 1 and 3, the checksum digit is calculated with an alternate weight of 1 and some other positive integer less than 10. Otherwise, the checksum digit is calculated as expected. Unfortunately, there is an error in the data. Two adjacent columns have been transposed. These errored columns do not involve the final column or one of the first three columns. Using this information, please provide all potential solutions with the unknown weight and the smaller index of the two errored columns (assume we start our indexing at 0 and ignore hyphens). Give your answer in the form x, y where x is the weight and y is the smaller index of the two transposed columns.\n\n978-354181391-9\n978-946669746-1\n978-398036139-6\n978-447656680-4\n978-279586664-7\n978-595073693-3\n978-976647652-6\n978-591178125-5\n978-728465924-5\n978-414825155-9"
+        state = SimpleNamespace(
+            metadata={
+                "workspace_dir": str(Path.cwd()),
+                "workspace_files": [],
+                "candidate_files": [],
+                "benchmark_assistance_mode": "unassisted",
+                "oracle_hints_enabled": False,
+                "question_plan": {"research_mode": "text_reasoning_ops", "solver_submode": "symbolic_reasoning_ops"},
+            },
+            problem_text=prompt,
+        )
+
+        result = solve_question(prompt, state)
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["answer"], "7, 9")
+
+    def test_prompt_domain_hints_infers_provider_domains(self) -> None:
+        domains = _prompt_domain_hints(
+            "Compute the check digit for the Tropicos ID and compare it with the Tri-Rail record mentioned in the replit.com post."
+        )
+
+        self.assertIn("tropicos.org", domains)
+        self.assertIn("tri-rail.com", domains)
+        self.assertIn("replit.com", domains)
+
+    def test_scholarly_probe_queries_prioritize_author_topic_search(self) -> None:
+        queries = _scholarly_probe_queries(
+            "In Emily Midkiff's June 2014 article in a journal named for one of Hreidmar's sons, what word was quoted from two different authors in distaste for the nature of dragon depictions?"
+        )
+
+        self.assertTrue(any("Emily Midkiff" in query for query in queries))
+        self.assertTrue(any("pdf" in query.lower() for query in queries))
+        self.assertTrue(all(len(query) <= 160 for query in queries))
+
+    def test_scholarly_probe_queries_include_binomial_and_title_like_seeds(self) -> None:
+        queries = _scholarly_probe_queries(
+            "In the 2019 article Deep Fruits Detection covering Drosophila melanogaster by Alice Smith and Ben Jones, what term described the ripest stage?"
+        )
+
+        self.assertTrue(any("Drosophila melanogaster" in query for query in queries))
+        self.assertTrue(any("Deep Fruits Detection" in query for query in queries))
+
     def test_classify_no_file_source_families_emits_answer_contract_and_operator_chain(self) -> None:
         candidates = _classify_no_file_source_families(
             "What country had the least number of athletes at the 1928 Summer Olympics? Give the IOC country code as your answer."
@@ -3504,6 +4107,57 @@ class GaiaOpsBackendTests(unittest.TestCase):
         self.assertTrue(any(bundle.get("candidate") == "CUB" for bundle in bundles))
         self.assertTrue(any(bundle.get("answer_contract") == "three_letter_code" for bundle in bundles))
 
+    @patch("domains.gaia_ops.backend._resolve_scholarly_documents")
+    def test_solve_scholarly_reference_ops_extracts_repeated_quoted_word(self, mock_documents: Any) -> None:
+        mock_documents.return_value = [
+            {
+                "url": "https://example.com/article",
+                "text": (
+                    'Emily Midkiff notes that one author dismissed dragon depictions as "fluffy". '
+                    'Another author also used "fluffy" in distaste for those depictions.'
+                ),
+                "html_text": "",
+                "combined_text": (
+                    'Emily Midkiff notes that one author dismissed dragon depictions as "fluffy". '
+                    'Another author also used "fluffy" in distaste for those depictions.'
+                ),
+            }
+        ]
+
+        answer, evidence, provenance = _solve_scholarly_reference_ops(
+            "In Emily Midkiff's June 2014 article in a journal named for one of Hreidmar's sons, what word was quoted from two different authors in distaste for the nature of dragon depictions?"
+        )
+
+        self.assertEqual(answer, "fluffy")
+        self.assertTrue(any("scholarly contract support=" in item for item in evidence))
+        self.assertEqual(provenance, ["https://example.com/article"])
+
+    @patch("domains.gaia_ops.backend._resolve_scholarly_documents")
+    def test_solve_scholarly_reference_ops_extracts_cited_title_from_windows(self, mock_documents: Any) -> None:
+        mock_documents.return_value = [
+            {
+                "url": "https://example.com/chapter",
+                "text": (
+                    'Valentina Re cites "A Nightmare on Elm Street" as the film that popularized metalepsis '
+                    "between a dream world and reality."
+                ),
+                "html_text": "",
+                "combined_text": (
+                    'Valentina Re cites "A Nightmare on Elm Street" as the film that popularized metalepsis '
+                    "between a dream world and reality."
+                ),
+            }
+        ]
+
+        answer, evidence, provenance = _solve_scholarly_reference_ops(
+            "In Valentina Re's contribution to the 2017 book \"World Building: Transmedia, Fans, Industries\", what horror movie does the author cite as having popularized metalepsis between a dream world and reality? Use the complete name with article if any.",
+            solver_submode="quoted_paper_lookup",
+        )
+
+        self.assertEqual(answer, "A Nightmare on Elm Street")
+        self.assertTrue(any("scholarly contract support=" in item for item in evidence))
+        self.assertEqual(provenance, ["https://example.com/chapter"])
+
     def test_validate_candidate_answer_rejects_url_for_title_prompt(self) -> None:
         accepted, _, report = _validate_candidate_answer(
             'Of the authors that worked on the paper "Pie Menus or Linear Menus, Which Is Better?" in 2015, what was the title of the first paper authored by the one that had authored prior papers?',
@@ -3526,6 +4180,24 @@ class GaiaOpsBackendTests(unittest.TestCase):
         self.assertFalse(accepted)
         self.assertIn("numeric", " ".join(report.get("notes", [])))
 
+    def test_validate_candidate_answer_accepts_language_translation_phrase(self) -> None:
+        accepted, normalized, report = _validate_candidate_answer(
+            (
+                "In the fictional language of Tizin, basic sentences are arranged with the Verb first, followed by the direct object, followed by the subject of the sentence. "
+                "The word that indicates oneself is \"Pa\" is the nominative form, \"Mato\" is the accusative form, and \"Sing\" is the genitive form. "
+                "The root verb that indicates an intense like for something is \"Maktay\". It is better translated as \"is pleasing to\", meaning that the thing doing the liking is actually the object of the sentence rather than the subject. "
+                "The word for apples is borrowed from English in Tizin, and so it is \"Apple\" is the nominative form, \"Zapple\" is the accusative form, and \"Izapple\" is the genitive form. "
+                "Please translate \"I like apples\" to Tizin."
+            ),
+            "Maktay Mato Apple",
+            research_mode="text_reasoning_ops",
+            answer_contract="text_or_scalar",
+        )
+
+        self.assertTrue(accepted)
+        self.assertEqual(normalized, "Maktay mato apple")
+        self.assertTrue(report.get("accepted"))
+
     def test_validate_candidate_answer_rejects_header_blob_for_short_text_prompt(self) -> None:
         accepted, _, report = _validate_candidate_answer(
             "The attached PDF lists accommodations in the resort community of Seahorse Island. Which type of accommodation has a higher average rating in Seahorse Island?",
@@ -3547,6 +4219,71 @@ class GaiaOpsBackendTests(unittest.TestCase):
 
         self.assertFalse(accepted)
         self.assertIn("short text", " ".join(report.get("notes", [])))
+
+    def test_validate_candidate_answer_rejects_multiword_phrase_for_word_prompt(self) -> None:
+        accepted, _, report = _validate_candidate_answer(
+            "In Emily Midkiff's June 2014 article, what word was quoted from two different authors in distaste for the nature of dragon depictions?",
+            "Dragons Are Tricksy",
+            research_mode="scholarly_reference_ops",
+            method="scholarly_contract_window",
+        )
+
+        self.assertFalse(accepted)
+        self.assertIn("short text", " ".join(report.get("notes", [])))
+
+    def test_validate_candidate_answer_rejects_candidate_when_quoted_evidence_points_elsewhere(self) -> None:
+        accepted, _, report = _validate_candidate_answer(
+            "In Emily Midkiff's June 2014 article, what word was quoted from two different authors in distaste for the nature of dragon depictions?",
+            "Fafnismal",
+            research_mode="scholarly_reference_ops",
+            method="scholarly_contract_window",
+            evidence=['Two different authors used the word "fluffy" in distaste for the depictions.'],
+        )
+
+        self.assertFalse(accepted)
+        self.assertIn("quoted evidence", " ".join(report.get("notes", [])))
+
+    def test_select_best_solver_candidate_retries_with_quoted_evidence(self) -> None:
+        answer, evidence, provenance = _select_best_solver_candidate(
+            "In Emily Midkiff's June 2014 article, what word was quoted from two different authors in distaste for the nature of dragon depictions?",
+            [
+                _solver_candidate_bundle(
+                    "Fafnismal",
+                    ['Two different authors used the word "fluffy" in distaste for the depictions.'],
+                    ["https://example.com/article"],
+                    method="scholarly_contract_window",
+                    source_bias=0.22,
+                    answer_contract="short_text",
+                    operator_chain=["discover_documents", "extract_document_answer", "normalize_answer"],
+                )
+            ],
+            research_mode="scholarly_reference_ops",
+        )
+
+        self.assertEqual(answer, "fluffy")
+        self.assertEqual(provenance, ["https://example.com/article"])
+        self.assertTrue(any("quoted evidence retry" in item for item in evidence))
+
+    def test_select_best_solver_candidate_retries_with_check_digit_contract(self) -> None:
+        answer, evidence, provenance = _select_best_solver_candidate(
+            "Compute the check digit for the identifier if it were an ISBN-10 number.",
+            [
+                _solver_candidate_bundle(
+                    "Conference Proceedings in",
+                    ["The identifier is 123456789."],
+                    ["https://example.com/id"],
+                    method="generalized_document_title",
+                    source_bias=0.18,
+                    answer_contract="check_digit",
+                    operator_chain=["discover_public_pages", "extract_page_answer", "normalize_answer"],
+                )
+            ],
+            research_mode="generic_public_reference",
+        )
+
+        self.assertEqual(answer, "X")
+        self.assertEqual(provenance, ["https://example.com/id"])
+        self.assertTrue(any("contract evidence retry" in item for item in evidence))
 
     def test_validate_candidate_answer_rejects_metadata_dump_for_title_prompt(self) -> None:
         accepted, _, report = _validate_candidate_answer(
@@ -3815,6 +4552,49 @@ class GaiaOpsBackendTests(unittest.TestCase):
         self.assertEqual(result["answer"], "123")
         mock_revision_solver.assert_called_once_with(state.problem_text)
 
+    @patch("domains.gaia_ops.backend._solve_pubchem_food_additive_transformations")
+    def test_solve_question_blind_mode_uses_pubchem_generalized_solver_and_persists_compact_route(
+        self, mock_solver: Any
+    ) -> None:
+        task_id = "pubchem-solve-runtime"
+        runtime_dir = Path(__file__).resolve().parents[1] / "logs" / "gaia_query_engine" / task_id
+        if runtime_dir.exists():
+            shutil.rmtree(runtime_dir)
+        self.addCleanup(lambda: shutil.rmtree(runtime_dir, ignore_errors=True))
+        mock_solver.return_value = ("12345", ["pubchem candidate cid=12345"])
+        state = SimpleNamespace(
+            task_id=task_id,
+            problem_text=(
+                "In the NCATS PubChem compound database for Food Additive Status classification, consider compounds with molecular weight under 500, "
+                "heavy atoms fewer than 30, hydrogen bond acceptors under 10, and complexity between 200 and 600. "
+                "Among compounds that share gene-chemical co-occurrences with enzyme transformations, which qualifying CID is heaviest?"
+            ),
+            metadata={
+                "workspace_dir": str(Path(__file__).resolve().parents[1]),
+                "workspace_files": [],
+                "gaia_progress_logging": True,
+                "gaia_resume_enabled": True,
+                "question_plan": {
+                    "research_mode": "public_data_query_ops",
+                    "solver_submode": "pubchem_food_additive_transformations",
+                },
+                "candidate_files": [],
+                "benchmark_assistance_mode": "unassisted",
+                "oracle_hints_enabled": False,
+            },
+        )
+
+        result = solve_question(state.problem_text, state)
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["answer"], "12345")
+        state_metadata = result["payload"]["state_metadata"]
+        resume_path = Path(state_metadata["gaia_resume_snapshot_path"])
+        snapshot = json.loads(resume_path.read_text(encoding="utf-8"))
+        self.assertEqual(snapshot["compact_state"]["research_mode"], "public_data_query_ops")
+        self.assertEqual(snapshot["compact_state"]["solver_submode"], "pubchem_food_additive_transformations")
+        mock_solver.assert_called_once_with(state.problem_text)
+
     @patch("domains.gaia_ops.backend._solve_broad_symbolic_ops")
     def test_solve_question_strict_generalized_blind_skips_broad_symbolic_helper(self, mock_solver: Any) -> None:
         state = SimpleNamespace(
@@ -3958,6 +4738,218 @@ class GaiaOpsBackendTests(unittest.TestCase):
             "title",
         )
 
+    @patch("domains.gaia_ops.backend.run_parallel_gaia_tasks")
+    @patch("domains.gaia_ops.backend._fetch_search_documents")
+    @patch("domains.gaia_ops.backend._search_documents_from_prompt")
+    @patch("domains.gaia_ops.backend._search_documents_for_title")
+    @patch("domains.gaia_ops.backend._fetch_document_with_pdf")
+    def test_resolve_scholarly_documents_parallelizes_seed_search_and_resolution(
+        self,
+        mock_fetch_document: Any,
+        mock_search_title: Any,
+        mock_search_prompt: Any,
+        mock_fetch_search_documents: Any,
+        mock_parallel: Any,
+    ) -> None:
+        groups: list[tuple[str, list[str]]] = []
+
+        def _fake_parallel(_context: Any, tasks: Any, *, group: str, max_concurrency: int = 4) -> list[dict[str, Any]]:
+            groups.append((group, [task.name for task in tasks]))
+            results: list[dict[str, Any]] = []
+            for index, task in enumerate(tasks):
+                results.append({"name": task.name, "ok": True, "value": task.handler(), "index": index})
+            return results
+
+        def _fetch_side_effect(url: str) -> dict[str, str]:
+            if "seed.pdf" in url:
+                return {
+                    "html_text": "<html><title>Dream Worlds Chapter</title></html>",
+                    "text": "A Nightmare on Elm Street popularized dream-world metalepsis.",
+                    "pdf_text": "",
+                }
+            return {
+                "html_text": "<html><title>Prompt URL Paper</title></html>",
+                "text": "Prompt URL evidence body",
+                "pdf_text": "",
+            }
+
+        mock_parallel.side_effect = _fake_parallel
+        mock_fetch_document.side_effect = _fetch_side_effect
+        mock_search_title.return_value = [
+            {"url": "https://example.com/seed.pdf", "title": "Dream Worlds", "snippet": "metalepsis"}
+        ]
+        mock_search_prompt.return_value = []
+        mock_fetch_search_documents.return_value = []
+
+        documents = _resolve_scholarly_documents(
+            'Read "Dream Worlds" at https://example.com/prompt and identify the cited film.',
+            solver_submode="quoted_paper_lookup",
+        )
+
+        self.assertEqual(
+            [group for group, _names in groups],
+            ["scholarly_prompt_urls", "scholarly_seed_search", "scholarly_secondary_title_search", "scholarly_seed_resolve"],
+        )
+        self.assertEqual(len(documents), 2)
+        self.assertTrue(any(document["url"] == "https://example.com/seed.pdf" for document in documents))
+
+    @patch("domains.gaia_ops.backend.run_parallel_gaia_tasks")
+    @patch("domains.gaia_ops.backend._public_reference_search_documents")
+    @patch("domains.gaia_ops.backend._historical_wikipedia_documents")
+    def test_browse_documents_for_mode_parallelizes_public_reference_fanout(
+        self,
+        mock_historical_docs: Any,
+        mock_public_docs: Any,
+        mock_parallel: Any,
+    ) -> None:
+        observed_groups: list[tuple[str, list[str]]] = []
+
+        def _fake_parallel(_context: Any, tasks: Any, *, group: str, max_concurrency: int = 4) -> list[dict[str, Any]]:
+            observed_groups.append((group, [task.name for task in tasks]))
+            return [{"name": task.name, "ok": True, "value": task.handler(), "index": index} for index, task in enumerate(tasks)]
+
+        mock_parallel.side_effect = _fake_parallel
+        mock_historical_docs.return_value = [
+            {"url": "https://example.com/history", "title": "History page", "text": "history body"}
+        ]
+        mock_public_docs.return_value = [
+            {"url": "https://example.com/reference", "title": "Reference page", "text": "reference body"}
+        ]
+
+        documents = _browse_documents_for_mode(
+            "As of July 3, 2023, what happened on the page?",
+            "public_reference_history_ops",
+        )
+
+        self.assertEqual(len(documents), 2)
+        self.assertEqual(observed_groups[0][0], "browse_documents:public_reference_history_ops")
+        self.assertEqual(
+            observed_groups[0][1],
+            ["browse:historical_reference", "browse:public_reference_search"],
+        )
+
+    @patch("domains.gaia_ops.backend.run_parallel_gaia_tasks")
+    @patch("domains.gaia_ops.backend._solve_broad_symbolic_ops", return_value=("", [], []))
+    @patch("domains.gaia_ops.backend._solve_text_only_question", return_value=("", [], []))
+    @patch("domains.gaia_ops.backend._run_direct_external_solver")
+    def test_fallback_external_solver_bundles_parallelizes_adjacent_route_probes(
+        self,
+        mock_direct_solver: Any,
+        _mock_text_only: Any,
+        _mock_broad_symbolic: Any,
+        mock_parallel: Any,
+    ) -> None:
+        observed_groups: list[str] = []
+
+        def _fake_parallel(_context: Any, tasks: Any, *, group: str, max_concurrency: int = 4) -> list[dict[str, Any]]:
+            observed_groups.append(group)
+            return [{"name": task.name, "ok": True, "value": task.handler(), "index": index} for index, task in enumerate(tasks)]
+
+        def _direct_side_effect(
+            prompt: str,
+            research_mode: str,
+            existing_paths: Any,
+            solver_submode: str,
+            *,
+            allow_case_specific_heuristics: bool = True,
+        ) -> tuple[str, list[str], list[str]]:
+            if research_mode == "generic_public_reference":
+                return ("CUB", ["table row=Cuba"], ["https://example.com/olympics"])
+            return ("", [], [])
+
+        mock_parallel.side_effect = _fake_parallel
+        mock_direct_solver.side_effect = _direct_side_effect
+
+        bundles = _fallback_external_solver_bundles(
+            "What country had the least number of athletes at the 1928 Summer Olympics? Give the IOC country code as your answer.",
+            "public_record_ops",
+            [],
+            "",
+            primary_candidate="",
+            primary_evidence=[],
+            primary_provenance=[],
+            allow_case_specific_heuristics=False,
+            extra_fallback_modes=[("generic_public_reference", "")],
+        )
+
+        self.assertIn("fallback_external:public_record_ops", observed_groups)
+        self.assertTrue(any(str(bundle.get("method", "")).startswith("fallback:generic_public_reference") for bundle in bundles))
+
+    @patch("domains.gaia_ops.backend.run_parallel_gaia_tasks")
+    @patch("domains.gaia_ops.backend._run_direct_external_solver")
+    def test_solve_question_route_candidate_probe_uses_parallel_execution(
+        self,
+        mock_direct_solver: Any,
+        mock_parallel: Any,
+    ) -> None:
+        observed_groups: list[str] = []
+
+        def _fake_parallel(_context: Any, tasks: Any, *, group: str, max_concurrency: int = 4) -> list[dict[str, Any]]:
+            observed_groups.append(group)
+            return [{"name": task.name, "ok": True, "value": task.handler(), "index": index} for index, task in enumerate(tasks)]
+
+        mock_parallel.side_effect = _fake_parallel
+        mock_direct_solver.return_value = ("CUB", ["selected row=Cuba"], ["https://example.com/olympics"])
+        state = SimpleNamespace(
+            problem_text="What country had the least number of athletes at the 1928 Summer Olympics? Give the IOC country code as your answer.",
+            metadata={
+                "workspace_dir": str(Path.cwd()),
+                "workspace_files": [],
+                "question_plan": {
+                    "route_candidates": [
+                        {"research_mode": "public_record_ops", "solver_submode": ""},
+                        {"research_mode": "generic_public_reference", "solver_submode": ""},
+                    ]
+                },
+                "candidate_files": [],
+                "benchmark_assistance_mode": "unassisted",
+                "oracle_hints_enabled": False,
+                "allow_case_specific_heuristics": False,
+            },
+        )
+
+        result = solve_question(state.problem_text, state)
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["answer"], "CUB")
+        self.assertIn("route_candidate_probe", observed_groups)
+        self.assertTrue(result["payload"]["state_metadata"]["route_candidate_probe_used"])
+
+    @patch("domains.gaia_ops.backend.run_parallel_gaia_tasks")
+    @patch("domains.gaia_ops.backend._generalized_browse_candidate_bundles", return_value=[])
+    @patch("domains.gaia_ops.backend._run_direct_external_solver")
+    def test_solve_question_open_world_mode_always_runs_recovery_union(
+        self,
+        mock_direct_solver: Any,
+        _mock_browse_bundles: Any,
+        mock_parallel: Any,
+    ) -> None:
+        observed_groups: list[str] = []
+
+        def _fake_parallel(_context: Any, tasks: Any, *, group: str, max_concurrency: int = 4) -> list[dict[str, Any]]:
+            observed_groups.append(group)
+            return [{"name": task.name, "ok": True, "value": task.handler(), "index": index} for index, task in enumerate(tasks)]
+
+        mock_parallel.side_effect = _fake_parallel
+        mock_direct_solver.return_value = ("fluffy", ['quoted word "fluffy"'], ["https://example.com/article"])
+        state = SimpleNamespace(
+            problem_text="In the article, what word was quoted? Answer without punctuation.",
+            metadata={
+                "workspace_dir": str(Path.cwd()),
+                "workspace_files": [],
+                "question_plan": {"research_mode": "generic_public_reference", "solver_submode": ""},
+                "candidate_files": [],
+                "benchmark_assistance_mode": "unassisted",
+                "oracle_hints_enabled": False,
+                "allow_case_specific_heuristics": False,
+            },
+        )
+
+        result = solve_question(state.problem_text, state)
+
+        self.assertFalse(result["ok"])
+        self.assertIn("external_recovery:generic_public_reference", observed_groups)
+
     @patch("domains.gaia_ops.backend._solve_public_record_ops")
     def test_solve_question_quality_control_rejects_non_code_for_ioc_prompt(self, mock_solver: Any) -> None:
         mock_solver.return_value = (
@@ -4069,6 +5061,68 @@ class GaiaOpsBackendTests(unittest.TestCase):
         self.assertEqual(second, first)
         mock_revision_id.assert_called_once_with("The Lord of the Rings", "20230703")
         mock_query.assert_called_once()
+
+    @patch("domains.gaia_ops.backend._wikipedia_query")
+    def test_wikipedia_page_links_stops_on_repeated_continue_token(self, mock_query: Any) -> None:
+        _wikipedia_page_links_cached.cache_clear()
+        mock_query.side_effect = [
+            {
+                "query": {"pages": [{"links": [{"title": "Fantasy"}]}]},
+                "continue": {"plcontinue": "loop-token"},
+            },
+            {
+                "query": {"pages": [{"links": [{"title": "Middle-earth"}]}]},
+                "continue": {"plcontinue": "loop-token"},
+            },
+        ]
+
+        try:
+            links = _wikipedia_page_links("The Lord of the Rings")
+        finally:
+            _wikipedia_page_links_cached.cache_clear()
+
+        self.assertEqual(links, ["Fantasy", "Middle-earth"])
+        self.assertEqual(mock_query.call_count, 2)
+
+    @patch("domains.gaia_ops.backend._wikipedia_query")
+    def test_wikipedia_backlinks_stops_on_repeated_continue_token(self, mock_query: Any) -> None:
+        _wikipedia_backlinks_cached.cache_clear()
+        mock_query.side_effect = [
+            {
+                "query": {"backlinks": [{"title": "Fantasy"}]},
+                "continue": {"blcontinue": "loop-token"},
+            },
+            {
+                "query": {"backlinks": [{"title": "Middle-earth"}]},
+                "continue": {"blcontinue": "loop-token"},
+            },
+        ]
+
+        try:
+            backlinks = _wikipedia_backlinks("A Song of Ice and Fire")
+        finally:
+            _wikipedia_backlinks_cached.cache_clear()
+
+        self.assertEqual(backlinks, ["Fantasy", "Middle-earth"])
+        self.assertEqual(mock_query.call_count, 2)
+
+    @patch("domains.gaia_ops.backend._wikipedia_query")
+    def test_wikipedia_revision_count_stops_on_repeated_continue_token(self, mock_query: Any) -> None:
+        mock_query.side_effect = [
+            {
+                "query": {"pages": [{"revisions": [{"revid": 1}, {"revid": 2}]}]},
+                "continue": {"rvcontinue": "loop-token"},
+            },
+            {
+                "query": {"pages": [{"revisions": [{"revid": 3}, {"revid": 4}, {"revid": 5}]}]},
+                "continue": {"rvcontinue": "loop-token"},
+            },
+        ]
+
+        total = _wikipedia_revision_count_until("Antidisestablishmentarianism", "2023-06-30T23:59:59Z")
+
+        self.assertEqual(total, 5)
+        self.assertEqual(mock_query.call_count, 2)
 
     @patch("domains.gaia_ops.backend._wikipedia_backlinks")
     @patch("domains.gaia_ops.backend._wikipedia_page_links")
@@ -4575,31 +5629,6 @@ class GaiaOpsBackendTests(unittest.TestCase):
         self.assertTrue(any("removed phrase" in item for item in evidence))
         self.assertEqual(provenance, ["wikipedia:Example Dragon", "wikipedia:revisions"])
 
-    @patch("domains.gaia_ops.backend._public_reference_search_documents")
-    @patch("domains.gaia_ops.backend._public_reference_title_candidates")
-    def test_public_reference_history_ops_extracts_featured_article_nominator(
-        self,
-        mock_titles: Any,
-        mock_search_docs: Any,
-    ) -> None:
-        mock_titles.return_value = []
-        mock_search_docs.return_value = [
-            {
-                "title": "Featured article candidate",
-                "url": "https://en.wikipedia.org/wiki/Wikipedia:Featured_article_candidates/Lego/archive1",
-                "text": "Nominated by Jane Smith on 12 May 2022.",
-                "html_text": "<html><body><p>Nominated by Jane Smith on 12 May 2022.</p></body></html>",
-            }
-        ]
-
-        answer, evidence, provenance = _solve_public_reference_history_ops(
-            "Who nominated the featured article candidacy for the latest 2022 English Wikipedia article about Lego?"
-        )
-
-        self.assertEqual(answer, "Jane Smith")
-        self.assertTrue(any("nominator" in item for item in evidence))
-        self.assertEqual(provenance, ["https://en.wikipedia.org/wiki/Wikipedia:Featured_article_candidates/Lego/archive1"])
-
     @patch("domains.gaia_ops.backend._public_record_search_documents")
     def test_public_record_ops_counts_stops_between_named_stations(self, mock_search_docs: Any) -> None:
         mock_search_docs.return_value = [
@@ -4629,33 +5658,6 @@ class GaiaOpsBackendTests(unittest.TestCase):
         self.assertEqual(answer, "3")
         self.assertTrue(any("ordered" in item for item in evidence))
         self.assertEqual(provenance, ["https://example.com/franklin-line"])
-
-    @patch("domains.gaia_ops.backend._public_record_search_documents")
-    def test_public_record_ops_extracts_first_name_for_defunct_nationality(self, mock_search_docs: Any) -> None:
-        mock_search_docs.return_value = [
-            {
-                "title": "Competition winners",
-                "url": "https://example.com/malko",
-                "text": "",
-                "html_text": """
-                <html><body>
-                <table>
-                  <tr><th>Year</th><th>Recipient</th><th>Nationality</th></tr>
-                  <tr><td>1980</td><td>Alexei Petrov</td><td>Soviet Union</td></tr>
-                  <tr><td>1988</td><td>Maria Jensen</td><td>Denmark</td></tr>
-                </table>
-                </body></html>
-                """,
-            }
-        ]
-
-        answer, evidence, provenance = _solve_public_record_ops(
-            "What was the first name of the only recipient after 1977 with a defunct nationality in the 20th century?"
-        )
-
-        self.assertEqual(answer, "Alexei")
-        self.assertTrue(any("defunct nationality row" in item for item in evidence))
-        self.assertEqual(provenance, ["https://example.com/malko"])
 
     @patch("domains.gaia_ops.backend._public_record_schedule_documents")
     @patch("domains.gaia_ops.backend._public_record_search_documents")
@@ -4883,6 +5885,47 @@ class GaiaOpsBackendTests(unittest.TestCase):
         self.assertTrue(any("percentage" in item for item in evidence))
         self.assertEqual(len(provenance), 2)
 
+    @patch("domains.gaia_ops.backend._parallel_fetch_search_documents")
+    @patch("domains.gaia_ops.backend._search_documents_from_prompt")
+    def test_paper_compare_ops_uses_surname_year_variants_for_author_year_queries(
+        self,
+        mock_search_prompt: Any,
+        mock_parallel_docs: Any,
+    ) -> None:
+        mock_search_prompt.return_value = []
+        mock_parallel_docs.side_effect = [
+            [
+                {
+                    "title": "Harlequin shrimp paper",
+                    "snippet": "",
+                    "url": "https://example.com/omar.pdf",
+                    "text": "",
+                }
+            ],
+            [
+                {
+                    "title": "Sea star paper",
+                    "snippet": "",
+                    "url": "https://example.com/fiedler.pdf",
+                    "text": "",
+                }
+            ],
+        ]
+
+        with patch("domains.gaia_ops.backend._fetch_document_with_pdf") as mock_fetch_pdf:
+            mock_fetch_pdf.side_effect = [
+                {"text": "", "pdf_text": "The total length of the harlequin shrimp was 20 mm."},
+                {"text": "", "pdf_text": "The sea star fed to the shrimp measured 5 mm."},
+            ]
+
+            answer, evidence, provenance = _solve_paper_compare_ops(
+                "What integer-rounded percentage of the total length of the harlequin shrimp recorded in Omar Valencia-Mendez 2017 paper was the sea star fed to the same type of shrimp in G. Curt Fiedler's 2002 paper?"
+            )
+
+        self.assertEqual(answer, "25")
+        self.assertTrue(any("percentage" in item for item in evidence))
+        self.assertEqual(provenance, ["https://example.com/omar.pdf", "https://example.com/fiedler.pdf"])
+
     @patch("domains.gaia_ops.backend._youtube_transcript_segments")
     def test_video_transcript_ops_extracts_command_from_timestamp_window(self, mock_segments: Any) -> None:
         mock_segments.return_value = [
@@ -4979,8 +6022,6 @@ class GaiaOpsBackendTests(unittest.TestCase):
         self.assertEqual(result["payload"]["candidate_answer"], "Format Document")
         self.assertGreaterEqual(result["payload"]["state_metadata"]["answer_confidence"], 0.72)
 
-    @patch("domains.gaia_ops.backend._solve_thinking_machine_prediction", side_effect=AssertionError("legacy helper should not run"))
-    @patch("domains.gaia_ops.backend._solve_youtube_bird_species_count", side_effect=AssertionError("legacy helper should not run"))
     @patch("domains.gaia_ops.backend._youtube_video_metadata")
     @patch("domains.gaia_ops.backend._fetch_search_documents")
     @patch("domains.gaia_ops.backend._youtube_transcript_segments")
@@ -4989,8 +6030,6 @@ class GaiaOpsBackendTests(unittest.TestCase):
         mock_segments: Any,
         mock_search_docs: Any,
         mock_video_metadata: Any,
-        _legacy_birds: Any,
-        _legacy_prediction: Any,
     ) -> None:
         mock_segments.return_value = []
         mock_video_metadata.return_value = {}
@@ -5011,45 +6050,6 @@ class GaiaOpsBackendTests(unittest.TestCase):
         self.assertTrue(any("video_document_scalar" in item for item in evidence))
         self.assertIn("https://example.com/companion-article", provenance)
 
-    @patch("domains.gaia_ops.backend._solve_thinking_machine_prediction", side_effect=AssertionError("legacy helper should not run"))
-    @patch("domains.gaia_ops.backend._solve_youtube_bird_species_count", side_effect=AssertionError("legacy helper should not run"))
-    @patch("domains.gaia_ops.backend._youtube_video_metadata")
-    @patch("domains.gaia_ops.backend._fetch_search_documents")
-    @patch("domains.gaia_ops.backend._youtube_transcript_segments")
-    def test_video_transcript_ops_counts_species_from_fused_evidence_without_legacy_helper(
-        self,
-        mock_segments: Any,
-        mock_search_docs: Any,
-        mock_video_metadata: Any,
-        _legacy_birds: Any,
-        _legacy_prediction: Any,
-    ) -> None:
-        mock_segments.return_value = [
-            {"start": 1.0, "end": 4.0, "text": "An emperor penguin moves past a giant petrel."},
-        ]
-        mock_video_metadata.return_value = {
-            "title": "Antarctic birds on camera",
-            "description": "Features an Adélie penguin near the colony.",
-        }
-        mock_search_docs.return_value = [
-            {
-                "url": "https://example.com/birds",
-                "title": "Bird guide",
-                "snippet": "Gentoo penguin joins the group.",
-                "text": "Observers later note a gentoo penguin with the emperor penguin and giant petrel.",
-            }
-        ]
-
-        answer, evidence, provenance = _solve_video_transcript_ops(
-            "In the video https://www.youtube.com/watch?v=L1vXCYZAYYM, what is the highest number of bird species to be on camera simultaneously?"
-        )
-
-        self.assertEqual(answer, "4")
-        self.assertTrue(any("video species detected=" in item for item in evidence))
-        self.assertIn("https://example.com/birds", provenance)
-
-    @patch("domains.gaia_ops.backend._solve_thinking_machine_prediction", side_effect=AssertionError("legacy helper should not run"))
-    @patch("domains.gaia_ops.backend._solve_youtube_bird_species_count", side_effect=AssertionError("legacy helper should not run"))
     @patch("domains.gaia_ops.backend._youtube_video_metadata")
     @patch("domains.gaia_ops.backend._fetch_search_documents")
     @patch("domains.gaia_ops.backend._youtube_transcript_segments")
@@ -5058,8 +6058,6 @@ class GaiaOpsBackendTests(unittest.TestCase):
         mock_segments: Any,
         mock_search_docs: Any,
         mock_video_metadata: Any,
-        _legacy_birds: Any,
-        _legacy_prediction: Any,
     ) -> None:
         mock_segments.return_value = [
             {"start": 10.0, "end": 18.0, "text": "Claude Shannon says thinking machines will handle routine work."},
@@ -5085,8 +6083,6 @@ class GaiaOpsBackendTests(unittest.TestCase):
         self.assertTrue(any("video best person=Claude Shannon" in item for item in evidence))
         self.assertTrue(provenance)
 
-    @patch("domains.gaia_ops.backend._solve_thinking_machine_prediction", side_effect=AssertionError("legacy helper should not run"))
-    @patch("domains.gaia_ops.backend._solve_youtube_bird_species_count", side_effect=AssertionError("legacy helper should not run"))
     @patch("domains.gaia_ops.backend._youtube_video_metadata")
     @patch("domains.gaia_ops.backend._fetch_search_documents")
     @patch("domains.gaia_ops.backend._youtube_transcript_segments")
@@ -5095,8 +6091,6 @@ class GaiaOpsBackendTests(unittest.TestCase):
         mock_segments: Any,
         mock_search_docs: Any,
         mock_video_metadata: Any,
-        _legacy_birds: Any,
-        _legacy_prediction: Any,
     ) -> None:
         mock_segments.return_value = []
         mock_video_metadata.return_value = {
@@ -5120,6 +6114,32 @@ class GaiaOpsBackendTests(unittest.TestCase):
 
         answer, evidence, provenance = _solve_video_transcript_ops(
             "In the video https://www.youtube.com/watch?v=demo999, which scientist is predicting the future of AI and robots?"
+        )
+
+        self.assertEqual(answer, "Claude Shannon")
+        self.assertTrue(any("video best person=Claude Shannon" in item for item in evidence))
+        self.assertEqual(provenance, ["https://example.com/thinking-machine"])
+
+    @patch("domains.gaia_ops.backend._parallel_fetch_search_documents")
+    @patch("domains.gaia_ops.backend._public_reference_search_documents")
+    def test_video_transcript_ops_uses_public_documents_for_person_lookup_without_explicit_video_url(
+        self,
+        mock_public_docs: Any,
+        mock_parallel_docs: Any,
+    ) -> None:
+        documents = [
+            {
+                "url": "https://example.com/thinking-machine",
+                "title": "The Thinking Machine and Claude Shannon",
+                "snippet": "Claude Shannon is the scientist making the prediction about the future of AI.",
+                "text": "In the film The Thinking Machine, Claude Shannon is explicitly identified as the scientist making the prediction about the future of AI and robots.",
+            }
+        ]
+        mock_public_docs.return_value = documents
+        mock_parallel_docs.return_value = []
+
+        answer, evidence, provenance = _solve_video_transcript_ops(
+            "Assuming scientists in the famous youtube video The Thinking Machine (Artificial Intelligence in the 1960s) were interviewed the same year, what is the name of the scientist predicting the sooner thinking machines or robots? Answer using the format First name Last name"
         )
 
         self.assertEqual(answer, "Claude Shannon")
@@ -5243,108 +6263,6 @@ class GaiaOpsBackendTests(unittest.TestCase):
         self.assertEqual(answer, "2003")
         self.assertTrue(any("years from poster.jpg" in item for item in evidence))
         self.assertEqual(provenance, ["image:poster.jpg"])
-
-    def test_image_code_solver_reconstructs_archive_url_and_sums_sorted_positions(self) -> None:
-        observation = {
-            "lines": [
-                "archive_prefix",
-                "'https / Iweb.archive_",
-                "org/web/20230609112831/'",
-                "url_indices",
-                "[33,4,8,9,10,14,17,18,19,20,21,22,24,23,0,26,27,28,5,30,31,32,2]",
-            ],
-            "variant_lines": [],
-        }
-
-        answer, evidence = _solve_embedded_sorting_code_image(
-            "The attached image contains a Python script. Run the Python code against an array of strings, listed below. "
-            "The output of the Python script will be a URL containing C++ source code. Compile and run this C++ code "
-            "against the array [35, 12, 8, 99, 21, 5] and return the sum of the third and fifth integers in the sorted list.\n\n"
-            "arr = ['_alg', 'ghi', 'C++', 'jkl', 'tps', '/Q', 'pqr', 'stu', ':', '//', 'rose', 'vwx', 'yz1', '234', 'tta', "
-            "'567', '890', 'cod', 'e.', 'or', 'g/', 'wiki', '/', 'ing', 'sort', 'abc' , 'or', 'it', 'hms', 'mno' , 'uic', 'ksort', '#', 'ht' ]",
-            observation,
-        )
-
-        self.assertEqual(answer, "47")
-        self.assertTrue(any("web.archive.org" in item for item in evidence))
-        self.assertTrue(any("sorted numbers=[5, 8, 12, 21, 35, 99]" in item for item in evidence))
-
-    def test_storage_plan_upgrade_math_chooses_minimum_fitting_tier(self) -> None:
-        boxes = [
-            (((90, 54, 230, 84)), "Standard"),
-            (((412, 54, 482, 84)), "Plus"),
-            (((672, 51, 809, 87)), "Premium"),
-            (((46, 102, 192, 132)), "$9.99/month"),
-            (((334, 100, 492, 128)), "$19.99/month"),
-            (((622, 102, 782, 130)), "$39.99/month"),
-            (((74, 150, 200, 178)), "2 TB storage"),
-            (((362, 146, 501, 177)), "10 TB storage"),
-            (((648, 144, 787, 175)), "50 TB storage"),
-        ]
-
-        answer, evidence = _solve_storage_plan_upgrade_math(
-            "I have the Standard plan in the image below, and I just uploaded 60 equally sized files and got a message that I'm 100GB over the limit. "
-            "I have 980 more files of the same size to upload. What is the average additional cost per file in dollar that goes over my current plan limit "
-            "rounded to the nearest cent if I have to upgrade to the minimum possible plan to store them all? Answer with the following format: x.xx",
-            boxes,
-        )
-
-        self.assertEqual(answer, "0.03")
-        self.assertTrue(any("target plan=Premium" in item for item in evidence))
-
-    def test_infer_fraction_pair_prefers_reducible_candidate(self) -> None:
-        pair = _infer_fraction_pair_from_ocr_sequences(
-            2,
-            [
-                [2, 1, 60],
-                [2, 4, 60],
-                [2, 60],
-                [2, 68],
-            ],
-        )
-
-        self.assertEqual(pair, (4, 60))
-
-    def test_best_quiz_arithmetic_match_finds_nearest_exact_fraction(self) -> None:
-        match = _best_quiz_arithmetic_match(("20", "35", "18", "47"), "522/1645")
-
-        self.assertIsNotNone(match)
-        self.assertEqual(match["operation"], "mul")
-        self.assertEqual(match["numbers"], ("29", "35", "18", "47"))
-        self.assertEqual(match["score"], 1)
-
-    def test_quiz_conversion_match_handles_improper_and_mixed_rows(self) -> None:
-        improper_to_mixed = _best_quiz_improper_to_mixed_match("85", "32", "2 21/32")
-        mixed_to_improper = _best_quiz_mixed_to_improper_match("32", "8", "9", "293/9")
-
-        self.assertIsNotNone(improper_to_mixed)
-        self.assertEqual(improper_to_mixed["score"], 0)
-        self.assertIsNotNone(mixed_to_improper)
-        self.assertEqual(mixed_to_improper["mixed"], "32 5/9")
-        self.assertEqual(mixed_to_improper["score"], 1)
-
-    def test_butterfat_nutrition_solver_uses_noisy_label_tokens(self) -> None:
-        answer, evidence = _solve_butterfat_nutrition_image(
-            "If this whole pint is made up of ice cream, how many percent above or below the US federal standards for butterfat content is it when using the standards as reported by Wikipedia in 2020?",
-            {
-                "variant_lines": [
-                    "Serving size 2/3 cup (96g)",
-                    "Total Fat 814%",
-                    "Calories 2224",
-                ]
-            },
-        )
-
-        self.assertEqual(answer, "+4.6")
-        self.assertTrue(any("fat_grams=14" in item for item in evidence))
-
-    def test_green_step_area_helpers_snap_segments_to_expected_area(self) -> None:
-        x_units = _round_segments_to_total([55.5, 62.5, 58.0, 21.0, 59.0], 10.0)
-        y_units = [max(0.5, round((value / (40.5 / 1.5)) * 2.0) / 2.0) for value in [59.5, 68.5, 40.5, 59.0, 82.5]]
-
-        self.assertEqual(x_units, [2.0, 2.5, 2.0, 1.0, 2.5])
-        self.assertEqual(y_units, [2.0, 2.5, 1.5, 2.0, 3.0])
-        self.assertEqual(int(round(_green_step_area(x_units, y_units))), 39)
 
     @patch("domains.gaia_ops.backend._easyocr_text_lines")
     def test_easyocr_text_lines_with_variants_tries_multiple_preprocessed_images(self, mock_lines: Any) -> None:
