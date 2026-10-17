@@ -43,7 +43,7 @@ def make_state(task: Any) -> ProofState:
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser(description="Evaluate Math Sentinel V7")
+    ap = argparse.ArgumentParser(description="Evaluate Math Sentinel")
     ap.add_argument("--config", default="config/default.yaml")
     ap.add_argument("--curriculum-config", default="config/curriculum.yaml")
     ap.add_argument("--checkpoint", default="")

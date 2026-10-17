@@ -1,0 +1,58 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-dev.txt
+
+      - name: Run test suite
+        run: python -m pytest -q
+
+      - name: Compile Python sources
+        run: python -m compileall -q curriculum memory proof search sentinel tools train.py eval.py sample.py
+
+      - name: Check CLI entry points
+        run: |
+          python train.py --help
+          python eval.py --help
+          python sample.py --help
+
+      - name: Run training smoke test
+        run: python train.py --config config/smoke.yaml --steps 1 --batch-size 1 --micro-batch-size 1 --eval-every 100 --save-every 100 --memory-refresh-samples 0 --device cpu
+
+      - name: Run evaluation smoke test
+        run: python eval.py --config config/smoke.yaml --count 1 --step 1
+
+      - name: Run solving smoke test
+        run: python sample.py --config config/smoke.yaml --domain arithmetic --problem "What is 2 + 2?"

@@ -47,7 +47,7 @@ def manual_task(domain: str, prompt: str, answer: str = "") -> GeneratedTask:
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser(description="Sample Math Sentinel V7")
+    ap = argparse.ArgumentParser(description="Sample Math Sentinel")
     ap.add_argument("--config", default="config/default.yaml")
     ap.add_argument("--curriculum-config", default="config/curriculum.yaml")
     ap.add_argument("--checkpoint", default="")

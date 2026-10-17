@@ -344,7 +344,7 @@ def run_eval(
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser(description="Train Math Sentinel V7")
+    ap = argparse.ArgumentParser(description="Train Math Sentinel")
     ap.add_argument("--config", default="config/default.yaml")
     ap.add_argument("--curriculum-config", default="config/curriculum.yaml")
     ap.add_argument("--steps", type=int, default=None)
@@ -435,7 +435,7 @@ def main() -> None:
         set_optimizer_lr(prover_optim, float(cfg["training"]["lr"]))
         set_optimizer_lr(verifier_optim, float(cfg["verifier"].get("lr", cfg["training"]["lr"])))
 
-    log_path = str(Path(cfg["paths"]["logs_dir"]) / "train_v7.jsonl")
+    log_path = str(Path(cfg["paths"]["logs_dir"]) / "train.jsonl")
     print(f"[{now_ts()}] device={device} start_step={start_step} steps={cfg['training']['steps']}")
 
     for step in range(start_step, int(cfg["training"]["steps"]) + 1):
@@ -602,7 +602,6 @@ def main() -> None:
             print(f"[{now_ts()}] eval | {compact_metrics(eval_metrics)}")
             log_jsonl(log_path, metrics)
 
-            # Refresh memory with a few sampled cases.
             for _ in range(int(cfg["training"].get("memory_refresh_samples", 4))):
                 task = sample_task(phase.domains)
                 init = make_state(task)

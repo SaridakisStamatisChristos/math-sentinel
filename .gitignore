@@ -27,6 +27,7 @@ env.bak/
 
 # Unit test / coverage
 .pytest_cache/
+.tmp-tests/
 .tox/
 .coverage
 coverage.xml
