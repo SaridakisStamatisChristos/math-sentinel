@@ -1,0 +1,71 @@
+seed: 1337
+device: cpu
+compile: false
+
+model:
+  seq_len: 64
+  d_model: 32
+  n_heads: 4
+  n_layers: 1
+  dropout: 0.0
+
+verifier:
+  hidden_size: 32
+  dropout: 0.0
+  n_heads: 4
+  n_layers: 1
+  max_seq_len: 64
+  ff_mult: 2
+  lr: 0.0006
+  margin: 0.6
+  rank_weight: 0.5
+  focal_gamma: 2.0
+  focal_alpha: 0.75
+  loss_weight: 0.55
+  mined_pairs_per_step: 0
+  online_pairs_per_step: 0
+  online_pairs_by_phase:
+    basics: 0
+    number_theory: 0
+    algebra: 0
+    calculus: 0
+  online_mining_start_step: 1
+  online_beam_width: 1
+  online_max_depth: 1
+  online_proposal_count: 1
+  online_temperature: 1.0
+  online_top_k: 4
+
+training:
+  steps: 1
+  batch_size: 1
+  micro_batch_size: 1
+  lr: 0.0003
+  weight_decay: 0.01
+  grad_clip: 1.0
+  eval_every: 100
+  save_every: 100
+  log_every: 1
+  memory_refresh_samples: 0
+  amp: false
+  max_new_tokens: 8
+
+search:
+  beam_width: 1
+  max_depth: 1
+  proposal_count: 1
+  temperature: 0.8
+  top_k: 4
+
+memory:
+  replay_capacity: 16
+  hard_case_capacity: 16
+  lemma_store_path: memory/smoke_lemma_store.json
+  hard_cases_path: memory/smoke_hard_cases.json
+  tactic_stats_path: memory/smoke_tactic_stats.json
+  replay_path: memory/smoke_replay.jsonl
+
+paths:
+  checkpoints_dir: checkpoints
+  logs_dir: logs
+  data_dir: data

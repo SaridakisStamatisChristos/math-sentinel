@@ -9,7 +9,7 @@ from curriculum.generators import GeneratedTask
 from memory.replay import ReplayBuffer
 from proof.state import ProofState
 from search.nodes import SearchNode
-from train_v7 import build_verifier_targets, mine_online_verifier_pairs, pick_best_mined_pair
+from train import build_verifier_targets, mine_online_verifier_pairs, pick_best_mined_pair
 
 
 def _task() -> GeneratedTask:
@@ -103,8 +103,8 @@ def test_online_verifier_mining_uses_passed_search_config() -> None:
     verifier = torch.nn.Linear(2, 2)
     phase = SimpleNamespace(domains=["linear_equation"])
 
-    with patch("train_v7.sample_task", return_value=task):
-        with patch("train_v7.beam_search", return_value=(solved, explored)) as mock_beam_search:
+    with patch("train.sample_task", return_value=task):
+        with patch("train.beam_search", return_value=(solved, explored)) as mock_beam_search:
             mined = mine_online_verifier_pairs(
                 prover=prover,
                 verifier=verifier,

@@ -1,44 +1,59 @@
-## Math Sentinel V7 Runbook
+# Math Sentinel Runbook
 
-This runbook documents the training workflow that is actually supported by `train_v7.py`.
+This runbook documents the supported local training, evaluation, sampling, checkpoint, memory, and cleanup workflows for Math Sentinel.
 
 ## Scope
 
-- Working directory: repository root.
-- Default training config: `config/default.yaml`.
-- Default curriculum config: `config/curriculum.yaml`.
-- Default search override config: `config/search.yaml`.
-- Default checkpoint output: `checkpoints/last.pt`.
-- Default log output: `logs/train_v7.jsonl`.
-- Default persistent memory files:
-  - `memory/replay.jsonl`
-  - `memory/hard_cases.json`
-  - `memory/lemma_store.json`
-  - `memory/tactic_stats.json`
+Run commands from the repository root.
 
-## Environment Setup
+Default locations:
 
-Use PowerShell from the repository root.
+- training config: `config/default.yaml`
+- curriculum config: `config/curriculum.yaml`
+- search override config: `config/search.yaml`
+- checkpoint: `checkpoints/last.pt`
+- training log: `logs/train.jsonl`
+- replay store: `memory/replay.jsonl`
+- hard-case store: `memory/hard_cases.json`
+- lemma store: `memory/lemma_store.json`
+- tactic statistics: `memory/tactic_stats.json`
+
+## Environment setup
+
+Linux/macOS:
+
+```bash
+python -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
+```
+
+Windows PowerShell:
 
 ```powershell
-C:/Python312/python.exe -m venv .venv
+python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
 ```
 
-Verify the active interpreter before starting training:
+Verify the active interpreter and PyTorch installation before a long run:
 
-```powershell
+```bash
 python -c "import sys; print(sys.executable)"
-python -c "import torch; print(torch.__version__)"
+python -c "import torch; print(torch.__version__); print('cuda=', torch.cuda.is_available())"
 ```
 
-Expected result on this machine: `python` should resolve to the activated `.venv` interpreter, not `C:\Users\scsar\AppData\Local\Programs\Python\Python314\python.exe`.
+For repository development and tests:
 
-## Supported Training Flags
+```bash
+python -m pip install -r requirements-dev.txt
+```
 
-The training entrypoint supports these operational flags:
+## Training flags
+
+`train.py` supports:
 
 - `--config`
 - `--curriculum-config`
@@ -54,129 +69,141 @@ The training entrypoint supports these operational flags:
 - `--save-every`
 - `--memory-refresh-samples`
 
-## Standard Training Runs
+## Standard training runs
 
 Default run:
 
-```powershell
-python train_v7.py
+```bash
+python train.py
 ```
 
 Short smoke run:
 
-```powershell
-python train_v7.py --steps 20 --batch-size 4 --micro-batch-size 4 --eval-every 10 --save-every 10
+```bash
+python train.py --steps 20 --batch-size 4 --micro-batch-size 4 --eval-every 10 --save-every 10
 ```
 
-Longer GPU run:
+Longer CUDA run:
 
-```powershell
-python train_v7.py --steps 2000 --batch-size 16 --micro-batch-size 8 --device cuda --compile
+```bash
+python train.py --steps 2000 --batch-size 16 --micro-batch-size 8 --device cuda --compile
 ```
 
 Custom learning rate:
 
-```powershell
-python train_v7.py --steps 5000 --batch-size 16 --lr 0.0001
+```bash
+python train.py --steps 5000 --batch-size 16 --lr 0.0001
 ```
 
-## Resume Training
+## Resume training
 
-Resume from the last checkpoint on disk:
+Resume from the default checkpoint:
 
-```powershell
-python train_v7.py --resume checkpoints/last.pt
+```bash
+python train.py --resume checkpoints/last.pt
 ```
 
 Resume with explicit overrides:
 
-```powershell
-python train_v7.py --resume checkpoints/last.pt --steps 2000 --device cuda
+```bash
+python train.py --resume checkpoints/last.pt --steps 2000 --device cuda
 ```
 
-`--resume` restores model weights, verifier weights, optimizer state, scaler state, and last step from the checkpoint file. It does not by itself change memory file paths.
+`--resume` restores prover weights, verifier weights, optimizer state, scaler state, and the last step stored in the checkpoint. Memory paths continue to come from the active configuration.
 
-## Memory Behavior
+## Memory behavior
 
-Memory is always loaded from the file paths configured under the `memory` section of `config/default.yaml` or the config file passed with `--config`.
+Memory stores are loaded from the paths under the `memory` section of the selected configuration.
 
-Search behavior is loaded from the `search` section in `config/default.yaml`, then overridden by values in `config/search.yaml` when that file exists. This includes beam parameters and scoring weights used by beam ranking.
+Search behavior is loaded from the `search` section of that configuration and then overridden by `config/search.yaml` when the override file exists.
 
-`--memory-refresh-samples` controls how many sampled evaluation cases are written back into the memory stores during each evaluation interval.
+`--memory-refresh-samples` controls how many sampled evaluation cases are written back into memory at each evaluation interval.
 
-Example with memory refresh enabled explicitly:
+Disable refresh for a short diagnostic run:
 
-```powershell
-python train_v7.py --memory-refresh-samples 32
+```bash
+python train.py --memory-refresh-samples 0
 ```
 
-Example with memory refresh disabled:
+## Starting from previous memory stores
 
-```powershell
-python train_v7.py --memory-refresh-samples 0
-```
+Math Sentinel reads memory stores from local files. To continue from saved stores, either place those files at the configured default paths or point a separate configuration file at alternate paths.
 
-## Starting From Previous Memory Stores
-
-The training code supports loading previous memory stores from files on disk. It does not implement a remote memory endpoint protocol.
-
-There are two supported ways to start from previous stores.
-
-Method 1: replace the default store files before training.
-
-```powershell
-Copy-Item C:\backups\replay.jsonl memory\replay.jsonl -Force
-Copy-Item C:\backups\hard_cases.json memory\hard_cases.json -Force
-Copy-Item C:\backups\lemma_store.json memory\lemma_store.json -Force
-Copy-Item C:\backups\tactic_stats.json memory\tactic_stats.json -Force
-python train_v7.py
-```
-
-Method 2: use a separate config file that points to alternate store paths.
-
-Example memory block for an override config:
+Example override:
 
 ```yaml
 memory:
   replay_capacity: 5000
   hard_case_capacity: 2000
-  lemma_store_path: D:/math-sentinel-store/lemma_store.json
-  hard_cases_path: D:/math-sentinel-store/hard_cases.json
-  tactic_stats_path: D:/math-sentinel-store/tactic_stats.json
-  replay_path: D:/math-sentinel-store/replay.jsonl
+  lemma_store_path: /path/to/math-sentinel-memory/lemma_store.json
+  hard_cases_path: /path/to/math-sentinel-memory/hard_cases.json
+  tactic_stats_path: /path/to/math-sentinel-memory/tactic_stats.json
+  replay_path: /path/to/math-sentinel-memory/replay.jsonl
 ```
 
-Run with the override config:
+Then run:
 
-```powershell
-python train_v7.py --config config/custom_memory.yaml
+```bash
+python train.py --config config/custom_memory.yaml
 ```
 
-If your previous stores live behind an HTTP or object-store endpoint, download them first and then use one of the two local-file methods above.
+Remote object stores are not a native memory protocol; materialize the files locally before training.
 
-## Evaluation And Sampling
+## Evaluation
 
 Evaluate a checkpoint:
 
-```powershell
-python eval_v7.py --checkpoint checkpoints/last.pt --count 64
+```bash
+python eval.py --checkpoint checkpoints/last.pt --count 64
 ```
 
-Sample from a checkpoint:
+The evaluation command reports research diagnostics over sampled curriculum tasks. A successful process exit is a runtime check, not a claim of mathematical correctness.
 
-```powershell
-python sample_v7.py --checkpoint checkpoints/last.pt
+## Sampling and manual solving
+
+Sample a generated task:
+
+```bash
+python sample.py --checkpoint checkpoints/last.pt
 ```
 
 Run a manual problem:
 
-```powershell
-python sample_v7.py --checkpoint checkpoints/last.pt --domain linear_equation --problem "Solve: 2x + 3 = 11"
+```bash
+python sample.py --checkpoint checkpoints/last.pt --domain linear_equation --problem "Solve: 2x + 3 = 11"
+```
+
+## Checker plugins
+
+Load a checker/tool plugin with:
+
+```bash
+python train.py --checker-plugin plugins/example_checker_plugin.py
+python sample.py --checker-plugin plugins/example_checker_plugin.py
+```
+
+Plugins are loaded through `ToolRegistry`; they extend available deterministic tools but do not convert Math Sentinel into a formal proof kernel.
+
+## Test and smoke verification
+
+Install development dependencies and run all tests:
+
+```bash
+python -m pip install -r requirements-dev.txt
+python -m pytest -q
+```
+
+Run the lightweight end-to-end smoke configuration:
+
+```bash
+python train.py --config config/smoke.yaml --steps 1 --batch-size 1 --micro-batch-size 1 --eval-every 100 --save-every 100 --memory-refresh-samples 0 --device cpu
+python eval.py --config config/smoke.yaml --count 1 --step 1
+python sample.py --config config/smoke.yaml --domain arithmetic --problem "What is 2 + 2?"
 ```
 
 ## Cleanup
 
-The cleanup script removes checkpoints, logs, and persistent memory artifacts, then recreates empty `checkpoints` and `logs` directories.
+The PowerShell cleanup script removes generated checkpoints, logs, and persistent memory artifacts and recreates the checkpoint/log directories.
 
 Interactive cleanup:
 
@@ -190,26 +217,19 @@ Non-interactive cleanup:
 .\scripts\clean_training.ps1 -Yes
 ```
 
-## Operational Notes
+## Operational notes
 
-- If `--device auto` is used, training selects CUDA when available and otherwise falls back to CPU.
-- `--compile` only enables `torch.compile` when the installed PyTorch build supports it. If compilation fails at runtime, training falls back to eager mode and logs a warning.
-- Checkpoints are written on the `save_every` interval.
+- `--device auto` chooses CUDA when available and CPU otherwise.
+- `--compile` attempts `torch.compile` when supported; training falls back to eager execution if compilation setup fails.
+- Checkpoints are written at the configured `save_every` interval.
 - Memory stores are persisted when checkpoints are saved.
-- The code imports memory stores from local files at process startup.
+- Persistent memory is loaded from local files at process startup.
+- The valid save-frequency flag is `--save-every N`.
 
 ## Troubleshooting
 
-- If PowerShell blocks venv activation, run `Set-ExecutionPolicy -Scope Process Bypass` in the current shell and retry activation.
-- If `python -c "import torch"` fails, you are using the wrong interpreter. On this machine, bare `python` currently resolves to `Python314`, while `torch` is installed under `C:/Python312/python.exe`.
-- If needed, bypass the shell alias entirely and run training with the interpreter that has `torch` installed:
-
-```powershell
-C:/Python312/python.exe train_v7.py --steps 20000 --batch-size 16 --micro-batch-size 8 --device cuda --save-every 100 --compile
-```
-
-- If CUDA is not available, omit `--device cuda` and let the code use CPU.
-- If `--compile` reports an Inductor or Triton failure, training now falls back to eager automatically. Remove the flag if you want to avoid the warning and startup retry.
-- If resume fails, verify that `checkpoints/last.pt` exists and matches the current model code.
-- The correct flag is `--save-every 100`. `--save every 100` is not a valid `train_v7.py` argument.
-
+- If virtual-environment activation fails, invoke the environment's Python interpreter directly and verify it with `python -c "import sys; print(sys.executable)"`.
+- If `import torch` fails, reinstall dependencies in the active environment.
+- If CUDA is unavailable or incompatible with the installed PyTorch build, use `--device cpu` or `--device auto`.
+- If `--compile` causes backend-specific failures, retry without the flag; compilation is an optimization, not a correctness requirement.
+- If resume fails, verify that the checkpoint exists and was produced by code/configuration compatible with the current model definitions.
