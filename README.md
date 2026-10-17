@@ -23,20 +23,79 @@ The built-in curriculum currently covers arithmetic, fractions, divmod, gcd/lcm,
 ## Architecture
 
 ```mermaid
-flowchart LR
-    A[Curriculum / manual problem] --> B[ProofState]
-    B --> C[Prover]
-    C --> D[Typed action parser]
-    D --> E[Proof executor]
-    E --> F[Deterministic math tools / plugins]
-    F --> G[Child ProofState]
-    G --> H[State verifier]
-    H --> I[Beam search]
-    I -->|continue| C
-    I -->|selected result| J[Final state / trace]
-    I --> K[Replay, hard cases, lemmas, tactic stats]
-    K --> C
+flowchart TB
+    subgraph INPUTS["1 · Problem Sources"]
+        CURRICULUM["Curriculum Generator<br/>Synthetic math tasks"]
+        MANUAL["Manual Problem Input<br/>sample.py"]
+    end
+
+    subgraph REASONING["2 · Stateful Reasoning Core"]
+        STATE["ProofState<br/>goal · assumptions · derived facts<br/>subgoals · action/tool history"]
+        PROVER["Neural Prover<br/>TinyTransformerLM"]
+        PARSER["Typed Action Parser<br/>THINK · APPLY · CHECK · ANSWER · ..."]
+    end
+
+    subgraph EXECUTION["3 · Symbolic Execution Layer"]
+        EXECUTOR["ProofExecutor"]
+        REGISTRY["ToolRegistry"]
+        TOOLS["Deterministic Math Tools<br/>arithmetic · fractions · algebra<br/>calculus · number theory · logic"]
+        PLUGINS["Checker / Tool Plugins"]
+    end
+
+    subgraph SEARCH["4 · Verification & Search"]
+        CHILDREN["Candidate Child ProofStates"]
+        VERIFIER["State Verifier<br/>validity · progress · completion<br/>risk · branch priority"]
+        BEAM["Verifier-Guided Beam Search<br/>rank · prune · continue"]
+    end
+
+    subgraph MEMORY["5 · Persistent Training Memory"]
+        REPLAY["Replay Buffer<br/>solved · failed · mined verifier pairs"]
+        HARD["Hard-Case Store"]
+        LEMMAS["Lemma Store"]
+        TACTICS["Tactic Statistics"]
+    end
+
+    subgraph OUTPUTS["6 · Outputs & Persistence"]
+        FINAL["Selected Final ProofState"]
+        TRACE["Human-Readable Trace"]
+        CHECKPOINT["Checkpoints · Metrics · JSONL Logs"]
+    end
+
+    CURRICULUM --> STATE
+    MANUAL --> STATE
+    STATE --> PROVER
+    PROVER --> PARSER
+    PARSER --> EXECUTOR
+
+    EXECUTOR --> REGISTRY
+    PLUGINS --> REGISTRY
+    REGISTRY --> TOOLS
+    TOOLS --> CHILDREN
+
+    CHILDREN --> VERIFIER
+    VERIFIER --> BEAM
+    BEAM -->|continue search| PROVER
+    BEAM -->|best branch| FINAL
+    FINAL --> TRACE
+
+    BEAM -->|training/search evidence| REPLAY
+    BEAM -->|difficult failures| HARD
+    FINAL -->|solved-task artifacts| LEMMAS
+    FINAL -->|action outcomes| TACTICS
+
+    PROVER -. training state .-> CHECKPOINT
+    VERIFIER -. training state .-> CHECKPOINT
+    REPLAY -. mined verifier pairs .-> VERIFIER
 ```
+
+The diagram separates the system into six concerns:
+
+1. **Problem sources** create either curriculum-generated tasks or manual inputs.
+2. **Stateful reasoning** serializes the task into `ProofState`, then the neural prover proposes typed actions.
+3. **Symbolic execution** applies actions through `ProofExecutor` and `ToolRegistry`, using deterministic math tools or registered plugins.
+4. **Verification and search** score candidate child states and use beam search to rank, prune, and continue promising branches.
+5. **Persistent memory** records replay examples, hard cases, lemmas, and tactic outcomes used by the training/research workflow.
+6. **Outputs** expose the selected final state and trace while training persists checkpoints, metrics, and logs.
 
 A typical solve path is:
 
